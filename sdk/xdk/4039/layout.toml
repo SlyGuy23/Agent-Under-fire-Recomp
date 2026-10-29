@@ -1,0 +1,49 @@
+# XDK 4039 library data layouts the runtime reads or writes. Each value is proven by the bond_eng.xbe
+# (007: Agent Under Fire, PAL) code at the address given. Same field set as xdk/4831.
+[layout]
+# D3D8 CDevice, the static device at 0x1A0640 that D3D__pDevice (0x1A32A0) points at; its miniport is at +0x23E8
+CDevice_Push              = 0x0    # D3DDevice_SetRenderState_Simple 0x192EB0 reads it, 0x192EC0 stores it
+CDevice_PushThreshold     = 0x4    # D3DDevice_SetRenderState_Simple 0x192EB8 compares the push pointer with it
+CDevice_BaseVertex        = 0x1C   # D3DDevice_SetIndices 0x195059 stores BaseVertexIndex
+CDevice_IndexBuffer       = 0x504  # D3DDevice_SetIndices 0x19502A reads the old one, 0x195052 stores the new one
+CDevice_ZScale            = 0x5C4  # D3D_UpdateProjectionViewportTransform 0x192FB6 scales the Z range by it
+CDevice_SuperSampleX      = 0x5CC  # D3D_UpdateProjectionViewportTransform 0x192F66 scales viewport X by it
+CDevice_SuperSampleY      = 0x5D0  # D3D_UpdateProjectionViewportTransform 0x192F8C scales viewport Y by it
+CDevice_Transforms        = 0x8D0  # D3DDevice_SetTransform 0x1940E6 copies 16 dwords to +0x8D0 + type * 64
+CDevice_Textures          = 0xBF8  # D3DDevice_SetTexture 0x194E90 reads, 0x194EC9 stores [stage]
+CDevice_RenderTarget      = 0x21F0 # D3DDevice_SetViewport 0x194A5A reads the render target, the slot before Depth
+CDevice_Depth             = 0x21F4 # D3DDevice_GetDepthStencilSurface 0x194A25 returns it
+CDevice_BackBuffer        = 0x21FC # D3DDevice_GetBackBuffer 0x1949FD returns it for index 0
+CDevice_FrontBuffer       = 0x2200 # D3DDevice_GetBackBuffer 0x1949FD returns it for index -1
+CDevice_SwapCount         = 0x2C38 # D3DDevice_Swap 0x196239 increments it, 0x196270 returns it
+CDevice_Size              = 0x2C60 # D3DDevice_Release 0x19422B clears 0xB18 dwords of the device
+CDevice_Flags             = 0x8    # Direct3D_CreateDevice 0x1957AF ors BehaviorFlags & 0x10 into it
+CDevice_Time              = 0x30   # D3D_SetFence 0x197C4A pushes it; D3D_BlockOnTime 0x197CF1 compares with it
+CDevice_PixelShader       = 0x4E8  # D3DDevice_SetPixelShader 0x19D144 stores the handle
+CDevice_VertexShader      = 0x4F8  # D3DDevice_SelectVertexShader 0x197299 stores it, D3DDevice_SetVertexShader 0x197541 reads it
+CDevice_BackBufferScale   = 0x5DC  # CDevice_InitializeFrameBuffers 0x198F9A stores the X scale as a float, 0x198FB3 the Y scale at +4
+CDevice_Viewport          = 0xB50  # D3DDevice_SetViewport 0x194B4B to 0x194B6F stores X, Y, Width, Height, MinZ, MaxZ
+CDevice_ScreenSpaceOffset = 0xB68  # D3DDevice_SetScreenSpaceOffset 0x195343 stores x + 0.53125, 0x195353 y + 0.53125 at +4
+CDevice_AutoDepth         = 0x2208 # CDevice_InitializeFrameBuffers 0x199020 stores the depth buffer (BackBuffer + 0xC as in 4831)
+CDevice_VBlankCallback    = 0x25AC # D3DDevice_SetVerticalBlankCallback 0x19426A stores it (miniport + 0x1C4)
+CDevice_VBlankEvent       = 0x25B0 # D3DDevice_BlockUntilVerticalBlank 0x194297 waits on it, 0x19428B clears its SignalState
+CDevice_DisplayFlags      = 0x25D0 # D3DDevice_GetDisplayMode 0x1943BC reads it (0x400000 = 60 Hz)
+CDevice_VBlankCount       = 0x25DC # the display mode wait 0x195A0D to 0x195A21 increments it (miniport + 0x1F4)
+CDevice_Field             = 0x25EC # miniport + 0x204, the 4831 field offset moved by the same 0x34 as every miniport field
+CDevice_GammaRamps        = 0x25F8 # D3DDevice_SetGammaRamp 0x194060: miniport + 0x210 + index * 0x300 (0x19AA4C copies it)
+CDevice_GammaPending      = 0x2BF8 # D3DDevice_SetGammaRamp 0x19408E sets [miniport + 0x810 + index * 4], 0x19AA5B clears it
+# D3D8 globals
+DirtyFlags_Texture        = 0x4800 # D3DDevice_SetTexture 0x194F05 ors it into D3D__DirtyFlags
+TextureState_Stage        = 32     # D3DDevice_SetTextureStageStateNotInline 0x19380B: [stage * 32 + type] dwords
+Stream_Size               = 12     # D3DDevice_SetStreamSource 0x1971AA indexes the stream table by n * 12
+Stream_Stride             = 0x0    # D3DDevice_SetStreamSource 0x1971F2 stores Stride
+Stream_Buffer             = 0x8    # D3DDevice_SetStreamSource 0x1971F8 stores the vertex buffer
+PixelShader_Definition    = 0x8    # D3DDevice_SetPixelShader 0x19D1AB reads the definition pointer
+# DSOUND
+EffectsImage_Skip0         = 0x804 # 0x1C35C2 (CDirectSound_DownloadEffectsImage) adds this dword count
+EffectsImage_Skip1         = 0x80C # 0x1C35BC loads this dword count
+EffectsImage_Desc          = 0x818 # 0x1C35CA: descriptor at image + 0x818 + (Skip0 + Skip1) * 4
+# XAPI XPP device type record
+XPP_Current               = 0x0    # XGetDevices 0x1CC174 returns it
+XPP_Changed               = 0x4    # XGetDevices 0x1CC176 clears it
+XPP_Previous              = 0x8    # XGetDevices 0x1CC17C copies Current into it

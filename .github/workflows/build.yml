@@ -2,6 +2,7 @@ name: Build
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -10,126 +11,56 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.name || matrix.project }}
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - project: bond        # main game (bond_eng.xbe)
-            xbe: bond_eng.xbe
-          - project: driving     # driving missions (DRIVING.XBE); clang-cl, MSVC hangs on it
-            xbe: driving.xbe
-            cmake_extra: -TClangCL
-          - project: launcher    # intro movie launcher (default.xbe)
-            xbe: default.xbe
-    defaults:
-      run:
-        shell: pwsh
-
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install capstone
-        run: pip install capstone
-
-      - name: Decompile XBE to C
-        working-directory: xboxrecomp
+      - name: Game files
+        shell: pwsh
         run: |
-          $stem = [IO.Path]::GetFileNameWithoutExtension('${{ matrix.xbe }}')
-          New-Item -ItemType Directory -Force game_files | Out-Null
-          Copy-Item ../xbe/${{ matrix.xbe }} game_files/$stem.xbe
-          $x = "game_files/$stem.xbe"
-          python -m tools.xbe_parser $x --json "game_files/${stem}_analysis.json" | Out-Null
-          if ($LASTEXITCODE) { exit 1 }
-          # Disassemble the XDK library sections too (D3D, DSOUND, XPP, ...): with
-          # --text-only they were never scanned, so their functions were missing
-          # or cut short and every call into them hit an empty stub.
-          # Function starts the detector cannot see (code pointers in data tables).
-          $seedArgs = @()
-          $seeds = "../config/${{ matrix.project }}_seeds.json"
-          if (Test-Path $seeds) { $seedArgs = @('--seed-functions', $seeds) }
-          python -m tools.disasm $x --text-only --extra-sections D3D,D3DX,XGRPH,DSOUND,XPP,DOLBY @seedArgs;  if ($LASTEXITCODE) { exit 1 }
-          python -m tools.func_id $x;                                     if ($LASTEXITCODE) { exit 1 }
-          python -m tools.abi_analysis $x;                                if ($LASTEXITCODE) { exit 1 }
-          python -m tools.recomp $x --all --split 250 --entry-stubs --game-name "007 Agent Under Fire ($stem)" --gen-dir ../${{ matrix.project }}/src/recomp/gen
-          if ($LASTEXITCODE) { exit 1 }
-          # Bring-up guards (config/<project>_patches.json), e.g. AUF_NOSOUND.
-          $patches = "../config/${{ matrix.project }}_patches.json"
-          if (Test-Path $patches) { python ../tools/patch_gen.py ../${{ matrix.project }}/src/recomp/gen $patches; if ($LASTEXITCODE) { exit 1 } }
-          python tools/doctor.py --json ../doctor_${{ matrix.project }}.json
-
-      - name: Configure
-        run: |
-          $extra = @()
-          if ('${{ matrix.cmake_extra }}') { $extra += '${{ matrix.cmake_extra }}' }
-          cmake -S ${{ matrix.project }} -B ${{ matrix.project }}/build -A x64 @extra
+          New-Item -ItemType Directory -Force assets | Out-Null
+          Copy-Item xbe/bond_eng.xbe assets/bond_eng.xbe
 
       - name: Build
-        timeout-minutes: 25
+        shell: cmd
+        run: call build.bat
+
+      - name: Package
+        shell: pwsh
         run: |
-          $proj = '${{ matrix.project }}'
-          $log = "build_$proj.log"
-          $p = Start-Process cmake -ArgumentList '--build',"$proj/build",'--config','Release','--parallel' `
-                 -RedirectStandardOutput $log -RedirectStandardError "$log.err" -NoNewWindow -PassThru
-          $null = $p.Handle  # needed so ExitCode is populated
-          $done = $p.WaitForExit(20 * 60 * 1000)
-          # Which generated files never produced an object file?
-          $objs = Get-ChildItem "$proj/build" -Recurse -Filter 'recomp_*.obj' | ForEach-Object { $_.BaseName }
-          $srcs = Get-ChildItem "$proj/src/recomp/gen" -Filter '*.c' | ForEach-Object { $_.BaseName }
-          $missing = ($srcs | Where-Object { $objs -notcontains $_ }) -join ' '
-          $errs = (Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Select-String -Pattern ' error |fatal error' | Select-Object -First 15) -join '%0A'
-          $tail = (Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Where-Object { $_ -notmatch 'warning (C|LNK)' -and $_.Trim() } | Select-Object -Last 12 | ForEach-Object { $_.Substring(0, [Math]::Min(180, $_.Length)) }) -join '%0A'
-          $running = (Get-Process cl, link, MSBuild -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name)[$([int]$_.CPU)s cpu, $([int]($_.WorkingSet64/1MB))MB]" }) -join ' '
-          if (-not $done) {
-            Get-Process cl, link, MSBuild -ErrorAction SilentlyContinue | Stop-Process -Force
-            echo "::error title=Build timed out::Not compiled: $missing%0ARunning: $running%0A$tail"; exit 1 }
-          if ($p.ExitCode) { echo "::error title=Build failed::Not compiled: $missing%0A$errs"; exit 1 }
-          echo "::notice title=Build OK::$proj built"
+          $out = 'out/build/release'
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\1*\x64\Microsoft.VC*.CRT" -Directory | Select-Object -Last 1
+          $pkg = 'pkg'
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          Copy-Item "$out/AgentUnderFire.exe", "$out/AgentUnderFire.dll", README.md, sdk/THIRD_PARTY.txt $pkg
+          foreach ($f in 'msvcp140', 'vcruntime140', 'vcruntime140_1') { Copy-Item "$($crt.FullName)\$f.dll" $pkg }
+          # the DLL must stay newer than the exe or the first start rebuilds it
+          (Get-Item "$pkg/AgentUnderFire.dll").LastWriteTime = (Get-Date).AddMinutes(1)
+          Compress-Archive -Path "$pkg/*" -DestinationPath AgentUnderFire.zip -CompressionLevel Optimal
+          Get-ChildItem $pkg | Format-Table Name, Length
 
-      - name: Package generated C
-        if: always()
-        run: Compress-Archive -Path ${{ matrix.project }}/src/recomp/gen/* -DestinationPath gen_${{ matrix.project }}.zip -CompressionLevel Optimal
-
-      - name: Upload
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: aufire_${{ matrix.name || matrix.project }}
-          path: |
-            ${{ matrix.project }}/build/Release/*.exe
-            doctor_${{ matrix.project }}.json
-            build_${{ matrix.project }}.log
-            gen_${{ matrix.project }}.zip
+          name: AgentUnderFire
+          path: AgentUnderFire.zip
 
-  # Publish the finished executables to the `builds` branch (force-pushed, one
-  # commit) so they can be fetched with plain git as well as from the run page.
+  # the finished build on the `builds` branch (one force-pushed commit), fetchable with plain git
   publish:
     needs: build
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: out
-          pattern: aufire_*
-      - name: Push to builds branch
+          name: AgentUnderFire
+      - name: Push to builds
         run: |
-          mkdir pub && cd pub
+          mkdir pub && cd pub && unzip -q ../AgentUnderFire.zip && cp ../AgentUnderFire.zip .
           git init -q -b builds
-          find ../out -name '*.exe' -exec cp {} . \;
-          find ../out -name 'doctor_*.json' -exec cp {} . \;
-          find ../out -name 'gen_*.zip' -exec cp {} . \;
-          printf 'Built from %s (run %s)\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > BUILD_INFO.txt
-          ls -la
-          git add -A
-          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -qm "Builds from ${GITHUB_SHA::7}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A && git commit -qm "Build ${GITHUB_SHA::7}"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" builds

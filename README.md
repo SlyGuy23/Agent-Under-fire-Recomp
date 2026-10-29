@@ -1,58 +1,60 @@
-# 007 Agent Under Fire – Windows recomp
+# 007: Agent Under Fire - XBE Recomp
 
-Static recompilation of the original Xbox release (PAL, title ID `4541000D`) using
-[xboxrecomp](https://github.com/sp00nznet/xboxrecomp). **Keep this repo private.** It
-contains the game's executables.
+An unofficial native PC port of the original Xbox version of 007: Agent Under Fire (PAL), with extended graphics options and other enhancements.
 
-## How it builds
-Every push runs **Actions → Build** on GitHub. For each executable on the disc it:
-1. decompiles the XBE in `xbe/` to C (xboxrecomp pipeline),
-2. compiles it (MSVC for bond/launcher, clang-cl for driving),
-3. uploads the `.exe` plus a `doctor_*.json` bring-up report as a downloadable artifact.
+This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp) tool.
 
-| Project | XBE | What it is | Entry point |
-|---|---|---|---|
-| `bond/` | bond_eng.xbe | the main game (English) | 0x0002A954 |
-| `driving/` | DRIVING.XBE | driving missions (built with clang-cl; MSVC hangs on it) | 0x000E41EF |
-| `launcher/` | default.xbe | intro movies, then hands off to the game | 0x00024462 |
+> [!NOTE]
+> This project does not include any game assets. You must provide the files from your own legally acquired copy of the game to install or build.
 
-## Running a build
-1. Open the latest run under **Actions**, download `aufire_bond` (or the others).
-2. Put the `.exe` in a folder that has the unpacked disc in a `game\` subfolder
-   (on Luke's PC: `D:\RECOMPS\OWN ATTEMPTS\Agent Under Fire Recomp\`).
-3. Double-click it. The first runs are expected to crash during bring-up.
+## Installation
 
-## Working on it
-Hand-written fixes go in `<project>/src/main.c` and `<project>/src/recomp_manual.c`.
-Generated C is never committed, because CI regenerates it from `xbe/`.
+- Put your game files in the `assets` folder. This can be an ISO, or the extracted data files.
+- Run `AgentUnderFire.exe`. The release ships the game code DLL built from the PAL `bond_eng.xbe`.
+- Recomp settings can be adjusted in `settings.toml` beside the exe.
 
-## Boot fixes (main game)
+## Features
 
-What it took to get `bond_eng.xbe` from a silent exit to its title screen:
+### Display
 
-1. **Disassemble the XDK library sections** (`--extra-sections D3D,D3DX,XGRPH,DSOUND,XPP,DOLBY`).
-   With `--text-only` alone Direct3D/DirectSound were never scanned and every call into them hit an empty stub.
-2. **D3D completion fence**: `xbox_Nv2aMirrorFence(0x1A32A0, 0x30, 0x34)` in `main.c`. `D3D_BlockOnTime`
-   (`0x197CE0`) waits for `*(device+0x34)` (GPU "completed") to reach `device+0x30` ("submitted").
-3. **`RECOMP_TITLE_KEVENTS=1` + `RECOMP_VBLANK=paced`**: D3D waits on a KEVENT it builds itself
-   (`0x1A2BF0`), set by the vblank interrupt.
-4. **`AUF_NOSOUND`** (default on): DirectSound needs the emulated APU/DSP. 18 game functions that call
-   DSOUND are skipped (`config/bond_patches.json`, applied by `tools/patch_gen.py`). Set `AUF_SOUND=1` to try audio.
-5. **`RECOMP_PB_EXEC=1` + `RECOMP_FB_WINDOW=1`**: execute the GPU pushbuffer and show the frames in a window.
 
-`bond/src/main_posix.c` is a Linux/macOS entry point used for headless test runs.
+### Graphics
 
-## Controls
+### Controller
+Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 
-The game's own XInput code talks to an emulated USB host controller (`RECOMP_USB`), which presents
-an Xbox gamepad fed by the PC's controller (XInput) or the keyboard:
+### General
 
-| Keyboard | Xbox pad |
-|---|---|
-| Enter | Start |
-| Backspace | Back |
-| Arrow keys | D-pad |
-| Z / X / C / V | A / B / X / Y |
-| W A S D | Left stick |
-| 1 / 3 | Left / right trigger |
-| Q / E | White / Black |
+### Miscellaneous
+- **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
+
+## System Requirements
+
+### Minimum
+- **OS**
+  - Windows 10 64-bit
+- **GPU** with support for Direct3D 12
+
+## Building
+
+### 1. Clone the Repository
+Clone this repository using [Git](https://git-scm.com/).
+
+### 2. Add the Required Game Files
+Place your extracted game data files in the `assets` folder. `bond_eng.xbe` must be there, with the game's folders beside it.
+
+### 3. Install Dependencies
+Install Visual Studio 2022 with **Desktop development with C++**, **C++ Clang tools for Windows** and **C++ CMake tools for Windows** (`build.bat` offers to add the last two).
+
+### 4. Build the Project
+Run `build.bat`. The first build recompiles the game and takes a while. The exe is written to `out\build\release`.
+
+## Credits
+
+- [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
+- [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
+- [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
+
+## Status
+
+Main game (`bond_eng.xbe`) boots to the title screen and menus with controller navigation. Intro movies (`default.xbe`) and driving missions (`DRIVING.XBE`) are not wired up yet. The previous sp00nznet xboxrecomp attempt is kept on the `xboxrecomp-legacy` branch.
