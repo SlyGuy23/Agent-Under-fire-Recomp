@@ -112,6 +112,16 @@ if(MSVC AND NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
     endforeach()
 endif()
 
+# clang-cl treats some legacy C patterns in the template/generated code as hard
+# errors (MSVC only warns). Keep them as warnings.
+if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(${PROJECT_NAME} PRIVATE
+        -Wno-error=implicit-function-declaration
+        -Wno-error=int-conversion
+        -Wno-error=incompatible-pointer-types
+        -Wno-error=implicit-int)
+endif()
+
 # ── Game-specific additions ─────────────────────────────────────
 #
 # Add any game-specific libraries, loaders, or custom renderers below.
