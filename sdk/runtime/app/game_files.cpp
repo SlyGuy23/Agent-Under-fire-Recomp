@@ -30,6 +30,18 @@ namespace fs = std::filesystem;
 fs::path FindAssets() {
     auto dir = ExeDir();
     std::error_code ec;
+    // a folder holding the game (its xbe or an .iso) first: assets, or game as earlier builds of this port used
+    auto holds = [&](const fs::path& d) {
+        if (fs::exists(d / IMAGE_XBE, ec)) return true;
+        for (auto& e : fs::directory_iterator(d, ec))
+            if (e.path().extension() == ".iso" || e.path().extension() == ".ISO") return true;
+        return false;
+    };
+    for (auto d = dir; ; d = d.parent_path()) {
+        for (const char* name : {"assets", "game"})
+            if (fs::is_directory(d / name, ec) && holds(d / name)) return d / name;
+        if (!d.has_parent_path() || d.parent_path() == d) break;
+    }
     for (int i = 0; i < 6; i++) {
         if (fs::is_directory(dir / "assets", ec)) return dir / "assets";
         if (!dir.has_parent_path() || dir.parent_path() == dir) break;
