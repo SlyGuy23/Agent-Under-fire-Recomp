@@ -99,19 +99,8 @@ if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /bigobj /MP)
 endif()
 
-# MSVC's optimiser stalls (20+ min) on the last batch of generated chunks for
-# DRIVING.XBE; clang compiles them in seconds. They are tiny thunk-style
-# functions, so building them unoptimised costs nothing measurable.
-if(MSVC AND NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
-    set(AUF_SLOW_CHUNKS
-        recomp_0021 recomp_0022 recomp_0023 recomp_0024 recomp_0025
-        recomp_0026 recomp_0027 recomp_0028 recomp_0029 recomp_0030
-        recomp_dispatch recomp_stubs_unresolved)
-    foreach(chunk ${AUF_SLOW_CHUNKS})
-        set_source_files_properties(src/recomp/gen/${chunk}.c PROPERTIES COMPILE_OPTIONS "/Od")
-    endforeach()
-endif()
-
+# DRIVING.XBE is built with clang-cl (CI passes -T ClangCL): MSVC's optimiser
+# hangs for 20+ min on its generated code, clang compiles it in seconds.
 # clang-cl treats some legacy C patterns in the template/generated code as hard
 # errors (MSVC only warns). Keep them as warnings.
 if(CMAKE_C_COMPILER_ID STREQUAL "Clang")

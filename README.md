@@ -7,13 +7,13 @@ contains the game's executables.
 ## How it builds
 Every push runs **Actions → Build** on GitHub. For each executable on the disc it:
 1. decompiles the XBE in `xbe/` to C (xboxrecomp pipeline),
-2. compiles it with MSVC,
+2. compiles it (MSVC for bond/launcher, clang-cl for driving),
 3. uploads the `.exe` plus a `doctor_*.json` bring-up report as a downloadable artifact.
 
 | Project | XBE | What it is | Entry point |
 |---|---|---|---|
 | `bond/` | bond_eng.xbe | the main game (English) | 0x0002A954 |
-| `driving/` | DRIVING.XBE | driving missions | 0x000E41EF |
+| `driving/` | DRIVING.XBE | driving missions (built with clang-cl; MSVC hangs on it) | 0x000E41EF |
 | `launcher/` | default.xbe | intro movies, then hands off to the game | 0x00024462 |
 
 ## Running a build

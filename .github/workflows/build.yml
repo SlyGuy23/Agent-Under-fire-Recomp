@@ -4,6 +4,10 @@ on:
   push:
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: ${{ matrix.name || matrix.project }}
@@ -14,14 +18,11 @@ jobs:
         include:
           - project: bond        # main game (bond_eng.xbe)
             xbe: bond_eng.xbe
-          - project: driving     # driving missions (DRIVING.XBE)
+          - project: driving     # driving missions (DRIVING.XBE); clang-cl, MSVC hangs on it
             xbe: driving.xbe
+            cmake_extra: -TClangCL
           - project: launcher    # intro movie launcher (default.xbe)
             xbe: default.xbe
-          - project: driving     # same, built with clang-cl instead of MSVC
-            xbe: driving.xbe
-            name: driving-clangcl
-            cmake_extra: -TClangCL
     defaults:
       run:
         shell: pwsh
