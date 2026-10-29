@@ -54,12 +54,24 @@ jobs:
         run: cmake -S ${{ matrix.project }} -B ${{ matrix.project }}/build -A x64
 
       - name: Build
-        run: cmake --build ${{ matrix.project }}/build --config Release --parallel
+        timeout-minutes: 40
+        run: |
+          $log = "build_${{ matrix.project }}.log"
+          $p = Start-Process cmake -ArgumentList '--build','${{ matrix.project }}/build','--config','Release','--parallel' `
+                 -RedirectStandardOutput $log -RedirectStandardError "$log.err" -NoNewWindow -PassThru
+          $null = $p.Handle  # needed so ExitCode is populated
+          $done = $p.WaitForExit(35 * 60 * 1000)
+          $tail = (Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Select-String -Pattern 'error|fatal|recomp_|\.c$|warning C4' | Select-Object -Last 60) -join '%0A'
+          if (-not $done) { Stop-Process -Id $p.Id -Force; echo "::error title=Build timed out::$tail"; exit 1 }
+          if ($p.ExitCode) { echo "::error title=Build failed::$tail"; exit 1 }
+          echo "::notice title=Build OK::${{ matrix.project }} built"
 
       - name: Upload
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: aufire_${{ matrix.project }}
           path: |
             ${{ matrix.project }}/build/Release/*.exe
             doctor_${{ matrix.project }}.json
+            build_${{ matrix.project }}.log
