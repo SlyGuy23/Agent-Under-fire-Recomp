@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.project }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: bond        # main game (bond_eng.xbe)
+            xbe: bond_eng.xbe
+          - project: driving     # driving missions (DRIVING.XBE)
+            xbe: driving.xbe
+          - project: launcher    # intro movie launcher (default.xbe)
+            xbe: default.xbe
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install capstone
+        run: pip install capstone
+
+      - name: Decompile XBE to C
+        working-directory: xboxrecomp
+        run: |
+          $stem = [IO.Path]::GetFileNameWithoutExtension('${{ matrix.xbe }}')
+          New-Item -ItemType Directory -Force game_files | Out-Null
+          Copy-Item ../xbe/${{ matrix.xbe }} game_files/$stem.xbe
+          $x = "game_files/$stem.xbe"
+          python -m tools.xbe_parser $x --json "game_files/${stem}_analysis.json" | Out-Null
+          if ($LASTEXITCODE) { exit 1 }
+          python -m tools.disasm $x --text-only --extra-sections DOLBY;  if ($LASTEXITCODE) { exit 1 }
+          python -m tools.func_id $x;                                     if ($LASTEXITCODE) { exit 1 }
+          python -m tools.abi_analysis $x;                                if ($LASTEXITCODE) { exit 1 }
+          python -m tools.recomp $x --all --split 250 --game-name "007 Agent Under Fire ($stem)" --gen-dir ../${{ matrix.project }}/src/recomp/gen
+          if ($LASTEXITCODE) { exit 1 }
+          python tools/doctor.py --json ../doctor_${{ matrix.project }}.json
+
+      - name: Configure
+        run: cmake -S ${{ matrix.project }} -B ${{ matrix.project }}/build -A x64
+
+      - name: Build
+        run: cmake --build ${{ matrix.project }}/build --config Release --parallel
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: aufire_${{ matrix.project }}
+          path: |
+            ${{ matrix.project }}/build/Release/*.exe
+            doctor_${{ matrix.project }}.json
