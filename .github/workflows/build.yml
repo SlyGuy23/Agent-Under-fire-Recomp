@@ -18,10 +18,10 @@ jobs:
             xbe: driving.xbe
           - project: launcher    # intro movie launcher (default.xbe)
             xbe: default.xbe
-          - project: driving     # experiment: skip linker ICF/REF passes
+          - project: driving     # same, built with clang-cl instead of MSVC
             xbe: driving.xbe
-            name: driving-noicf
-            cmake_extra: -DCMAKE_EXE_LINKER_FLAGS_RELEASE=/OPT:NOICF /OPT:NOREF /INCREMENTAL:NO
+            name: driving-clangcl
+            cmake_extra: -TClangCL
     defaults:
       run:
         shell: pwsh
