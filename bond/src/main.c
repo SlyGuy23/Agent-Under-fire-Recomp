@@ -414,6 +414,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * Not optional boilerplate: without this call RECOMP_WATCHDOG_SECS is
      * silently inert, and the one diagnostic that tells a hang from slowness
      * does nothing while appearing to be set. */
+    /* Bring-up defaults (an explicit environment variable still wins):
+     * dump the guest stack after 20 s without exiting, and log the first hit
+     * of every unresolved-call stub. Both go to the console log. */
+    if (!getenv("RECOMP_WATCHDOG_SECS")) _putenv("RECOMP_WATCHDOG_SECS=20");
+    if (!getenv("RECOMP_STUB_LOG"))      _putenv("RECOMP_STUB_LOG=1");
     xbox_WatchdogStart();
 
     /* Step 7: Call the recompiled entry point */

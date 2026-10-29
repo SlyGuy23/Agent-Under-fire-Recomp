@@ -89,6 +89,10 @@ jobs:
           if ($p.ExitCode) { echo "::error title=Build failed::Not compiled: $missing%0A$errs"; exit 1 }
           echo "::notice title=Build OK::$proj built"
 
+      - name: Package generated C
+        if: always()
+        run: Compress-Archive -Path ${{ matrix.project }}/src/recomp/gen/* -DestinationPath gen_${{ matrix.project }}.zip -CompressionLevel Optimal
+
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,6 +102,7 @@ jobs:
             ${{ matrix.project }}/build/Release/*.exe
             doctor_${{ matrix.project }}.json
             build_${{ matrix.project }}.log
+            gen_${{ matrix.project }}.zip
 
   # Publish the finished executables to the `builds` branch (force-pushed, one
   # commit) so they can be fetched with plain git as well as from the run page.
@@ -118,6 +123,7 @@ jobs:
           git init -q -b builds
           find ../out -name '*.exe' -exec cp {} . \;
           find ../out -name 'doctor_*.json' -exec cp {} . \;
+          find ../out -name 'gen_*.zip' -exec cp {} . \;
           printf 'Built from %s (run %s)\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > BUILD_INFO.txt
           ls -la
           git add -A
