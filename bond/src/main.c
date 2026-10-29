@@ -299,6 +299,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     (void)lpCmdLine;
     (void)nCmdShow;
 
+    /* This is a windowed (no-console) app, so printf/crash output would be
+     * lost. Send stdout+stderr to a log file next to the exe instead. Both
+     * streams append unbuffered so their lines interleave in order. */
+    remove("aufire_bond_console.log");
+    freopen("aufire_bond_console.log", "a", stdout);
+    freopen("aufire_bond_console.log", "a", stderr);
+
     /* Unbuffered output for immediate visibility during debugging */
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
