@@ -48,13 +48,10 @@ jobs:
           $x = "game_files/$stem.xbe"
           python -m tools.xbe_parser $x --json "game_files/${stem}_analysis.json" | Out-Null
           if ($LASTEXITCODE) { exit 1 }
-          # Extra function starts (config/<project>_seeds.json): code inside the XDK
-          # libraries that static analysis missed, so it gets translated instead
-          # of stubbed out as an empty function.
-          $seedArgs = @()
-          $seedFile = "../config/${{ matrix.project }}_seeds.json"
-          if (Test-Path $seedFile) { $seedArgs = @('--seed-functions', $seedFile) }
-          python -m tools.disasm $x --text-only --extra-sections DOLBY @seedArgs;  if ($LASTEXITCODE) { exit 1 }
+          # Disassemble the XDK library sections too (D3D, DSOUND, XPP, ...): with
+          # --text-only they were never scanned, so their functions were missing
+          # or cut short and every call into them hit an empty stub.
+          python -m tools.disasm $x --text-only --extra-sections D3D,D3DX,XGRPH,DSOUND,XPP,DOLBY;  if ($LASTEXITCODE) { exit 1 }
           python -m tools.func_id $x;                                     if ($LASTEXITCODE) { exit 1 }
           python -m tools.abi_analysis $x;                                if ($LASTEXITCODE) { exit 1 }
           python -m tools.recomp $x --all --split 250 --entry-stubs --game-name "007 Agent Under Fire ($stem)" --gen-dir ../${{ matrix.project }}/src/recomp/gen
