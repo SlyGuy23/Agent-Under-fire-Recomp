@@ -25,3 +25,19 @@ Every push runs **Actions → Build** on GitHub. For each executable on the disc
 ## Working on it
 Hand-written fixes go in `<project>/src/main.c` and `<project>/src/recomp_manual.c`.
 Generated C is never committed, because CI regenerates it from `xbe/`.
+
+## Boot fixes (main game)
+
+What it took to get `bond_eng.xbe` from a silent exit to its title screen:
+
+1. **Disassemble the XDK library sections** (`--extra-sections D3D,D3DX,XGRPH,DSOUND,XPP,DOLBY`).
+   With `--text-only` alone Direct3D/DirectSound were never scanned and every call into them hit an empty stub.
+2. **D3D completion fence**: `xbox_Nv2aMirrorFence(0x1A32A0, 0x30, 0x34)` in `main.c`. `D3D_BlockOnTime`
+   (`0x197CE0`) waits for `*(device+0x34)` (GPU "completed") to reach `device+0x30` ("submitted").
+3. **`RECOMP_TITLE_KEVENTS=1` + `RECOMP_VBLANK=paced`**: D3D waits on a KEVENT it builds itself
+   (`0x1A2BF0`), set by the vblank interrupt.
+4. **`AUF_NOSOUND`** (default on): DirectSound needs the emulated APU/DSP. 18 game functions that call
+   DSOUND are skipped (`config/bond_patches.json`, applied by `tools/patch_gen.py`). Set `AUF_SOUND=1` to try audio.
+5. **`RECOMP_PB_EXEC=1` + `RECOMP_FB_WINDOW=1`**: execute the GPU pushbuffer and show the frames in a window.
+
+`bond/src/main_posix.c` is a Linux/macOS entry point used for headless test runs.

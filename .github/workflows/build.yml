@@ -56,6 +56,9 @@ jobs:
           python -m tools.abi_analysis $x;                                if ($LASTEXITCODE) { exit 1 }
           python -m tools.recomp $x --all --split 250 --entry-stubs --game-name "007 Agent Under Fire ($stem)" --gen-dir ../${{ matrix.project }}/src/recomp/gen
           if ($LASTEXITCODE) { exit 1 }
+          # Bring-up guards (config/<project>_patches.json), e.g. AUF_NOSOUND.
+          $patches = "../config/${{ matrix.project }}_patches.json"
+          if (Test-Path $patches) { python ../tools/patch_gen.py ../${{ matrix.project }}/src/recomp/gen $patches; if ($LASTEXITCODE) { exit 1 } }
           python tools/doctor.py --json ../doctor_${{ matrix.project }}.json
 
       - name: Configure

@@ -299,6 +299,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     (void)lpCmdLine;
     (void)nCmdShow;
 
+    /* Runtime switches this title needs (an explicit environment variable
+     * still wins). See README "Boot fixes" for why each one is here.
+     *   RECOMP_TITLE_KEVENTS  D3D waits on a KEVENT it builds itself
+     *   RECOMP_VBLANK=paced   ...which the GPU's vblank interrupt sets
+     *   RECOMP_PB_EXEC        execute the pushbuffer (draw the frames)
+     *   RECOMP_FB_WINDOW      and show them in a window
+     *   AUF_NOSOUND           skip DirectSound until the APU path works;
+     *                         set AUF_SOUND=1 to try audio */
+    if (!getenv("RECOMP_TITLE_KEVENTS")) _putenv("RECOMP_TITLE_KEVENTS=1");
+    if (!getenv("RECOMP_VBLANK"))        _putenv("RECOMP_VBLANK=paced");
+    if (!getenv("RECOMP_PB_EXEC"))       _putenv("RECOMP_PB_EXEC=1");
+    if (!getenv("RECOMP_FB_WINDOW"))     _putenv("RECOMP_FB_WINDOW=1");
+    if (getenv("AUF_SOUND")) _putenv("RECOMP_AC97_READY=1");
+    else if (!getenv("AUF_NOSOUND")) _putenv("AUF_NOSOUND=1");
+
     /* This is a windowed (no-console) app, so printf/crash output would be
      * lost. Send stdout+stderr to a log file next to the exe instead. Both
      * streams append unbuffered so their lines interleave in order. */
@@ -310,7 +325,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    printf("=== YOUR_GAME_NAME - Static Recompilation ===\n");
+    printf("=== 007 Agent Under Fire - Static Recompilation ===\n");
     printf("Loading XBE...\n");
 
     /* Install VEH handler (first handler in chain) */
@@ -414,11 +429,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * Not optional boilerplate: without this call RECOMP_WATCHDOG_SECS is
      * silently inert, and the one diagnostic that tells a hang from slowness
      * does nothing while appearing to be set. */
-    /* Bring-up defaults (an explicit environment variable still wins):
-     * dump the guest stack after 20 s without exiting, and log the first hit
-     * of every unresolved-call stub. Both go to the console log. */
-    if (!getenv("RECOMP_WATCHDOG_SECS")) _putenv("RECOMP_WATCHDOG_SECS=20");
-    if (!getenv("RECOMP_STUB_LOG"))      _putenv("RECOMP_STUB_LOG=1");
+    /* D3D (XDK 4039) completion fence: the device pointer is at 0x1A32A0;
+     * the title bumps "submitted" at device+0x30 and D3D_BlockOnTime
+     * (0x197CE0) waits for *(device+0x34), the GPU's "completed", to reach
+     * it. Mirror one into the other. */
+    xbox_Nv2aMirrorFence(0x001A32A0u, 0x30, 0x34);
+
     xbox_WatchdogStart();
 
     /* Step 7: Call the recompiled entry point */
