@@ -92,3 +92,28 @@ jobs:
             ${{ matrix.project }}/build/Release/*.exe
             doctor_${{ matrix.project }}.json
             build_${{ matrix.project }}.log
+
+  # Publish the finished executables to the `builds` branch (force-pushed, one
+  # commit) so they can be fetched with plain git as well as from the run page.
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          pattern: aufire_*
+      - name: Push to builds branch
+        run: |
+          mkdir pub && cd pub
+          git init -q -b builds
+          find ../out -name '*.exe' -exec cp {} . \;
+          find ../out -name 'doctor_*.json' -exec cp {} . \;
+          printf 'Built from %s (run %s)\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > BUILD_INFO.txt
+          ls -la
+          git add -A
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -qm "Builds from ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" builds
