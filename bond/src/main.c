@@ -311,6 +311,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     if (!getenv("RECOMP_VBLANK"))        _putenv("RECOMP_VBLANK=paced");
     if (!getenv("RECOMP_PB_EXEC"))       _putenv("RECOMP_PB_EXEC=1");
     if (!getenv("RECOMP_FB_WINDOW"))     _putenv("RECOMP_FB_WINDOW=1");
+    /*   RECOMP_USB            emulate the Xbox USB host controllers so the
+     *                         game's own XInput (XAPI) finds a gamepad, fed
+     *                         by the PC's controller (XInput) ...
+     *   RECOMP_KEYBOARD       ... or the keyboard (Enter=Start, arrows=D-pad,
+     *                         Z/X/C/V=A/B/X/Y, WASD=left stick)
+     *   RECOMP_INPUT_DIAG     one line a second in the log: is input wired
+     *   RECOMP_USB_STATS      USB transfer counts every 5 s */
+    if (!getenv("RECOMP_USB"))           _putenv("RECOMP_USB=1");
+    if (!getenv("RECOMP_KEYBOARD"))      _putenv("RECOMP_KEYBOARD=1");
+    if (!getenv("RECOMP_INPUT_DIAG"))    _putenv("RECOMP_INPUT_DIAG=1");
+    if (!getenv("RECOMP_USB_STATS"))     _putenv("RECOMP_USB_STATS=1");
     if (getenv("AUF_SOUND")) _putenv("RECOMP_AC97_READY=1");
     else if (!getenv("AUF_NOSOUND")) _putenv("AUF_NOSOUND=1");
 
@@ -356,6 +367,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     }
 
     g_xbox_mem_offset = xbox_GetMemoryOffset();
+
+    /* USB host controllers (RECOMP_USB): trap their registers now that guest
+     * memory is mapped. The VEH below routes the faults to the model through
+     * xbox_VehMmioFault. */
+    {
+        extern void xbox_OhciInit(void);
+        xbox_OhciInit();
+    }
     printf("Xbox memory mapped. Offset: 0x%llX\n", (unsigned long long)g_xbox_mem_offset);
 
     /* Bring up the emulated APU.

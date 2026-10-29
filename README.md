@@ -41,3 +41,18 @@ What it took to get `bond_eng.xbe` from a silent exit to its title screen:
 5. **`RECOMP_PB_EXEC=1` + `RECOMP_FB_WINDOW=1`**: execute the GPU pushbuffer and show the frames in a window.
 
 `bond/src/main_posix.c` is a Linux/macOS entry point used for headless test runs.
+
+## Controls
+
+The game's own XInput code talks to an emulated USB host controller (`RECOMP_USB`), which presents
+an Xbox gamepad fed by the PC's controller (XInput) or the keyboard:
+
+| Keyboard | Xbox pad |
+|---|---|
+| Enter | Start |
+| Backspace | Back |
+| Arrow keys | D-pad |
+| Z / X / C / V | A / B / X / Y |
+| W A S D | Left stick |
+| 1 / 3 | Left / right trigger |
+| Q / E | White / Black |
