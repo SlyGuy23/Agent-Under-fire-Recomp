@@ -96,7 +96,7 @@ if(MSVC)
         /LARGEADDRESSAWARE
     )
     # The generated code files can be very large. Increase object file section limit.
-    target_compile_options(${PROJECT_NAME} PRIVATE /bigobj)
+    target_compile_options(${PROJECT_NAME} PRIVATE /bigobj /MP)
 endif()
 
 # ── Game-specific additions ─────────────────────────────────────

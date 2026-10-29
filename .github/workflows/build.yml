@@ -54,14 +54,14 @@ jobs:
         run: cmake -S ${{ matrix.project }} -B ${{ matrix.project }}/build -A x64
 
       - name: Build
-        timeout-minutes: 30
+        timeout-minutes: 25
         run: |
           $proj = '${{ matrix.project }}'
           $log = "build_$proj.log"
           $p = Start-Process cmake -ArgumentList '--build',"$proj/build",'--config','Release','--parallel' `
                  -RedirectStandardOutput $log -RedirectStandardError "$log.err" -NoNewWindow -PassThru
           $null = $p.Handle  # needed so ExitCode is populated
-          $done = $p.WaitForExit(25 * 60 * 1000)
+          $done = $p.WaitForExit(20 * 60 * 1000)
           # Which generated files never produced an object file?
           $objs = Get-ChildItem "$proj/build" -Recurse -Filter 'recomp_*.obj' | ForEach-Object { $_.BaseName }
           $srcs = Get-ChildItem "$proj/src/recomp/gen" -Filter '*.c' | ForEach-Object { $_.BaseName }
