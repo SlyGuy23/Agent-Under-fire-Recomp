@@ -1,0 +1,3 @@
+[
+  {"start": "0x001CA0AC", "note": "XPP (input) init routine, reached through the pointer table at 0x1C9F0C; the detector folded it into data at 0x1CA094"}
+]
