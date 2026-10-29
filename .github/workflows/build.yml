@@ -54,17 +54,24 @@ jobs:
         run: cmake -S ${{ matrix.project }} -B ${{ matrix.project }}/build -A x64
 
       - name: Build
-        timeout-minutes: 40
+        timeout-minutes: 30
         run: |
-          $log = "build_${{ matrix.project }}.log"
-          $p = Start-Process cmake -ArgumentList '--build','${{ matrix.project }}/build','--config','Release','--parallel' `
+          $proj = '${{ matrix.project }}'
+          $log = "build_$proj.log"
+          $p = Start-Process cmake -ArgumentList '--build',"$proj/build",'--config','Release','--parallel' `
                  -RedirectStandardOutput $log -RedirectStandardError "$log.err" -NoNewWindow -PassThru
           $null = $p.Handle  # needed so ExitCode is populated
-          $done = $p.WaitForExit(35 * 60 * 1000)
-          $tail = (Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Select-String -Pattern 'error|fatal|recomp_|\.c$|warning C4' | Select-Object -Last 60) -join '%0A'
-          if (-not $done) { Stop-Process -Id $p.Id -Force; echo "::error title=Build timed out::$tail"; exit 1 }
-          if ($p.ExitCode) { echo "::error title=Build failed::$tail"; exit 1 }
-          echo "::notice title=Build OK::${{ matrix.project }} built"
+          $done = $p.WaitForExit(25 * 60 * 1000)
+          # Which generated files never produced an object file?
+          $objs = Get-ChildItem "$proj/build" -Recurse -Filter 'recomp_*.obj' | ForEach-Object { $_.BaseName }
+          $srcs = Get-ChildItem "$proj/src/recomp/gen" -Filter '*.c' | ForEach-Object { $_.BaseName }
+          $missing = ($srcs | Where-Object { $objs -notcontains $_ }) -join ' '
+          $errs = (Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Select-String -Pattern ' error |fatal error' | Select-Object -First 15) -join '%0A'
+          if (-not $done) {
+            Get-Process cl, link, MSBuild -ErrorAction SilentlyContinue | Stop-Process -Force
+            echo "::error title=Build timed out::Not compiled: $missing"; exit 1 }
+          if ($p.ExitCode) { echo "::error title=Build failed::Not compiled: $missing%0A$errs"; exit 1 }
+          echo "::notice title=Build OK::$proj built"
 
       - name: Upload
         if: always()
