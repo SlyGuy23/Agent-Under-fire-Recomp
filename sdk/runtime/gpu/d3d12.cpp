@@ -3180,7 +3180,14 @@ void D3D12Backend::ResizeSwap() {
 
 void D3D12Backend::FinishCapture(const Surface& front) {
     CapStep(Surface{});
-    if (Target* f = FindTarget(front, false)) CapSave(*f, "final");
+    if (Target* f = FindTarget(front, false)) {
+        CapSave(*f, "final");
+        // and at the size it was drawn, where upscaling artefacts show
+        D3D12_RESOURCE_DESC d = f->res->GetDesc();
+        if (!f->depth)
+            CapSave({.res = f->res.Get(), .state = &f->state, .fmt = f->fmt, .w = uint32_t(d.Width), .h = d.Height, .mul = f->range},
+                    "final_full");
+    }
     for (auto& t : cap_tex_) {
         char name[32];
         snprintf(name, sizeof(name), "tex_%08X", t.data);

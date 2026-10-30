@@ -12,6 +12,7 @@
 
 #include "app/app.h"
 #include "audio/audio.h"
+#include "common/sticks.h"
 #include "core/input.h"
 
 namespace overlay {
@@ -40,6 +41,7 @@ void Toggle() {
 }
 
 void Pad(int port, input::Pad& pad) {
+    sticks::Apply(pad);
     constexpr uint16_t kChord = 0x40 | 0x80;  // left and right thumb clicks
     if (port == 0) {
         bool held = (pad.buttons & kChord) == kChord;
@@ -278,6 +280,17 @@ void Rows() {
         }
     }
 
+    Section("CONTROLS");
+    if (FlipRow("MODERN STICK RESPONSE", sticks::g_modern)) Changed(false);
+    {
+        char text[16];
+        std::snprintf(text, sizeof(text), "%u%%", sticks::g_deadzone);
+        if (int st = OptionRow("STICK DEADZONE", text, sticks::g_modern)) {
+            sticks::g_deadzone = uint32_t(std::clamp(int(sticks::g_deadzone) + st * 5, 0, 30));
+            Changed(false);
+        }
+    }
+
     Section("TEXTURES");
     if (FlipRow("TEXTURE REPLACEMENT", s.custom_textures)) Changed(false);
     if (FlipRow("TEXTURE DUMPING", s.dump_textures)) Changed(false);
@@ -297,6 +310,8 @@ void Defaults() {
     g_fps_counter = false;
     g_master_volume = 100;
     ApplyVolume();
+    sticks::g_modern = true;
+    sticks::g_deadzone = 10;
     Changed(display);
 }
 

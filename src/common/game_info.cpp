@@ -14,6 +14,7 @@
 
 #include "app/app.h"
 #include "common/overlay.h"
+#include "common/sticks.h"
 #include "image_symbols.h"
 #include "kernel/kernel.h"
 
@@ -48,7 +49,8 @@ const app::GameInfo app::kGame = {
     .images = {{"default.xbe", "AgentUnderFire"}, {"bond_eng.xbe", "AgentUnderFireGame"},
                {"driving.xbe", "AgentUnderFireDriving"}},
     .options = {{"skip_intros", &overlay::g_skip_intros, nullptr}, {"fps_counter", &overlay::g_fps_counter, nullptr},
-                {"master_volume", nullptr, &overlay::g_master_volume}},
+                {"master_volume", nullptr, &overlay::g_master_volume}, {"modern_sticks", &sticks::g_modern, nullptr},
+                {"stick_deadzone", nullptr, &sticks::g_deadzone}},
     .load = nullptr,
     .save = nullptr,
     .init = Init,

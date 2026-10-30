@@ -21,6 +21,7 @@ Press **F10**, or click **both sticks** on a controller, to open the settings pa
 - **Display** - Display mode, resolution (Fullscreen and Windowed; Borderless always uses the desktop), render resolution, max frame rate, vertical sync and an FPS counter.
 - **Graphics** - Anisotropic filtering.
 - **General** - Skip Intros starts straight at the game; master volume.
+- **Controls** - Modern Stick Response gives both sticks a round deadzone that keeps the stick's exact angle, in place of the game's per axis deadzone that snaps movement to eight directions; Stick Deadzone sets its size.
 - **Textures** - Texture replacement and dumping.
 
 ### Display
@@ -34,7 +35,7 @@ Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 ### General
 
 ### Miscellaneous
-- **Frame Capture** - F3 saves the next frame, every draw and texture, into a `captures` folder beside the exe, for bug reports.
+- **Frame Capture** - F3 saves the next frame, every draw and texture, into a `captures` folder beside the exe, for bug reports (`final_full.bmp` at the resolution it was drawn).
 - **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
 
 ## System Requirements
