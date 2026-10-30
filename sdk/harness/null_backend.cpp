@@ -18,6 +18,7 @@
 #include "reference_renderer.h"
 #include "gpu/shaders.h"
 #include <set>
+#include <map>
 
 namespace gpu {
 
@@ -37,6 +38,21 @@ public:
         draws_++;
         if (drawing_) reference::Draw(s, prim, start, count, indices);
         if (list_) List(s, prim, start, count, indices);
+        // TEXCHG=1: a texture whose bytes change between two draws of the same frame
+        static const long texchg = harness::Env("TEXCHG");
+        if (texchg) {
+            static std::map<uint32_t, std::pair<uint64_t, uint64_t>> seen;  // data -> frame, hash
+            for (int i = 0; i < 4; i++) {
+                TextureDesc d;
+                if (!s.textures[i] || !Describe(s.textures[i], d)) continue;
+                uint64_t h = gpu::Hash(kernel::HostPtr(d.data), LevelSize(d, 0));
+                auto it = seen.find(d.data);
+                if (it != seen.end() && it->second.first == frames_ && it->second.second != h)
+                    LOGI("TEXCHG frame %llu tex %08X data %08X %ux%u fmt %X changed within the frame", frames_, s.textures[i], d.data,
+                         d.width, d.height, d.format);
+                seen[d.data] = {frames_, h};
+            }
+        }
         static const long pack = harness::Env("PACKDUMP");
         if (pack && frames_ % pack == 0) PackDump(s);
     }
@@ -218,7 +234,7 @@ private:
             }
             std::fprintf(f, "\n");
         }
-        if (!indices && count <= 6 && s.streams[0].vb && std::getenv("VSDUMP")) {
+        if (!indices && (count <= 6 || (std::getenv("VSDUMP") && std::getenv("VSDUMP")[0] == '2' && count <= 2000)) && s.streams[0].vb && std::getenv("VSDUMP")) {
             uint32_t data = mem::VirtualFromPhysical(kernel::R32(s.streams[0].vb + 4)), stride = s.streams[0].stride;
             for (uint32_t i = 0; i < count; i++) {
                 std::fprintf(f, "  vert%u:", i);

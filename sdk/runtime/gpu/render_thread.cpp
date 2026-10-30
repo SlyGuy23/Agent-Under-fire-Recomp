@@ -289,6 +289,7 @@ private:
         const uint32_t type = kernel::R32(header) & 0x70000;  // 0 vertex, 0x10000 index, 0x30000 palette
         uint8_t now[kHeaderBytes] = {};
         std::memcpy(now, kernel::HostPtr(header), type < 0x20000 || type == 0x30000 ? 12 : kHeaderBytes);
+        if (type == 0x30000) return PaletteHeader(header, now);
         Recent<HeaderCopy>& r = recent_headers_[(header >> 3) & 63];
         HeaderCopy& c = r.key == header ? *r.value : headers_[header];
         r = {header, &c};
@@ -296,6 +297,28 @@ private:
         c.at = Scratch(now, kHeaderBytes);
         c.made = ring_pos_;
         std::memcpy(c.bytes, now, kHeaderBytes);
+        return c.at;
+    }
+
+    // A palette's colours as they are now. A title may write new colours into the same palette between two draws of a
+    // frame (Agent Under Fire's driving missions: its HUD and menu lettering keeps its shapes in the palette's alpha),
+    // and the render thread decodes the texture later: the copy of the header points at a copy of the colours.
+    uint32_t PaletteHeader(uint32_t header, uint8_t (&now)[kHeaderBytes]) {
+        constexpr uint32_t kData = 4;  // D3DPalette: Data, the colours' physical address
+        uint32_t n = 256u >> (kernel::R32(header) >> 30);
+        const uint8_t* colours = static_cast<const uint8_t*>(kernel::HostPtr(mem::VirtualFromPhysical(kernel::R32(header + kData))));
+        PaletteCopy& c = palettes_[header];
+        if (c.made && !std::memcmp(c.bytes, now, kHeaderBytes) && c.colours.size() == n * 4 &&
+            !std::memcmp(c.colours.data(), colours, n * 4) && ring_pos_ - c.made < kHeaderRing / 2)
+            return c.at;
+        std::memcpy(c.bytes, now, kHeaderBytes);
+        c.colours.assign(colours, colours + n * 4);
+        uint32_t copy = Scratch(colours, n * 4);  // an address outside physical memory reads as itself
+        uint8_t moved[kHeaderBytes];
+        std::memcpy(moved, now, kHeaderBytes);
+        std::memcpy(moved + kData, &copy, 4);
+        c.at = Scratch(moved, kHeaderBytes);
+        c.made = ring_pos_;
         return c.at;
     }
 
@@ -478,6 +501,13 @@ private:
         uint8_t bytes[kHeaderBytes];
     };
     std::unordered_map<uint32_t, HeaderCopy> headers_;
+    struct PaletteCopy {
+        uint32_t at = 0;
+        uint64_t made = 0;
+        uint8_t bytes[kHeaderBytes];
+        std::vector<uint8_t> colours;
+    };
+    std::unordered_map<uint32_t, PaletteCopy> palettes_;
     // the last few lookups, in front of the maps (their elements stay put)
     template <typename T>
     struct Recent {

@@ -1859,7 +1859,8 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
     TexInfo& info = stages.info[stage];
     StagePalette palette;
     ReadStagePalette(s, stage, d, palette);
-    const uint64_t key = uint64_t(palette.va) << 32 | d.data;
+    // a P8 texture is one per set of colours: the render thread hands each draw a copy of its palette, at a new address
+    const uint64_t key = (palette.va ? uint64_t(uint32_t(palette.hash ^ palette.hash >> 32) | 1) << 32 : 0) | d.data;
     const uint32_t* colours = palette.va ? palette.colours : nullptr;
     Tex& tx = textures_[key];
     uint32_t total = TotalSize(d);

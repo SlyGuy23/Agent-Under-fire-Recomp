@@ -125,8 +125,11 @@ void Loaded() {
 // Two of the front end's 2D pictures, put right as they are drawn (bond_eng.xbe's menus: two triangles of float4
 // screen positions and float4 or float2 texture coordinates under an identity projection).
 // - The title logo is two 256 wide halves whose quads overlap by a pixel (x 91-322 and 321-552) at 80% opacity: the
-//   shared column was blended twice, a light line 4 to 5 pixels wide once upscaled. A quad that starts a pixel inside
-//   the one drawn just before it, over the same rows, starts at its end instead, its texture coordinate moved with it.
+//   column under both was blended twice, a light line 4 to 5 pixels wide once upscaled, and the artwork is continuous
+//   across the halves, so the right half sat a pixel left of it. A quad that starts a pixel inside the one drawn just
+//   before it, over the same rows, moves a pixel right.
+// - The menu background's right column of tiles (x 513-641 from row 137) sits a pixel right of the tile above it
+//   (x 512-640), leaving a column of the backdrop showing down the bottom right. It moves a pixel left.
 // - Beside Difficulty the menu draws an empty part of the button sheet, whose only colour is the edge of the A
 //   button's glow: two faint vertical marks. That draw is dropped.
 // - The corner logo shows columns 0-168 and rows 113-147 of the button sheet, short of the artwork's 172 columns and
@@ -169,17 +172,19 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     g_last_quad = q;
     if (!q.valid) return;
 
-    // the halves' shared column
+    // the right half of a picture drawn a pixel too far left: its artwork goes on from the left half's last column
     if (last.valid && same(q.x0, last.x1 - 1) && same(q.y0, last.y0) && same(q.y1, last.y1) && u1 > u0) {
-        float du = (u1 - u0) / (q.x1 - q.x0);
-        for (uint32_t i = 0; i < 6; i++) {
-            float* p = at(i, pos.offset);
-            if (same(p[0], q.x0)) {
-                p[0] += 1;
-                at(i, tc.offset)[0] += du;
-            }
-        }
+        for (uint32_t i = 0; i < 6; i++) at(i, pos.offset)[0] += 1;
         g_last_quad.x0 += 1;
+        g_last_quad.x1 += 1;
+        return;
+    }
+
+    // the background's right column, drawn a pixel right of the tile above it (x 513 to 641 under 512 to 640)
+    if (same(q.x0, 513) && same(q.x1, 641) && q.y0 >= 136.5f && same(u0, 0) && same(u1, 1)) {
+        for (uint32_t i = 0; i < 6; i++) at(i, pos.offset)[0] -= 1;
+        g_last_quad.x0 -= 1;
+        g_last_quad.x1 -= 1;
         return;
     }
 
