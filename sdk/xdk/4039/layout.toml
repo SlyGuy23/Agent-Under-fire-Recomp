@@ -11,6 +11,7 @@ CDevice_SuperSampleX      = 0x5CC  # D3D_UpdateProjectionViewportTransform 0x192
 CDevice_SuperSampleY      = 0x5D0  # D3D_UpdateProjectionViewportTransform 0x192F8C scales viewport Y by it
 CDevice_Transforms        = 0x8D0  # D3DDevice_SetTransform 0x1940E6 copies 16 dwords to +0x8D0 + type * 64
 CDevice_Textures          = 0xBF8  # D3DDevice_SetTexture 0x194E90 reads, 0x194EC9 stores [stage]
+CDevice_Palettes          = 0xC08  # default.xbe D3DDevice_SetPalette 0x438ED reads, 0x43925 stores [stage]; driving.xbe 0x1159A0 the same
 CDevice_RenderTarget      = 0x21F0 # D3DDevice_SetViewport 0x194A5A reads the render target, the slot before Depth
 CDevice_Depth             = 0x21F4 # D3DDevice_GetDepthStencilSurface 0x194A25 returns it
 CDevice_BackBuffer        = 0x21FC # D3DDevice_GetBackBuffer 0x1949FD returns it for index 0
