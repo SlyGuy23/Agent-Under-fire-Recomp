@@ -25,6 +25,8 @@ std::atomic<uint32_t> g_next_id{0x10};
 // guest structures per thread
 constexpr uint32_t kKpcrSize = 0x400;
 constexpr uint32_t kEthreadSize = 0x200;
+constexpr uint32_t kNpxSaveArea = 0x210;  // FX_SAVE_AREA
+constexpr uint32_t kStartFrames = 0x20;   // KSTART_FRAME and KSWITCHFRAME
 
 void SetupGuestBlocks(Thread& t, uint32_t stack_size, uint32_t tls_size) {
     stack_size = std::max<uint32_t>(stack_size, 0x10000);
@@ -55,7 +57,10 @@ void SetupGuestBlocks(Thread& t, uint32_t stack_size, uint32_t tls_size) {
 
 void InitContext(Thread& t, X86Context& ctx) {
     std::memset(&ctx, 0, sizeof(ctx));
-    ctx.esp = (t.tls & ~15u) - 16;
+    // as the console's kernel lays a new thread out: TLS at the top, the NPX save area (FX_SAVE_AREA) under it, the
+    // start frames under that, then the first frame. Agent Under Fire's main thread keeps a structure near the top of
+    // its stack whose end reaches into the NPX area; started right under the TLS it ran past the stack top.
+    ctx.esp = (t.tls & ~15u) - kNpxSaveArea - kStartFrames;
     ctx.fs_base = t.kpcr;
     ctx.fcw = 0x27F;  // x87 53 bit precision, exceptions masked
     ctx.mxcsr = 0x1F80;  // SSE exceptions masked, round to nearest
