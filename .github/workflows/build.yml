@@ -12,6 +12,8 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -23,8 +25,26 @@ jobs:
           foreach ($x in 'default.xbe', 'bond_eng.xbe', 'driving.xbe') { Copy-Item "xbe/$x" "assets/$x" }
 
       - name: Build
-        shell: cmd
-        run: call build.bat
+        shell: pwsh
+        run: |
+          cmd /c build.bat 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # a failed build's log on the ci-log branch, readable with plain git
+      - name: Publish log
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force logpub | Out-Null
+          Copy-Item build.log logpub/ -ErrorAction SilentlyContinue
+          Get-ChildItem -Recurse out -Filter *.log -ErrorAction SilentlyContinue | Select-Object -First 5 | Copy-Item -Destination logpub/
+          cd logpub
+          git init -q -b ci-log
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -qm "Failed build $($env:GITHUB_SHA.Substring(0,7))"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ci-log
 
       - name: Package
         shell: pwsh
