@@ -1,4 +1,4 @@
-// Analog sticks for bond_eng.xbe: a round deadzone with the stick's angle kept, in place of the game's square one
+// Analog sticks for bond_eng.xbe and driving.xbe: a round deadzone with the angle kept, in place of the per axis ones
 #pragma once
 #include <cstdint>
 
