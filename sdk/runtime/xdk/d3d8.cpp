@@ -1463,6 +1463,22 @@ void Walk(uint32_t end) {
 }  // namespace
 }  // namespace d3d
 
+// GetVisibilityTestResult(index, result, timestamp) reads the report EndVisibilityTest asked for. Reports reach the
+// title once the GPU has run the frame, at its Present; Agent Under Fire's driving missions wait for one within the
+// frame (D3DERR_TESTINCOMPLETE in a loop) and stood still. The commands written so far are run and waited for here,
+// then the console's own function reads the finished report.
+#if HAS_D3DDevice_GetVisibilityTestResult  // only images that have it, the driving one here
+X86_EXTERN_FUNC(GUEST_ORIG(D3DDevice_GetVisibilityTestResult));
+X86_FUNC(GUEST(D3DDevice_GetVisibilityTestResult)) {
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_lock);
+        Walk(Dev(kDevPush));
+        if (g_backend) g_backend->Flush();
+    }
+    GUEST_ORIG(D3DDevice_GetVisibilityTestResult)(ctx, base);
+}
+#endif
+
 HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));

@@ -164,17 +164,17 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
         u0 = std::min(u0, t[0]), u1 = std::max(u1, t[0]), v0 = std::min(v0, t[1]), v1 = std::max(v1, t[1]);
     }
     q.valid = q.x1 > q.x0 && q.y1 > q.y0;
-    auto near = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
+    auto same = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
     const Quad last = g_last_quad;
     g_last_quad = q;
     if (!q.valid) return;
 
     // the halves' shared column
-    if (last.valid && near(q.x0, last.x1 - 1) && near(q.y0, last.y0) && near(q.y1, last.y1) && u1 > u0) {
+    if (last.valid && same(q.x0, last.x1 - 1) && same(q.y0, last.y0) && same(q.y1, last.y1) && u1 > u0) {
         float du = (u1 - u0) / (q.x1 - q.x0);
         for (uint32_t i = 0; i < 6; i++) {
             float* p = at(i, pos.offset);
-            if (near(p[0], q.x0)) {
+            if (same(p[0], q.x0)) {
                 p[0] += 1;
                 at(i, tc.offset)[0] += du;
             }
@@ -187,22 +187,22 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     bool sheet = s.textures[0] && gpu::Describe(s.textures[0], d) && d.width == 256 && d.height == 256;
 
     // beside Difficulty, an empty corner of the button sheet whose one coloured column is the A button's glow: a mark
-    if (sheet && near(u0, 46 / 256.0f) && near(u1, 56 / 256.0f) && near(v0, 91 / 256.0f) && near(v1, 107 / 256.0f)) {
+    if (sheet && same(u0, 46 / 256.0f) && same(u1, 56 / 256.0f) && same(v0, 91 / 256.0f) && same(v1, 107 / 256.0f)) {
         for (uint32_t i = 0; i < 6; i++) at(i, pos.offset)[0] = q.x0;  // no area, nothing drawn
         return;
     }
 
     // the corner logo
-    if (sheet && near(u0, 0) && near(u1, 168 / 256.0f) && near(v0, 113 / 256.0f) && near(v1, 147 / 256.0f)) {
+    if (sheet && same(u0, 0) && same(u1, 168 / 256.0f) && same(v0, 113 / 256.0f) && same(v1, 147 / 256.0f)) {
         constexpr float kU1 = 172 / 256.0f, kV1 = 149 / 256.0f;
         float x1 = q.x0 + (q.x1 - q.x0) * (172.0f / 168.0f), y1 = q.y0 + (q.y1 - q.y0) * (149.0f - 113) / (147.0f - 113);
         for (uint32_t i = 0; i < 6; i++) {
             float* p = at(i, pos.offset);
             float* t = at(i, tc.offset);
-            if (near(p[0], q.x1)) p[0] = x1;
-            if (near(p[1], q.y1)) p[1] = y1;
-            if (near(t[0], u1)) t[0] = kU1;
-            if (near(t[1], v1)) t[1] = kV1;
+            if (same(p[0], q.x1)) p[0] = x1;
+            if (same(p[1], q.y1)) p[1] = y1;
+            if (same(t[0], u1)) t[0] = kU1;
+            if (same(t[1], v1)) t[1] = kV1;
         }
     }
 }

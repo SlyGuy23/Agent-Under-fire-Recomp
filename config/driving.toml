@@ -88,6 +88,7 @@ D3DDevice_GetDepthStencilSurface2                    = 0
 D3DDevice_GetRasterStatus                            = 0
 D3DDevice_GetRenderTarget2                           = 0
 D3DDevice_GetTile                                    = 0x114C70  # XbSymbolDatabase, pops checked
+D3DDevice_GetVisibilityTestResult                    = 0x114BE0  # XbSymbolDatabase
 D3DDevice_GetVertexShaderFunction                    = 0
 D3DDevice_InsertFence                                = 0
 D3DDevice_IsFencePending                             = 0

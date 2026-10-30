@@ -1002,7 +1002,12 @@ void D3D12Backend::Submit(bool wait) {
     }
 }
 
-void D3D12Backend::Flush() { Submit(true); }
+// a wait for the GPU also hands the visibility test reports it finished to the title (a title may wait on one
+// within the frame, before its Present would deliver it)
+void D3D12Backend::Flush() {
+    Submit(true);
+    DeliverReports();
+}
 
 void D3D12Backend::WaitFence(uint64_t value) {
     fence_->SetEventOnCompletion(value, event_);

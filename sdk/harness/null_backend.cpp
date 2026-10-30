@@ -72,6 +72,11 @@ public:
         if (++frames_ % 60 == 0) LOGI("renderer: frame %llu, %llu draws, %llu empty frames", frames_, draws_, empty_);
         if (cap && frames_ % cap == 0) list_ = std::fopen(File("cap/draws_%05llu.txt", frames_).c_str(), "w");
     }
+    // a visibility test report is done at once: some pixels passed
+    void GetReport(uint32_t va) override {
+        kernel::W32(va + 8, 1000);
+        kernel::W32(va + 12, 0);
+    }
     void Sync(uint32_t, uint32_t) override {}
     void SyncLate(uint32_t) override {}
     void Flush() override {}
