@@ -16,7 +16,11 @@
 #include "common/overlay.h"
 #include "common/sticks.h"
 #include "image_symbols.h"
+#include "core/log.h"
 #include "kernel/kernel.h"
+
+#include <chrono>
+#include <thread>
 
 namespace {
 
@@ -33,6 +37,28 @@ void Init() {
     bool relaunched = false;
 #endif
     if (launcher && overlay::g_skip_intros && !relaunched) kernel::Relaunch(kGameExe);
+}
+
+// The driving missions cannot be run where this port is built (their data is too big to copy), so while a run shows
+// no picture the log gets where every guest thread is, after 5, 10, 20 and 40 seconds.
+void Loaded() {
+    if (std::string_view(IMAGE_XBE) != "driving.xbe") return;
+    LOGR("Driving: image loaded, starting");
+    std::thread([] {
+        int waited = 0;
+        for (int at : {5, 10, 20, 40}) {
+            std::this_thread::sleep_for(std::chrono::seconds(at - waited));
+            waited = at;
+            if (!app::HandingOver()) return;  // the window is up
+            LOGE("driving: no frame after %d s, guest threads:", at);
+            for (auto& t : kernel::Threads())
+                if (t->ctx) {
+                    LOGE("thread %X", t->id);
+                    kernel::LogGuestStack(*t->ctx, 32);
+                }
+            logx::Flush();
+        }
+    }).detach();
 }
 
 }  // namespace
@@ -54,7 +80,7 @@ const app::GameInfo app::kGame = {
     .load = nullptr,
     .save = nullptr,
     .init = Init,
-    .loaded = nullptr,
+    .loaded = Loaded,
     .window = nullptr,
     .message = overlay::Message,
     .ui = overlay::Draw,

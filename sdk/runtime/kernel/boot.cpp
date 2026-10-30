@@ -196,7 +196,13 @@ void Relaunch(const char* exe) {
         g_relaunching = true;
         ResumeThread(pi.hThread);
         HANDLE wait[] = {ready, pi.hProcess};
-        if (ready) WaitForMultipleObjects(2, wait, FALSE, 15000);
+        DWORD got = ready ? WaitForMultipleObjects(2, wait, FALSE, 15000) : WAIT_FAILED;
+        // what became of the new instance, for a report when it never showed its window
+        DWORD code = 0;
+        if (got == WAIT_OBJECT_0 + 1 && GetExitCodeProcess(pi.hProcess, &code))
+            LOGE("relaunch: %s.exe ended before its first frame, exit code %08lX", exe, code);
+        else if (got == WAIT_TIMEOUT)
+            LOGE("relaunch: %s.exe showed no frame within 15 s", exe);
         if (ready) ::CloseHandle(ready);
         ::CloseHandle(pi.hThread);
         ::CloseHandle(pi.hProcess);
