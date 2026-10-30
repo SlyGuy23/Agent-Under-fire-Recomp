@@ -207,9 +207,41 @@ uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
     return hdr;
 }
 
+// The library's render state table by the title's XDK. The host numbers states as 4831 and later do; older libraries
+// lack the states 4432 and 4627 added (DepthClipControl, the unused simple and deferred slots, PresentationInterval,
+// SampleAlpha), so their deferred and complex states sit lower. The layout gives where those groups start.
+#ifdef XDK_RenderState_Deferred
+constexpr uint32_t kGuestDeferred = XDK_RenderState_Deferred, kGuestComplex = XDK_RenderState_Complex;
+constexpr bool kGuestSampleAlpha = XDK_RenderState_SampleAlpha;
+#else
+constexpr uint32_t kGuestDeferred = gpu::kRsDeferredFirst, kGuestComplex = gpu::kRsComplexFirst;
+constexpr bool kGuestSampleAlpha = true;
+#endif
+constexpr uint32_t kNoGuestState = 0xFFFFFFFFu;
+constexpr uint32_t kGuestDeferredCount = kGuestComplex - kGuestDeferred;
+// host state -> library table index, kNoGuestState where the library has none
+constexpr uint32_t GuestRs(uint32_t rs) {
+    if (rs < gpu::kRsDeferredFirst) return rs < kGuestDeferred ? rs : kNoGuestState;
+    if (rs < gpu::kRsComplexFirst) return rs - gpu::kRsDeferredFirst < kGuestDeferredCount ? rs - gpu::kRsDeferredFirst + kGuestDeferred : kNoGuestState;
+    if (rs >= gpu::kRsMax) return kNoGuestState;
+    if (kGuestSampleAlpha || rs < gpu::kRsSampleAlpha) return rs - gpu::kRsComplexFirst + kGuestComplex;
+    return rs == gpu::kRsSampleAlpha ? kNoGuestState : rs - gpu::kRsComplexFirst + kGuestComplex - 1;
+}
+// library table index -> host state
+constexpr uint32_t HostRs(uint32_t g) {
+    if (g < kGuestDeferred) return g;
+    if (g < kGuestComplex) return g - kGuestDeferred + gpu::kRsDeferredFirst;
+    uint32_t rs = g - kGuestComplex + gpu::kRsComplexFirst;
+    if (!kGuestSampleAlpha && rs >= gpu::kRsSampleAlpha) rs++;
+    return rs < gpu::kRsMax ? rs : kNoGuestState;
+}
+static_assert(HostRs(GuestRs(gpu::kRsTextureFactor)) == gpu::kRsTextureFactor);
+static_assert(HostRs(GuestRs(gpu::kRsDoNotCullUncompressed)) == gpu::kRsDoNotCullUncompressed);
+
 void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
-    for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
+    for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++)
+        if (uint32_t g = GuestRs(i); g != kNoGuestState) g_state.rs[i] = R32(kRenderState + g * 4);
     for (int s = 0; s < 4; s++)
         for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++) g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + i) * 4);
 }
@@ -244,7 +276,7 @@ void UpdateViewportConstants() {
 
 void SetComplex(uint32_t rs, uint32_t v) {
     g_state.rs[rs] = v;
-    W32(kRenderState + rs * 4, v);
+    if (uint32_t g = GuestRs(rs); g != kNoGuestState) W32(kRenderState + g * 4, v);
 }
 
 // The library's default render and texture stage states; its pushes land in the scratch buffer
@@ -696,7 +728,8 @@ HLE_FASTCALL(D3DDevice_SetRenderState_Simple, 0) {
 }
 
 HLE_STDCALL(D3DDevice_SetRenderStateNotInline, 2) {
-    uint32_t rs = a[0], v = a[1];
+    uint32_t rs = HostRs(a[0]), v = a[1];
+    if (rs == kNoGuestState) return 0;
     if (rs < gpu::kRsDeferredFirst) {
         uint32_t method = R32(kSimpleEncode + rs * 4) & 0x1FFC;
         SetSimple(method, v);
