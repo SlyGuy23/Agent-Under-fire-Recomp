@@ -127,6 +127,8 @@ void Loaded() {
 // - The title logo is two 256 wide halves whose quads overlap by a pixel (x 91-322 and 321-552) at 80% opacity: the
 //   shared column was blended twice, a light line 4 to 5 pixels wide once upscaled. A quad that starts a pixel inside
 //   the one drawn just before it, over the same rows, starts at its end instead, its texture coordinate moved with it.
+// - Beside Difficulty the menu draws an empty part of the button sheet, whose only colour is the edge of the A
+//   button's glow: two faint vertical marks. That draw is dropped.
 // - The corner logo shows columns 0-168 and rows 113-147 of the button sheet, short of the artwork's 172 columns and
 //   149 rows: the end of "Fire" and the shadow under it were cut. That quad shows all of it, grown in proportion.
 struct Quad {
@@ -181,10 +183,17 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
         return;
     }
 
-    // the corner logo
     gpu::TextureDesc d;
-    if (near(u0, 0) && near(u1, 168 / 256.0f) && near(v0, 113 / 256.0f) && near(v1, 147 / 256.0f) && s.textures[0] &&
-        gpu::Describe(s.textures[0], d) && d.width == 256 && d.height == 256) {
+    bool sheet = s.textures[0] && gpu::Describe(s.textures[0], d) && d.width == 256 && d.height == 256;
+
+    // beside Difficulty, an empty corner of the button sheet whose one coloured column is the A button's glow: a mark
+    if (sheet && near(u0, 46 / 256.0f) && near(u1, 56 / 256.0f) && near(v0, 91 / 256.0f) && near(v1, 107 / 256.0f)) {
+        for (uint32_t i = 0; i < 6; i++) at(i, pos.offset)[0] = q.x0;  // no area, nothing drawn
+        return;
+    }
+
+    // the corner logo
+    if (sheet && near(u0, 0) && near(u1, 168 / 256.0f) && near(v0, 113 / 256.0f) && near(v1, 147 / 256.0f)) {
         constexpr float kU1 = 172 / 256.0f, kV1 = 149 / 256.0f;
         float x1 = q.x0 + (q.x1 - q.x0) * (172.0f / 168.0f), y1 = q.y0 + (q.y1 - q.y0) * (149.0f - 113) / (147.0f - 113);
         for (uint32_t i = 0; i < 6; i++) {
