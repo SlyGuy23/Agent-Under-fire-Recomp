@@ -55,6 +55,9 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4 lt[56];
     float4 rtshift;
     float4 zparams;
+    float4x4 wvb[3];
+    float4x4 wvnb[3];
+    float4x4 pm;
 };
 )";
 
@@ -733,6 +736,8 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
 
 FixedKey MakeFixedKey(const State& s) {
     FixedKey f;
+    // blended by the vertex's weights (an FVF with XYZB) across world 0 to 3
+    if (!(s.vs_handle & 1) && (s.vs_handle & 0xE) >= 0x6 && (s.vs_handle & 0xE) <= 0xC) f.blend = std::min<uint32_t>(s.rs[kRsVertexBlend], 6);
     if (s.rs[kRsLighting]) {
         f.light = 1 | (s.rs[kRsSpecularEnable] ? 2 : 0) | (s.rs[kRsLocalViewer] ? 4 : 0) | (s.rs[kRsNormalizeNormals] ? 8 : 0);
         if (s.rs[kRsColorVertex])
@@ -775,6 +780,22 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
         s += "    float4 cp = mul(ip, wvp);\n";
         s += "    float3 vp = mul(ip, wv).xyz;\n";
         s += "    float3 vn = mul(float4(" + v(2, "float4(0,0,0,0)") + ".xyz, 0), wvn).xyz;\n";
+        uint32_t mats = BlendMatrices(f.blend);
+        if (mats > 1 && ((regs >> 1) & 1)) {
+            // D3DRS_VERTEXBLEND: the position and normal in view space weighted across the world matrices, then projected
+            s += "    float4 bw = i.v1;\n";
+            if (BlendImpliedLast(f.blend)) {
+                const char* last = mats == 2 ? "1 - bw.x" : mats == 3 ? "1 - bw.x - bw.y" : "1 - bw.x - bw.y - bw.z";
+                s += F("    bw[%u] = %s;\n", mats - 1, last);
+            }
+            s += "    float4 inrm = float4(" + v(2, "float4(0,0,0,0)") + ".xyz, 0);\n";
+            s += "    vp = bw.x * vp;\n    vn = bw.x * vn;\n";
+            for (uint32_t k = 1; k < mats; k++) {
+                s += F("    vp += bw[%u] * mul(ip, wvb[%u]).xyz;\n", k, k - 1);
+                s += F("    vn += bw[%u] * mul(inrm, wvnb[%u]).xyz;\n", k, k - 1);
+            }
+            s += "    cp = mul(float4(vp, 1), pm);\n";
+        }
         if (f.light & 8) s += "    vn = dot(vn, vn) > 0 ? normalize(vn) : vn;\n";
     }
     if (lit) {

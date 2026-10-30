@@ -2331,6 +2331,17 @@ void FillTransformConstants(const State& s, GuestExtent size, DrawConstants& c) 
     InverseTranspose3x3(wv, n);
     Transpose(n, c.wvn);
     for (int t = 0; t < 4; t++) Transpose(s.transforms[kTsTexture0 + size_t(t)].data(), c.tm[t]);
+    // the vertex blend's other world matrices, and projection then viewport for the blended view space position
+    for (int k = 0; k < 3; k++) {
+        float wvk[16], nk[16] = {};
+        MatMul(s.transforms[kTsWorld + 1 + size_t(k)].data(), s.transforms[kTsView].data(), wvk);
+        Transpose(wvk, c.wvb[k]);
+        InverseTranspose3x3(wvk, nk);
+        Transpose(nk, c.wvnb[k]);
+    }
+    float pm[16];
+    MatMul(s.transforms[kTsProjection].data(), vpm, pm);
+    Transpose(pm, c.pm);
 }
 
 // D3DLIGHT8 as floats: Type, Diffuse[4], Specular[4], Ambient[4], Position[3], Direction[3], Range, Falloff,

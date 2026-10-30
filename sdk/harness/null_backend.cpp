@@ -3,6 +3,7 @@
 // CAP=N: every Nth frame's draws listed in cap/draws_<frame>.txt
 // snap in the run folder: the next two frames drawn and saved as snap_1.tga and snap_2.tga, then snap is removed
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -15,6 +16,8 @@
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 #include "reference_renderer.h"
+#include "gpu/shaders.h"
+#include <set>
 
 namespace gpu {
 
@@ -33,7 +36,7 @@ public:
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override {
         draws_++;
         if (drawing_) reference::Draw(s, prim, start, count, indices);
-        if (list_) List(s, prim, start, count);
+        if (list_) List(s, prim, start, count, indices);
     }
     void Copy(const Surface& src, const Surface& dst, uint32_t n, uint32_t rects, uint32_t points) override {
         if (drawing_) reference::Copy(src, dst, n, rects, points);
@@ -80,13 +83,34 @@ private:
     }
 
     // one draw's state, textures, transforms, declaration and first vertex
-    void List(const State& s, uint32_t prim, uint32_t start, uint32_t count) {
+    void List(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices = nullptr) {
         FILE* f = list_;
         std::fprintf(f, "DRAW prim=%u n=%u vs=%X ps=%X rt=%08X tex0=%08X light=%u blend=%u %X %X cw=%X at=%u z=%u\n", prim, count,
                      s.vs_handle, s.ps ? s.ps->handle : 0, s.rt.data, s.textures[0], s.rs[kRsLighting], s.simple[kMBlendEnable >> 2],
                      s.simple[kMSrcBlend >> 2], s.simple[kMDestBlend >> 2], s.simple[kMColorWriteEnable >> 2],
                      s.simple[kMAlphaTestEnable >> 2], s.rs[kRsZEnable]);
         const auto& t0 = s.tss[0];
+        // TEXDUMP=header: that texture's first level once, as cap/tex_<header>.tga
+        static const unsigned long dump_tex = std::strtoul(std::getenv("TEXDUMP") ? std::getenv("TEXDUMP") : "0", nullptr, 16);
+        if (dump_tex && s.textures[0] == dump_tex) {
+            static bool done = false;
+            TextureDesc dd;
+            if (!done && Describe(s.textures[0], dd)) {
+                done = true;
+                std::vector<uint8_t> bytes;
+                uint32_t pitch = 0;
+                DecodeLevel(dd, 0, 0, static_cast<const uint8_t*>(kernel::HostPtr(dd.data)), nullptr, bytes, pitch);
+                std::vector<uint32_t> px(size_t(dd.width) * dd.height);
+                for (uint32_t y = 0; y < dd.height; y++)
+                    std::memcpy(&px[size_t(y) * dd.width], bytes.data() + size_t(y) * pitch, std::min<size_t>(pitch, dd.width * 4));
+                std::string name = File("cap/tex_%08llx.ppm", dump_tex);
+                if (FILE* o = std::fopen(name.c_str(), "wb")) {
+                    std::fprintf(o, "P6 %u %u 255\n", dd.width, dd.height);
+                    for (uint32_t c : px) { uint8_t rgb[3] = {uint8_t(c >> 16), uint8_t(c >> 8), uint8_t(c)}; std::fwrite(rgb, 1, 3, o); }
+                    std::fclose(o);
+                }
+            }
+        }
         TextureDesc d;
         if (s.textures[0] && Describe(s.textures[0], d))
             std::fprintf(f, "  tex %ux%u fmt %X cop %u %X %X aop %u %X %X\n", d.width, d.height, d.format, t0[kTssColorOp],
@@ -109,6 +133,43 @@ private:
                 if (in.stream >= 0) std::fprintf(f, " v%d:%d+%u/%X", r, in.stream, in.offset, in.type);
             }
             std::fprintf(f, "\n");
+            // VSDUMP=1: each vertex program once, and the constants it is drawn with
+            static std::set<uint64_t> dumped;
+            if (std::getenv("VSDUMP") && !s.vs->program.empty() && dumped.insert(uint64_t(s.vs_handle)).second) {
+                std::fprintf(f, "  program %zu dwords:\n%s\n", s.vs->program.size(), VertexProgramHlsl(s.vs->program, 0xFFFF).c_str());
+                for (int c = 0; c < 192; c++) {
+                    const auto& v = s.vsc[size_t(c)];
+                    if (v[0] || v[1] || v[2] || v[3]) std::fprintf(f, "  c%d (D3D %d): %g %g %g %g\n", c, c - 96, v[0], v[1], v[2], v[3]);
+                }
+            }
+        }
+        if (indices && s.streams[0].vb && std::getenv("VSDUMP")) {
+            uint32_t data = mem::VirtualFromPhysical(kernel::R32(s.streams[0].vb + 4));
+            std::fprintf(f, "  vb %08X data %08X base %u idx", s.streams[0].vb, data, s.base_vertex);
+            for (uint32_t i = 0; i < count && i < 12; i++) {
+                uint16_t ix;
+                std::memcpy(&ix, indices + i * 2, 2);
+                float p[3];
+                for (int k = 0; k < 3; k++) {
+                    uint32_t v = kernel::R32(data + (ix + s.base_vertex) * s.streams[0].stride + k * 4);
+                    std::memcpy(&p[k], &v, 4);
+                }
+                std::fprintf(f, " %u(%g,%g,%g)", ix, p[0], p[1], p[2]);
+            }
+            std::fprintf(f, "\n");
+        }
+        if (!indices && count <= 6 && s.streams[0].vb && std::getenv("VSDUMP")) {
+            uint32_t data = mem::VirtualFromPhysical(kernel::R32(s.streams[0].vb + 4)), stride = s.streams[0].stride;
+            for (uint32_t i = 0; i < count; i++) {
+                std::fprintf(f, "  vert%u:", i);
+                for (uint32_t k = 0; k < stride / 4 && k < 16; k++) {
+                    uint32_t v = kernel::R32(data + (start + i) * stride + k * 4);
+                    float x;
+                    std::memcpy(&x, &v, 4);
+                    std::fprintf(f, " %g", x);
+                }
+                std::fprintf(f, "\n");
+            }
         }
         if (s.streams[0].vb) {
             // the vertex buffer's Data at +4 is a physical address

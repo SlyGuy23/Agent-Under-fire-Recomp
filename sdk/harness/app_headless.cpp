@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <mutex>
 #include <thread>
+#include "harness.h"
 
 #include "app/app.h"
 
@@ -47,6 +48,16 @@ std::recursive_mutex& UiLock() {
     return m;
 }
 
-void Pace() {}
+// PACE=fps: frames held to that rate, so game time runs with the audio clock as on Windows
+void Pace() {
+    static const long fps = harness::Env("PACE");
+    if (fps <= 0) return;
+    using clock = std::chrono::steady_clock;
+    static clock::time_point next = clock::now();
+    next += std::chrono::nanoseconds(1000000000LL / fps);
+    auto now = clock::now();
+    if (next < now - std::chrono::milliseconds(100)) next = now;
+    std::this_thread::sleep_until(next);
+}
 
 }  // namespace app

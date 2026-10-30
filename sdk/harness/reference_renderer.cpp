@@ -1138,6 +1138,26 @@ void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const u
                 mul(s.transforms[256].data(), s.transforms[2].data(), wv);
                 mul(wv, s.transforms[3].data(), wvp);
                 for (int j = 0; j < 4; j++) cp[j] = q[0] * wvp[j] + q[1] * wvp[4 + j] + q[2] * wvp[8 + j] + wvp[12 + j];
+                // D3DRS_VERTEXBLEND: view space positions weighted across world 0 to 3, then projected
+                uint32_t blend = !(s.vs_handle & 1) && (s.vs_handle & 0xE) >= 0x6 && (s.vs_handle & 0xE) <= 0xC
+                                     ? std::min<uint32_t>(s.rs[kRsVertexBlend], 6) : 0;
+                uint32_t mats = BlendMatrices(blend);
+                if (mats > 1 && slot[1] >= 0) {
+                    Vec bw = vp.in[1];
+                    if (BlendImpliedLast(blend)) {
+                        float rest = 1;
+                        for (uint32_t k = 0; k + 1 < mats; k++) rest -= bw[k];
+                        bw[mats - 1] = rest;
+                    }
+                    float vs[3] = {};
+                    for (uint32_t k = 0; k < mats; k++) {
+                        float wvk[16];
+                        mul(s.transforms[256 + k].data(), s.transforms[2].data(), wvk);
+                        for (int j = 0; j < 3; j++) vs[j] += bw[k] * (q[0] * wvk[j] + q[1] * wvk[4 + j] + q[2] * wvk[8 + j] + wvk[12 + j]);
+                    }
+                    const float* p = s.transforms[3].data();
+                    for (int j = 0; j < 4; j++) cp[j] = vs[0] * p[j] + vs[1] * p[4 + j] + vs[2] * p[8 + j] + p[12 + j];
+                }
                 float w = MagClamp(cp[3]);
                 const Viewport& v = s.viewport;
                 o.pos = V(v.x + (cp[0] / w + 1) * 0.5f * v.w, v.y + (1 - cp[1] / w) * 0.5f * v.h,

@@ -1325,11 +1325,39 @@ void EndPrimitive() {
     for (uint32_t v = 0; v < count; v++)
         for (uint32_t s = 0; s < 16; s++)
             if (g_im_mask >> s & 1) packed.insert(packed.end(), &g_im_vertices[v * 64 + s * 4], &g_im_vertices[v * 64 + s * 4] + 4);
+    // Screen space quads that each show a whole texture (a menu background in tiles, 0 to 1 across each) sample a
+    // texel centre per pixel on the console. Drawn larger, the pixels along an edge filter in the texels across the
+    // wrap and draw a line at every tile edge, so stages whose coordinates stay inside the texture clamp instead.
+    constexpr uint32_t kAddressClamp = 3;  // D3DTADDRESS_CLAMP
+    uint32_t saved_address[4][2] = {};
+    bool clamped[4] = {};
+    if (rhw) {
+        for (int st = 0; st < 4; st++) {
+            uint32_t slot = 9 + (g_state.tss[size_t(st)][gpu::kTssTexCoordIndex] & 3);
+            if (!(g_im_mask >> slot & 1) || !g_state.textures[size_t(st)]) continue;
+            bool inside = true;
+            for (uint32_t v = 0; v < count && inside; v++)
+                for (int k = 0; k < 2; k++) {
+                    float c = g_im_vertices[v * 64 + slot * 4 + uint32_t(k)];
+                    if (c < -0.001f || c > 1.001f) inside = false;
+                }
+            if (!inside) continue;
+            clamped[st] = true;
+            saved_address[st][0] = g_state.tss[size_t(st)][gpu::kTssAddressU];
+            saved_address[st][1] = g_state.tss[size_t(st)][gpu::kTssAddressV];
+            g_state.tss[size_t(st)][gpu::kTssAddressU] = g_state.tss[size_t(st)][gpu::kTssAddressV] = kAddressClamp;
+        }
+    }
     g_state.vs = m.vs;
     g_state.vs_handle = handle | 1;
     g_state.im_pretransformed = rhw;
     DrawUp(prim, count, packed.data(), m.vs->stream_stride[0]);
     g_state.im_pretransformed = false;
+    for (int st = 0; st < 4; st++)
+        if (clamped[st]) {
+            g_state.tss[size_t(st)][gpu::kTssAddressU] = saved_address[st][0];
+            g_state.tss[size_t(st)][gpu::kTssAddressV] = saved_address[st][1];
+        }
     g_state.vs = bound;
     g_state.vs_handle = handle;
 }
