@@ -18,9 +18,9 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 
 ### Settings panel
 Press **F10**, or click **both sticks** on a controller, to open the settings panel. Left and Right change a setting; B, Escape or F10 closes it.
-- **Display** - Display mode, resolution, render resolution, vertical sync and an FPS counter.
+- **Display** - Display mode, resolution (Fullscreen and Windowed; Borderless always uses the desktop), render resolution, max frame rate, vertical sync and an FPS counter.
 - **Graphics** - Anisotropic filtering.
-- **General** - Skip Intros starts straight at the game.
+- **General** - Skip Intros starts straight at the game; master volume.
 - **Textures** - Texture replacement and dumping.
 
 ### Display
@@ -34,6 +34,7 @@ Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 ### General
 
 ### Miscellaneous
+- **Frame Capture** - F3 saves the next frame, every draw and texture, into a `captures` folder beside the exe, for bug reports.
 - **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
 
 ## System Requirements

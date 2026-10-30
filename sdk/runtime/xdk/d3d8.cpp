@@ -420,6 +420,9 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
         started = true;
     }
     ApplyDefaultStates(ctx);
+    // D3DRS_ZENABLE starts as D3DZB_TRUE when the device has an automatic depth buffer: the library's device init
+    // sets it, and titles such as 007: Agent Under Fire never set it themselves
+    if (g_depth && !g_state.rs[gpu::kRsZEnable]) SetComplex(gpu::kRsZEnable, 1);
     if (a[5]) W32(a[5], kDevice);
     return 0;
 }

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "app/app.h"
+#include "audio/audio.h"
 #include "core/input.h"
 
 namespace overlay {
@@ -29,6 +30,8 @@ int64_t NowMs() {
 }  // namespace
 
 bool Open() { return g_open.load(std::memory_order_relaxed); }
+
+void ApplyVolume() { audio::g_master_volume.store(std::min<uint32_t>(g_master_volume, 100) / 100.0f); }
 
 void Toggle() {
     bool open = !g_open.load(std::memory_order_relaxed);
@@ -201,6 +204,7 @@ bool FlipRow(const char* label, bool& on, bool enabled = true) {
 }
 
 constexpr uint32_t kRenderPercents[] = {50, 75, 100, 125, 150, 200};
+constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, app::kFpsCapRefresh, 0};
 constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
 const char* const kModeNames[] = {"FULLSCREEN", "BORDERLESS", "WINDOWED"};
@@ -243,6 +247,17 @@ void Rows() {
         }
     }
     if (FlipRow("VERTICAL SYNC", s.vsync)) Changed(false);
+    {
+        char text[24];
+        uint32_t cap = kFpsCaps[Nearest(kFpsCaps, s.fps_cap)];
+        if (cap == app::kFpsCapRefresh) std::snprintf(text, sizeof(text), "MONITOR REFRESH");
+        else if (cap == 0) std::snprintf(text, sizeof(text), "UNLIMITED");
+        else std::snprintf(text, sizeof(text), "%u", cap);
+        if (int st = OptionRow("MAX FRAME RATE", text)) {
+            StepTable(kFpsCaps, s.fps_cap, st);
+            Changed(false);
+        }
+    }
     if (FlipRow("FPS COUNTER", g_fps_counter)) Changed(false);
 
     Section("GRAPHICS");
@@ -253,6 +268,15 @@ void Rows() {
 
     Section("GENERAL");
     if (FlipRow("SKIP INTROS", g_skip_intros)) Changed(false);
+    {
+        char text[16];
+        std::snprintf(text, sizeof(text), "%u%%", g_master_volume);
+        if (int st = OptionRow("MASTER VOLUME", text)) {
+            g_master_volume = uint32_t(std::clamp(int(g_master_volume) + st * 5, 0, 100));
+            ApplyVolume();
+            Changed(false);
+        }
+    }
 
     Section("TEXTURES");
     if (FlipRow("TEXTURE REPLACEMENT", s.custom_textures)) Changed(false);
@@ -271,6 +295,8 @@ void Defaults() {
     s = d;
     g_skip_intros = false;
     g_fps_counter = false;
+    g_master_volume = 100;
+    ApplyVolume();
     Changed(display);
 }
 

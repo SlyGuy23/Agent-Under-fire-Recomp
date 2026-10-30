@@ -58,6 +58,8 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
             }
             float* b = &bufs[(n % kSlots) * kFrames * 2];
             render(b, kFrames);
+            if (float g = g_master_volume.load(std::memory_order_relaxed); g != 1.0f)
+                for (uint32_t i = 0; i < kFrames * 2; i++) b[i] *= g;
             XAUDIO2_BUFFER xb{};
             xb.AudioBytes = kFrames * 8;
             xb.pAudioData = reinterpret_cast<const BYTE*>(b);

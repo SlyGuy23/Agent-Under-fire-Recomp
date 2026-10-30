@@ -24,6 +24,7 @@ constexpr const char* kGameExe = "AgentUnderFireGame";
 // default.xbe only plays the EA Games and MGM films and the attract film before it loads the game: with Skip Intros
 // the launcher goes straight to the game's executable. A relaunch into the launcher (the game quitting to it) is let be.
 void Init() {
+    overlay::ApplyVolume();
     bool launcher = std::string_view(IMAGE_XBE) == "default.xbe";
 #ifdef _WIN32
     bool relaunched = std::wcsstr(GetCommandLineW(), L"--relaunched") != nullptr;
@@ -46,7 +47,8 @@ const app::GameInfo app::kGame = {
                L"with the game's folders beside them.",
     .images = {{"default.xbe", "AgentUnderFire"}, {"bond_eng.xbe", "AgentUnderFireGame"},
                {"driving.xbe", "AgentUnderFireDriving"}},
-    .options = {{"skip_intros", &overlay::g_skip_intros, nullptr}, {"fps_counter", &overlay::g_fps_counter, nullptr}},
+    .options = {{"skip_intros", &overlay::g_skip_intros, nullptr}, {"fps_counter", &overlay::g_fps_counter, nullptr},
+                {"master_volume", nullptr, &overlay::g_master_volume}},
     .load = nullptr,
     .save = nullptr,
     .init = Init,
