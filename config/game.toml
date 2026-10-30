@@ -8,7 +8,7 @@ xdk = 4039
 out = "generated/game"
 partitions = 32
 code_sections = [".text", "D3D", "D3DX", "XGRPH", "DSOUND", "XPP"]
-library = "AgentUnderFire.dll"  # <exe>.dll, which the executable delay loads
+library = "AgentUnderFireGame.dll"  # <exe>.dll, which the executable delay loads
 
 # extra entry points
 [functions]

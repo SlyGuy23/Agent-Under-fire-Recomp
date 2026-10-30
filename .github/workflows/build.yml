@@ -20,7 +20,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force assets | Out-Null
-          Copy-Item xbe/bond_eng.xbe assets/bond_eng.xbe
+          foreach ($x in 'default.xbe', 'bond_eng.xbe', 'driving.xbe') { Copy-Item "xbe/$x" "assets/$x" }
 
       - name: Build
         shell: cmd
@@ -34,10 +34,12 @@ jobs:
           $crt = Get-ChildItem "$vs\VC\Redist\MSVC\1*\x64\Microsoft.VC*.CRT" -Directory | Select-Object -Last 1
           $pkg = 'pkg'
           New-Item -ItemType Directory -Force $pkg | Out-Null
-          Copy-Item "$out/AgentUnderFire.exe", "$out/AgentUnderFire.dll", README.md, sdk/THIRD_PARTY.txt $pkg
+          $images = 'AgentUnderFire', 'AgentUnderFireGame', 'AgentUnderFireDriving'
+          foreach ($i in $images) { Copy-Item "$out/$i.exe", "$out/$i.dll" $pkg }
+          Copy-Item README.md, sdk/THIRD_PARTY.txt $pkg
           foreach ($f in 'msvcp140', 'vcruntime140', 'vcruntime140_1') { Copy-Item "$($crt.FullName)\$f.dll" $pkg }
-          # the DLL must stay newer than the exe or the first start rebuilds it
-          (Get-Item "$pkg/AgentUnderFire.dll").LastWriteTime = (Get-Date).AddMinutes(1)
+          # each DLL must stay newer than its exe or the first start rebuilds it
+          foreach ($i in $images) { (Get-Item "$pkg/$i.dll").LastWriteTime = (Get-Date).AddMinutes(1) }
           Compress-Archive -Path "$pkg/*" -DestinationPath AgentUnderFire.zip -CompressionLevel Optimal
           Get-ChildItem $pkg | Format-Table Name, Length
 

@@ -10,10 +10,18 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 ## Installation
 
 - Put your game files in the `assets` folder. This can be an ISO, or the extracted data files.
-- Run `AgentUnderFire.exe`. The release ships the game code DLL built from the PAL `bond_eng.xbe`.
+- Run `AgentUnderFire.exe`. It plays the intro films (`default.xbe`), then switches to `AgentUnderFireGame.exe` (`bond_eng.xbe`), which switches to `AgentUnderFireDriving.exe` (`DRIVING.XBE`) for the driving missions and back. Keep all three beside each other.
+- The game is also found in a `game` folder beside the exe.
 - Recomp settings can be adjusted in `settings.toml` beside the exe.
 
 ## Features
+
+### Settings panel
+Press **F10**, or click **both sticks** on a controller, to open the settings panel. Left and Right change a setting; B, Escape or F10 closes it.
+- **Display** - Display mode, resolution, render resolution, vertical sync and an FPS counter.
+- **Graphics** - Anisotropic filtering.
+- **General** - Skip Intros starts straight at the game.
+- **Textures** - Texture replacement and dumping.
 
 ### Display
 
@@ -52,9 +60,11 @@ Run `build.bat`. The first build recompiles the game and takes a while. The exe 
 ## Credits
 
 - [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp), the recompiler and runtime this is built on.
+- [SCDA-XBERecomp](https://github.com/TGP482/SCDA-XBERecomp) (MIT, TGP482 and Joshhhuaaa), whose F10 panel the settings panel follows.
+- [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) and [XbSymbolDatabase](https://github.com/Cxbx-Reloaded/XbSymbolDatabase) for the XDK 4039 render state table and library symbols.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 
 ## Status
 
-Main game (`bond_eng.xbe`) boots to the title screen and menus with controller navigation. Intro movies (`default.xbe`) and driving missions (`DRIVING.XBE`) are not wired up yet. The previous sp00nznet xboxrecomp attempt is kept on the `xboxrecomp-legacy` branch.
+The intro films play and hand over to the game; the menus and on-foot missions are playable with a controller. The driving missions (`DRIVING.XBE`) are wired up but not yet tested. The previous sp00nznet xboxrecomp attempt is kept on the `xboxrecomp-legacy` branch.

@@ -1,7 +1,7 @@
-# 007: Agent Under Fire (original Xbox), statically recompiled
+# Game Title (original Xbox), statically recompiled
 
 cmake_minimum_required(VERSION 3.25)
-project(aufire LANGUAGES C CXX)
+project(game LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,18 +22,25 @@ endif()
 include(${SDK}/cmake/XbeRecomp.cmake)
 
 file(GLOB XBE_HOST_SOURCES CONFIGURE_DEPENDS src/*/*.cpp)
-list(FILTER XBE_HOST_SOURCES EXCLUDE REGEX "/src/game/")
+list(FILTER XBE_HOST_SOURCES EXCLUDE REGEX "/src/(game|launcher|driving)/")
 
-# partitions as xbe_symbols wrote them into config/game.toml
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS config/game.toml)
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/config/game.toml)
-    file(STRINGS config/game.toml GAME_PARTITIONS REGEX "^partitions *=")
-    string(REGEX MATCH "[0-9]+" GAME_PARTITIONS "${GAME_PARTITIONS}")
-endif()
-# no config yet: build.bat writes it with xbe_symbols, the change reconfigures
-if(NOT GAME_PARTITIONS)
-    set(GAME_PARTITIONS 8)
-endif()
 
-# target name = GAME_EXE in build.bat, xbe = GAME_XBE
-add_xbe_image(AgentUnderFire bond_eng.xbe game.toml ${GAME_PARTITIONS} game)
+
+# partitions as each config sets them
+function(config_partitions config out)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/config/${config})
+    file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/config/${config} line REGEX "^partitions *=")
+    string(REGEX MATCH "[0-9]+" n "${line}")
+    set(${out} ${n} PARENT_SCOPE)
+endfunction()
+
+# three images, each its own executable; the game relaunches between them as the console loads each xbe
+# default.xbe: the EA Games and MGM intro films, then it starts the game
+config_partitions(default.toml LAUNCHER_PARTITIONS)
+add_xbe_image(AgentUnderFire default.xbe default.toml ${LAUNCHER_PARTITIONS} launcher)
+# bond_eng.xbe: menus and on-foot missions
+config_partitions(game.toml GAME_PARTITIONS)
+add_xbe_image(AgentUnderFireGame bond_eng.xbe game.toml ${GAME_PARTITIONS} game)
+# driving.xbe: the driving missions
+config_partitions(driving.toml DRIVING_PARTITIONS)
+add_xbe_image(AgentUnderFireDriving driving.xbe driving.toml ${DRIVING_PARTITIONS} driving)

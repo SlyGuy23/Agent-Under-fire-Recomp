@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set "GAME_TITLE=007 Agent Under Fire"
-set "GAME_XBE=bond_eng.xbe"
+set "GAME_XBE=default.xbe"
 set "GAME_EXE=AgentUnderFire"
 title %GAME_TITLE% - Build
 cd /d "%~dp0"
