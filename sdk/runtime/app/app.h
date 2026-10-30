@@ -101,6 +101,9 @@ struct GameInfo {
     void (*ui)(double fps);        // each frame inside the ImGui frame, UiLock held
     void (*pad)(int port, input::Pad& pad);  // a polled pad before the game gets it
     void (*rumble)(int port, uint16_t& left, uint16_t& right);
+    // an unindexed draw before it is recorded (state is the gpu::State it draws with): the game may adjust its vertices,
+    // count of them stride apart in guest memory, which the title writes again for its next frame anyway
+    void (*draw)(const void* state, uint32_t prim, uint8_t* vertices, uint32_t stride, uint32_t count);
 };
 extern const GameInfo kGame;
 

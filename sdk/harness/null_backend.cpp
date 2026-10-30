@@ -229,7 +229,7 @@ private:
         if (s.streams[0].vb) {
             // the vertex buffer's Data at +4 is a physical address
             uint32_t data = mem::VirtualFromPhysical(kernel::R32(s.streams[0].vb + 4)) + start * s.streams[0].stride;
-            std::fprintf(f, "  v0 stride %u:", s.streams[0].stride);
+            std::fprintf(f, "  v0 at %08X stride %u:", data, s.streams[0].stride);
             for (uint32_t i = 0; i < s.streams[0].stride / 4 && i < 10; i++) {
                 uint32_t v = kernel::R32(data + i * 4);
                 float x;

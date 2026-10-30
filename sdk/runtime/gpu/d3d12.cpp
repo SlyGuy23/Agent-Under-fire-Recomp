@@ -2581,6 +2581,11 @@ bool FixedTexcoordsAsGiven(const State& s) {
     return true;
 }
 
+bool IdentityProjection(const State& s) {
+    static constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    return std::memcmp(s.transforms[3].data(), kIdentity, sizeof(kIdentity)) == 0;  // D3DTS_PROJECTION
+}
+
 bool UnitTexcoords(const State& s, const Assembled& a, bool fixed) {
     constexpr float kLo = -1e-4f;
     constexpr float kHi = 1.0001f;
@@ -2890,7 +2895,8 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     }
 
     // texture views and samplers, viewport and scissor, blend factor and stencil reference
-    if (!a.pretransformed) frame_3d_draws_++;
+    // 2D: screen space vertices, or the fixed function under an identity projection (Agent Under Fire's menus)
+    if (!a.pretransformed && (sh.prog || !IdentityProjection(s))) frame_3d_draws_++;
     SetTextureViewsAndSamplers(s, a, stages, !sh.prog);
     SetViewportScissor(s, size.w);
     SetBlendFactorStencilRef(s);
