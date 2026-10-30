@@ -46,8 +46,8 @@ bool Widescreen();
 // a widescreen output shows frames drawn in 2D alone (front end menus, loading screens, films) at 4:3 between bars:
 // their art is laid out for 640x480 and only the 3D scenes are drawn for 16:9. Set by the game (a setting there)
 inline bool g_menus_4x3 = true;
-// frames of a few draws over a picture the CPU wrote (a loading screen) shown 4:3, as the picture was made
-inline bool g_sparse_4x3 = false;
+// small figures drawn from 128x128 linear A8R8G8B8 textures are upscaled smooth with an outline (gpu::SmoothFigure)
+inline bool g_smooth_figures = false;
 
 std::filesystem::path ExeDir();
 // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc

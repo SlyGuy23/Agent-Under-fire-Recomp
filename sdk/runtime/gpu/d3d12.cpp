@@ -34,6 +34,7 @@
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "gpu/ext.h"
+#include "gpu/figure.h"
 #include "gpu/shaders.h"
 #include "gpu/texture.h"
 #include "gpu/texturedumper.h"
@@ -558,6 +559,7 @@ private:
     void LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint32_t* colours);
     void LatchPackImage(Tex& tx);
     void CreatePackTexture(Tex& r, const texturedumper::Image& img);
+    void SwapFigure(Tex& tx, const TextureDesc& d, const uint8_t* p, bool fresh);
     void ReleasePackTextures();
     void EnsurePixelShader(const PixelKey& pk, DrawShaders& sh);
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
@@ -735,6 +737,7 @@ private:
     DrawBinds binds_;
     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
     std::unordered_map<uint64_t, Tex> pack_textures_;  // texture pack images by key, kept for the run
+    std::unordered_map<uint32_t, Tex> figures_;        // app::g_smooth_figures: the upscaled figure by guest address
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
     Extension* ext_ = nullptr;
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
@@ -804,9 +807,6 @@ private:
     uint64_t presents_ = 0;
     // app::g_menus_4x3: 3D draws in the frame being drawn, and how many frames in a row were 2D or 3D
     uint32_t frame_3d_draws_ = 0;
-    uint32_t frame_draws_ = 0;  // app::g_sparse_4x3: all draws in the frame
-    int run_sparse_ = 0, run_full_ = 0;
-    bool shown_sparse_ = false;
     int run_2d_ = 0;
     int run_3d_ = 0;
     bool shown_4x3_ = false;
@@ -1870,6 +1870,7 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
     bool same = SameTexture(tx, d);
     if (!same && !CreateTexture(tx, d, fi, key)) return nullptr;
     // cheap change check once per frame: lock epochs plus a sample of the bytes
+    bool fresh = false;  // new bytes uploaded
     if (tx.frame != presents_ + 1 || !same || tx.palette != palette.hash) {
         tx.frame = presents_ + 1;
         tx.palette = palette.hash;
@@ -1877,7 +1878,8 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
         auto perf_t = PerfClock::now();
         uint64_t sig = MemSig(d.data, total) ^ DirtyEpoch(d.data) ^ palette.hash;
         g_perf.sig += PerfMs(perf_t);
-        if (sig != tx.sig || !same) {
+        fresh = sig != tx.sig || !same;
+        if (fresh) {
             PerfScope perf_up{g_perf.texup};
             g_perf.texups++;
             g_perf.texup_bytes += total;
@@ -1888,11 +1890,40 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
     }
     if (tx.pack_gen != texturedumper::Generation()) LatchPackKey(tx, d, fi, colours);
     if (tx.pack_key) LatchPackImage(tx);
+    constexpr uint32_t kFmtLinA8R8G8B8 = 0x12, kFigureSize = 128;
+    if (app::g_smooth_figures && d.linear && d.format == kFmtLinA8R8G8B8 && d.width == kFigureSize &&
+        d.height == kFigureSize && d.pitch >= kFigureSize * 4)
+        SwapFigure(tx, d, static_cast<const uint8_t*>(kernel::HostPtr(d.data)), fresh);
     const Tex& drawn = tx.swap ? *tx.swap : tx;
     FillTextureView(drawn, d, stages.sv[stage]);
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
     if (ext_) ext_->Sampled(d, nullptr, tx.flags, info);
     return drawn.res.Get();
+}
+
+// app::g_smooth_figures: the figure upscaled (SmoothFigure) is drawn in the texture's place, made again on new bytes
+void D3D12Backend::SwapFigure(Tex& tx, const TextureDesc& d, const uint8_t* p, bool fresh) {
+    Tex& f = figures_[d.data];
+    if (!f.res) {
+        f.fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC td = Texture2DDesc(f.fmt, d.width * kFigureScale, d.height * kFigureScale);
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                                 nullptr, IID_PPV_ARGS(&f.res)))) {
+            f.res.Reset();
+            return;
+        }
+        fresh = true;
+    }
+    if (fresh) {
+        std::vector<uint8_t> px;
+        SmoothFigure(p, d.pitch, d.width, d.height, px);
+        D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        Transition(f.res.Get(), st, D3D12_RESOURCE_STATE_COPY_DEST);
+        UploadTextureLevel(f, 0, 0, px, d.width * kFigureScale * 4);
+        Transition(f.res.Get(), st, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+    tx.swap = &f;
 }
 
 // after new bytes or a texture setting change: the name the pack and the dumps know the bytes by
@@ -2601,11 +2632,16 @@ bool UnitTexcoords(const State& s, const Assembled& a, bool fixed) {
     constexpr uint32_t kSmallDrawVertices = 4096;  // most vertices a small draw has
     if (!a.vertex_count || a.vertex_count > kSmallDrawVertices) return false;
     bool wide = fixed && FixedTexcoordsAsGiven(s);
+    // a program's quad (Agent Under Fire's driving missions draw their HUD and menus so, float4 coordinates in v2):
+    // its wider float inputs past v0, the position, are taken as coordinates as well
+    constexpr uint32_t kQuadVertices = 6;
+    bool quad = !fixed && a.vertex_count <= kQuadVertices;
     bool any = false;
     for (int r = 0; r < 16; r++) {
         const VertexElement& e = a.elements[size_t(r)];
         if (!(a.regs >> r & 1)) continue;
         bool coord = (!fixed && e.format == DXGI_FORMAT_R32G32_FLOAT) ||
+                     (quad && r >= 1 && (e.format == DXGI_FORMAT_R32G32B32_FLOAT || e.format == DXGI_FORMAT_R32G32B32A32_FLOAT)) ||
                      (wide && r >= 9 && r <= 12 &&
                       (e.format == DXGI_FORMAT_R32G32_FLOAT || e.format == DXGI_FORMAT_R32G32B32_FLOAT ||
                        e.format == DXGI_FORMAT_R32G32B32A32_FLOAT));
@@ -2854,7 +2890,6 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     }
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
-    frame_draws_++;
     if (cap_) CapStep(s.rt);
     if (DepthCopy(s)) return;
     DrawEnd draw_end{ext_};
@@ -3289,14 +3324,7 @@ void D3D12Backend::BlitFrame(Target& t) {
     run_3d_ = flat ? 0 : run_3d_ + 1;
     if (run_2d_ >= kSwitchFrames) shown_4x3_ = true;
     if (run_3d_ >= kSwitchFrames) shown_4x3_ = false;
-    constexpr uint32_t kSparseDraws = 8;  // a loading screen's spinning icon
-    bool sparse = frame_draws_ <= kSparseDraws;
-    frame_draws_ = 0;
-    run_sparse_ = sparse ? run_sparse_ + 1 : 0;
-    run_full_ = sparse ? 0 : run_full_ + 1;
-    if (run_sparse_ >= kSwitchFrames) shown_sparse_ = true;
-    if (run_full_ >= kSwitchFrames) shown_sparse_ = false;
-    bool wide = app::Widescreen() && !(app::g_menus_4x3 && shown_4x3_) && !(app::g_sparse_4x3 && shown_sparse_);
+    bool wide = app::Widescreen() && !(app::g_menus_4x3 && shown_4x3_);
     float aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
     float w = float(bb_w_);
     float h = float(bb_h_);

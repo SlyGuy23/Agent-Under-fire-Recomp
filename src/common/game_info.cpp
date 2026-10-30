@@ -80,7 +80,7 @@ void DumpGuestThreads(const char* why, int seconds) {
 void Loaded() {
     if (std::string_view(IMAGE_XBE) != "driving.xbe") return;
     LOGR("Driving: image loaded, starting");
-    app::g_sparse_4x3 = true;  // the PAL loading pictures are 4:3 images written into the frame
+    app::g_smooth_figures = true;  // the pause screen's running figure
     std::thread([] {
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
