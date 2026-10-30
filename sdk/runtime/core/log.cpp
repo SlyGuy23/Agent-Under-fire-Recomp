@@ -20,6 +20,7 @@ static std::string g_path;
 static auto g_start = std::chrono::steady_clock::now();
 
 constexpr int kKeep = 30;
+constexpr int kKeepSessions = 4;  // earlier sessions' logs kept beside the current one
 
 // the run number of prefix_NNN.log, 0 for another name
 static int RunNumber(const fs::path& file, const std::string& prefix) {
@@ -35,6 +36,13 @@ void Init(const std::string& dir, const std::string& prefix, bool append) {
     fs::create_directories(dir, ec);
     if (!kVerbose) {
         g_path = (fs::path(dir) / (prefix + ".log")).string();
+        if (!append) {
+            // a new session keeps the last ones as prefix.1.log (the one before) to prefix.4.log
+            auto older = [&](int n) { return fs::path(dir) / (prefix + "." + std::to_string(n) + ".log"); };
+            fs::remove(older(kKeepSessions), ec);
+            for (int n = kKeepSessions - 1; n >= 1; n--) fs::rename(older(n), older(n + 1), ec);
+            fs::rename(g_path, older(1), ec);
+        }
         g_file = std::fopen(g_path.c_str(), append ? "a" : "w");
         return;
     }
