@@ -37,6 +37,8 @@ public:
         draws_++;
         if (drawing_) reference::Draw(s, prim, start, count, indices);
         if (list_) List(s, prim, start, count, indices);
+        static const long pack = harness::Env("PACKDUMP");
+        if (pack && frames_ % pack == 0) PackDump(s);
     }
     void Copy(const Surface& src, const Surface& dst, uint32_t n, uint32_t rects, uint32_t points) override {
         if (drawing_) reference::Copy(src, dst, n, rects, points);
@@ -80,6 +82,59 @@ private:
         char name[64];
         std::snprintf(name, sizeof name, fmt, n);
         return (app::ExeDir() / name).string();
+    }
+
+    // PACKDUMP=N: on every Nth frame each texture a draw samples, once per texture pack key, as
+    // packdump/<w>x<h>_<key>_<fmt>.tga (BGRA, top down), with packdump/index.txt: key w h format screen(XYZRHW) frame
+    void PackDump(const State& s) {
+        static std::set<uint64_t> seen;
+        static FILE* index = nullptr;
+        if (!index) {
+            std::filesystem::create_directories(app::ExeDir() / "packdump");
+            index = std::fopen((app::ExeDir() / "packdump/index.txt").string().c_str(), "a");
+        }
+        bool screen = (s.vs_handle & 1) && (s.vs_handle & 0xE) == 4;
+        for (int i = 0; i < 4; i++) {
+            TextureDesc d;
+            if (!s.textures[i] || !Describe(s.textures[i], d) || d.cube || d.depth > 1 || d.linear) continue;
+            if (d.format == 0x0B) continue;  // P8: its key takes the palette as well
+            const uint8_t* guest = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
+            uint32_t shape[] = {d.format, d.width, d.height};
+            uint64_t key = gpu::Hash(guest, LevelSize(d, 0), gpu::Hash(shape, sizeof(shape)));
+            if (!key) key = 1;
+            if (!seen.insert(key).second) continue;
+            const FormatInfo& fi = Format(d.format);
+            bool bc = fi.host == Host::BC1 || fi.host == Host::BC2 || fi.host == Host::BC3;
+            if (fi.host != Host::BGRA8 && !bc) continue;
+            std::vector<uint8_t> bytes;
+            uint32_t pitch = 0;
+            DecodeLevel(d, 0, 0, guest, nullptr, bytes, pitch);
+            char name[96];
+            std::snprintf(name, sizeof name, "packdump/%ux%u_%016llx_%02X.%s", d.width, d.height,
+                          static_cast<unsigned long long>(key), d.format, bc ? "dds" : "tga");
+            if (FILE* o = std::fopen((app::ExeDir() / name).string().c_str(), "wb")) {
+                if (bc) {
+                    // DDS: magic, 124 byte header with the DXTn FourCC, then level 0's blocks
+                    uint32_t h[32] = {0x20534444, 124, 0x1007, d.height, d.width, uint32_t(bytes.size()), 0, 1};
+                    h[19] = 32;
+                    h[20] = 4;
+                    h[21] = fi.host == Host::BC1 ? 0x31545844 : fi.host == Host::BC2 ? 0x33545844 : 0x35545844;
+                    h[27] = 0x1000;
+                    std::fwrite(h, 4, 32, o);
+                    std::fwrite(bytes.data(), 1, bytes.size(), o);
+                } else {
+                    uint8_t h[18] = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, uint8_t(d.width), uint8_t(d.width >> 8),
+                                     uint8_t(d.height), uint8_t(d.height >> 8), 32, 0x28};
+                    std::fwrite(h, 1, 18, o);
+                    for (uint32_t y = 0; y < d.height; y++)
+                        std::fwrite(bytes.data() + size_t(y) * pitch, 1, d.width * 4, o);
+                }
+                std::fclose(o);
+            }
+            std::fprintf(index, "%016llx %u %u %02X %d %llu\n", static_cast<unsigned long long>(key), d.width, d.height,
+                         d.format, screen, frames_);
+            std::fflush(index);
+        }
     }
 
     // one draw's state, textures, transforms, declaration and first vertex

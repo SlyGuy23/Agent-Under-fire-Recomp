@@ -39,24 +39,60 @@ void Init() {
     if (launcher && overlay::g_skip_intros && !relaunched) kernel::Relaunch(kGameExe);
 }
 
-// The driving missions cannot be run where this port is built (their data is too big to copy), so while a run shows
-// no picture the log gets where every guest thread is, after 5, 10, 20 and 40 seconds.
+// The driving missions cannot be run where this port is built (their data is too big to copy), so the log gets where
+// every guest thread is: after 5, 10, 20 and 40 seconds without a window, and whenever the game stops presenting
+// frames for 5 seconds once it has one (again after 15 and 30 seconds of the same stall). A line every 10 seconds
+// says how many frames it has shown.
+void DumpGuestThreads(const char* why, int seconds) {
+    LOGE("driving: %s for %d s, guest threads:", why, seconds);
+    for (auto& t : kernel::Threads())
+        if (t->ctx) {
+            LOGE("thread %X", t->id);
+            kernel::LogGuestStack(*t->ctx, 32);
+        }
+    logx::Flush();
+}
+
 void Loaded() {
     if (std::string_view(IMAGE_XBE) != "driving.xbe") return;
     LOGR("Driving: image loaded, starting");
     std::thread([] {
-        int waited = 0;
-        for (int at : {5, 10, 20, 40}) {
-            std::this_thread::sleep_for(std::chrono::seconds(at - waited));
-            waited = at;
-            if (!app::HandingOver()) return;  // the window is up
-            LOGE("driving: no frame after %d s, guest threads:", at);
-            for (auto& t : kernel::Threads())
-                if (t->ctx) {
-                    LOGE("thread %X", t->id);
-                    kernel::LogGuestStack(*t->ctx, 32);
-                }
-            logx::Flush();
+        using clock = std::chrono::steady_clock;
+        auto start = clock::now();
+        int window_dumps = 0;
+        bool shown = false;
+        uint64_t last = 0;
+        auto last_change = clock::now();
+        auto last_report = clock::now();
+        int stall_dumps = 0;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            auto now = clock::now();
+            if (app::HandingOver()) {
+                int waited = int(std::chrono::duration_cast<std::chrono::seconds>(now - start).count());
+                static const int kAt[] = {5, 10, 20, 40};
+                if (window_dumps < 4 && waited >= kAt[window_dumps]) DumpGuestThreads("no window", kAt[window_dumps++]);
+                continue;
+            }
+            if (!shown) {
+                shown = true;
+                LOGR("Driving: window up");
+            }
+            uint64_t f = overlay::g_frames.load();
+            if (f != last) {
+                if (stall_dumps) LOGR("Driving: frames again after the stall (%llu)", static_cast<unsigned long long>(f));
+                last = f;
+                last_change = now;
+                stall_dumps = 0;
+            }
+            int stalled = int(std::chrono::duration_cast<std::chrono::seconds>(now - last_change).count());
+            static const int kStall[] = {5, 15, 30};
+            if (stall_dumps < 3 && stalled >= kStall[stall_dumps]) DumpGuestThreads("no new frame", kStall[stall_dumps++]);
+            if (now - last_report >= std::chrono::seconds(10)) {
+                last_report = now;
+                LOGR("Driving: %llu frames", static_cast<unsigned long long>(f));
+                logx::Flush();
+            }
         }
     }).detach();
 }

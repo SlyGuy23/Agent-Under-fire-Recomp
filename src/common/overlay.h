@@ -1,5 +1,6 @@
 // The settings panel on F10, or both sticks clicked on a controller
 #pragma once
+#include <atomic>
 #include <cstdint>
 
 namespace input {
@@ -12,6 +13,8 @@ namespace overlay {
 inline bool g_skip_intros = false;
 inline bool g_fps_counter = false;
 inline uint32_t g_master_volume = 100;  // percent
+
+inline std::atomic<uint64_t> g_frames{0};  // frames the game presented, counted in Draw
 
 bool Open();
 void ApplyVolume();  // g_master_volume to the audio output

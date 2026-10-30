@@ -61,7 +61,7 @@ void Pad(int port, input::Pad& pad) {
 #ifndef _WIN32
 // the headless harness has no window or ImGui
 namespace overlay {
-void Draw(double) {}
+void Draw(double) { g_frames++; }
 bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*) { return false; }
 }  // namespace overlay
 #else
@@ -366,6 +366,7 @@ void FpsCounter(double fps) {
 }  // namespace
 
 void Draw(double fps) {
+    g_frames++;
     ImGuiIO& io = ImGui::GetIO();
     io.KeyRepeatRate = 0.1f;  // held arrows step ten times a second
     io.FontGlobalScale = std::max(1.0f, io.DisplaySize.y / 720.0f);
