@@ -43,6 +43,9 @@ Mode Output();
 float RenderScale(uint32_t guest_height);
 // the output is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV
 bool Widescreen();
+// a widescreen output shows frames drawn in 2D alone (front end menus, loading screens, films) at 4:3 between bars:
+// their art is laid out for 640x480 and only the 3D scenes are drawn for 16:9. Set by the game (a setting there)
+inline bool g_menus_4x3 = true;
 
 std::filesystem::path ExeDir();
 // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc

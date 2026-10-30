@@ -802,6 +802,11 @@ private:
     std::deque<Report> reports_;
     bool tearing_ = false;
     uint64_t presents_ = 0;
+    // app::g_menus_4x3: 3D draws in the frame being drawn, and how many frames in a row were 2D or 3D
+    uint32_t frame_3d_draws_ = 0;
+    int run_2d_ = 0;
+    int run_3d_ = 0;
+    bool shown_4x3_ = false;
     double fps_ = 0;
     std::chrono::steady_clock::time_point fps_t_ = std::chrono::steady_clock::now();
     uint64_t fps_n_ = 0;
@@ -2885,6 +2890,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     }
 
     // texture views and samplers, viewport and scissor, blend factor and stencil reference
+    if (!a.pretransformed) frame_3d_draws_++;
     SetTextureViewsAndSamplers(s, a, stages, !sh.prog);
     SetViewportScissor(s, size.w);
     SetBlendFactorStencilRef(s);
@@ -3257,8 +3263,17 @@ void D3D12Backend::UploadGammaRamp() {
 }
 
 void D3D12Backend::BlitFrame(Target& t) {
-    // 16:9 when the console reports a widescreen display, else 4:3
-    bool wide = app::Widescreen();
+    // 16:9 when the console reports a widescreen display, else 4:3; with app::g_menus_4x3 a run of frames drawn in 2D
+    // alone is shown 4:3 too, switching after a few frames either way so a single frame does not flip the shape
+    constexpr int kSwitchFrames = 4;
+    constexpr uint32_t k3dDraws = 3;  // a 2D frame may hold a stray 3D draw or two
+    bool flat = frame_3d_draws_ < k3dDraws;
+    frame_3d_draws_ = 0;
+    run_2d_ = flat ? run_2d_ + 1 : 0;
+    run_3d_ = flat ? 0 : run_3d_ + 1;
+    if (run_2d_ >= kSwitchFrames) shown_4x3_ = true;
+    if (run_3d_ >= kSwitchFrames) shown_4x3_ = false;
+    bool wide = app::Widescreen() && !(app::g_menus_4x3 && shown_4x3_);
     float aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
     float w = float(bb_w_);
     float h = float(bb_h_);

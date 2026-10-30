@@ -263,6 +263,7 @@ void Rows() {
     if (FlipRow("FPS COUNTER", g_fps_counter)) Changed(false);
 
     Section("GRAPHICS");
+    if (FlipRow("MENUS IN 4:3", app::g_menus_4x3)) Changed(false);
     if (int st = OptionRow("ANISOTROPIC FILTERING", kAnisoNames[Nearest(kAniso, s.aniso)])) {
         StepTable(kAniso, s.aniso, st);
         Changed(false);
@@ -308,6 +309,7 @@ void Defaults() {
     s = d;
     g_skip_intros = false;
     g_fps_counter = false;
+    app::g_menus_4x3 = true;
     g_master_volume = 100;
     ApplyVolume();
     sticks::g_modern = true;
