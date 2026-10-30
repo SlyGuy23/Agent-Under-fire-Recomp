@@ -580,7 +580,7 @@ private:
     void CaptureInputs(const State& s, const Assembled& a, const DrawConstants& c);
     void CaptureShaders(const State& s, const Assembled& a, const DrawShaders& sh, const PixelKey& pk);
     void CaptureShader(const char* kind, uint64_t key, const std::string& src);
-    void SetTextureViewsAndSamplers(const State& s, const Assembled& a, DrawTextures& stages);
+    void SetTextureViewsAndSamplers(const State& s, const Assembled& a, DrawTextures& stages, bool fixed);
     uint32_t EnsureViewSet(const DrawTextures& stages);
     uint32_t EnsureStageSamplers(const State& s, const DrawTextures& stages, bool clamp);
     void SetViewportScissor(const State& s, uint32_t gw);
@@ -2563,21 +2563,36 @@ D3D12_SRV_DIMENSION NullViewDimension(uint8_t kind) {
     return D3D12_SRV_DIMENSION_TEXTURE2D;
 }
 
-// A small draw whose every float2 input lies in 0..1: sprites, HUD pieces, text, full screen passes. The console's
-// pixel centres sample such a quad from its first texel to half a texel short of its far edge; upscaled, the far
-// edge's last half texel is drawn too, and wrapped it blends in the opposite edge (thin dark lines on HUD sprites).
-// Clamped, it takes the edge texel instead, which a wrapped texture used once over 0..1 has there anyway.
-bool UnitTexcoords(const Assembled& a) {
+// A small draw whose every texture coordinate lies in 0..1: sprites, HUD pieces, text, menu tiles, full screen passes.
+// The console's pixel centres sample such a quad from its first texel to half a texel short of its far edge; upscaled,
+// the far edge's last half texel is drawn too, and wrapped it blends in the opposite edge (thin dark lines on HUD
+// sprites and between menu tiles). Clamped, it takes the edge texel instead, which a wrapped texture used once over
+// 0..1 has there anyway. A program's coordinates are its float2 inputs; the fixed function pipeline's are v9 to v12
+// whatever their width (Agent Under Fire declares them float4), read as given when no stage generates or transforms them.
+bool FixedTexcoordsAsGiven(const State& s) {
+    for (const auto& t : s.tss) {
+        if (t[kTssTextureTransformFlags] || t[kTssTexCoordIndex] >> 16) return false;
+    }
+    return true;
+}
+
+bool UnitTexcoords(const State& s, const Assembled& a, bool fixed) {
     constexpr float kLo = -1e-4f;
     constexpr float kHi = 1.0001f;
     constexpr uint32_t kSmallDrawVertices = 4096;  // most vertices a small draw has
-    if (!a.vertices.empty() || !a.vertex_count || a.vertex_count > kSmallDrawVertices) return false;
+    if (!a.vertex_count || a.vertex_count > kSmallDrawVertices) return false;
+    bool wide = fixed && FixedTexcoordsAsGiven(s);
     bool any = false;
     for (int r = 0; r < 16; r++) {
         const VertexElement& e = a.elements[size_t(r)];
-        if (!(a.regs >> r & 1) || e.format != DXGI_FORMAT_R32G32_FLOAT) continue;
+        if (!(a.regs >> r & 1)) continue;
+        bool coord = (!fixed && e.format == DXGI_FORMAT_R32G32_FLOAT) ||
+                     (wide && r >= 9 && r <= 12 &&
+                      (e.format == DXGI_FORMAT_R32G32_FLOAT || e.format == DXGI_FORMAT_R32G32B32_FLOAT ||
+                       e.format == DXGI_FORMAT_R32G32B32A32_FLOAT));
+        if (!coord) continue;
         const VertexBuffer& vb = a.buffers[e.buffer];
-        if (!vb.src || !vb.stride || uint64_t(a.vertex_count) * vb.stride > vb.bytes) return false;
+        if (!vb.src || !vb.stride || uint64_t(a.vertex_count - 1) * vb.stride + e.offset + 8 > vb.bytes) return false;
         for (uint32_t v = 0; v < a.vertex_count; v++) {
             float uv[2];
             std::memcpy(uv, vb.src + size_t(v) * vb.stride + e.offset, sizeof(uv));
@@ -2614,7 +2629,7 @@ uint32_t D3D12Backend::EnsureViewSet(const DrawTextures& stages) {
 }
 
 // a stage without a texture gets a null view of its kind; the samplers read the views after
-void D3D12Backend::SetTextureViewsAndSamplers(const State& s, const Assembled& a, DrawTextures& stages) {
+void D3D12Backend::SetTextureViewsAndSamplers(const State& s, const Assembled& a, DrawTextures& stages, bool fixed) {
     for (int i = 0; i < 4; i++) {
         if (stages.res[i]) continue;
         stages.sv[i].ViewDimension = NullViewDimension(stages.info[i].kind);
@@ -2623,7 +2638,7 @@ void D3D12Backend::SetTextureViewsAndSamplers(const State& s, const Assembled& a
     uint32_t views = EnsureViewSet(stages);
     if (views != binds_.views) cl_->SetGraphicsRootDescriptorTable(2, Gpu(srv_heap_.Get(), views, srv_inc_));
     binds_.views = views;
-    uint32_t samplers = EnsureStageSamplers(s, stages, AnyStageWraps(s) && UnitTexcoords(a));
+    uint32_t samplers = EnsureStageSamplers(s, stages, AnyStageWraps(s) && UnitTexcoords(s, a, fixed));
     if (samplers != binds_.samplers) cl_->SetGraphicsRootDescriptorTable(3, Gpu(smp_heap_.Get(), samplers, smp_inc_));
     binds_.samplers = samplers;
 }
@@ -2870,7 +2885,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     }
 
     // texture views and samplers, viewport and scissor, blend factor and stencil reference
-    SetTextureViewsAndSamplers(s, a, stages);
+    SetTextureViewsAndSamplers(s, a, stages, !sh.prog);
     SetViewportScissor(s, size.w);
     SetBlendFactorStencilRef(s);
 
