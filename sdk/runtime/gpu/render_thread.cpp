@@ -12,6 +12,7 @@
 #include <smmintrin.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <condition_variable>
@@ -40,6 +41,12 @@ constexpr uint32_t kBatchCommands = 64;
 // resource headers the render thread reads: common, data, lock, format, size
 constexpr uint32_t kHeaderBytes = 20, kHeaderSlot = 32;
 constexpr uint32_t kHeaderRing = 1u << 20;  // guest memory for header copies; a copy is renewed after half a ring
+
+// small draws' vertices are copied when recorded: Agent Under Fire's driving missions write the next HUD, menu and
+// particle quads into vertex buffers the frame already drew from, with no lock or wait the host could see
+constexpr uint32_t kVertexRing = 32u << 20;
+constexpr uint32_t kVertexParts = 8;               // a part is written again once the batch that last used it is done
+constexpr uint32_t kVertexCopyMax = 64u << 10;     // bytes of one stream copied at most
 
 enum class WaitFor : uint8_t { ReadBack, Resource, Fence, Flush, Copy, Frame, Count };
 
@@ -100,6 +107,7 @@ class Threaded final : public Backend {
 public:
     explicit Threaded(std::unique_ptr<Backend> inner) : inner_(std::move(inner)), ranges_(StateRanges()) {
         ring_ = mem::AllocSystem(kHeaderRing, 64);
+        vring_ = mem::AllocSystem(kVertexRing, 64);
         cur_ = NewBatch();
         std::thread([this] { Run(); }).detach();
     }
@@ -118,7 +126,10 @@ public:
 
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override {
         auto t = Clock::now();
-        SendState(s);
+        auto streams = s.streams;
+        for (auto& st : streams) st.vb = Header(st.vb);
+        CopyVertices(s, start, count, indices, streams);
+        SendState(s, &streams);
         Cmd c{Op::Draw};
         c.a = prim;
         c.b = start;
@@ -322,6 +333,63 @@ private:
         return c.at;
     }
 
+    // vertex bytes in the vertex ring, waiting for the batch that last used a part before writing it again
+    uint32_t VertexScratch(const void* p, uint32_t n) {
+        constexpr uint32_t part = kVertexRing / kVertexParts;
+        uint32_t size = (n + 15) & ~15u;
+        uint32_t off = uint32_t(vring_pos_ % kVertexRing);
+        if (off % part + size > part) {  // into the next part
+            vring_pos_ += part - off % part;
+            off = uint32_t(vring_pos_ % kVertexRing);
+        }
+        uint32_t index = off / part;
+        if (off % part == 0) {
+            Wait(vring_used_[index], WaitFor::Resource, nullptr);
+        }
+        vring_used_[index] = cur_->id;
+        uint32_t at = vring_ + off;
+        vring_pos_ += size;
+        std::memcpy(kernel::HostPtr(at), p, n);
+        return at;
+    }
+
+    // a small draw's vertices as they are now: each stream's header copy points at a copy of the range the draw reads
+    void CopyVertices(const State& s, uint32_t start, uint32_t count, const uint8_t* indices,
+                      std::array<State::Stream, 16>& streams) {
+        if (!vring_ || !count) return;
+        uint32_t first = start, last = start + count - 1;
+        if (indices) {
+            uint16_t lo = 0xFFFF, hi = 0;
+            for (uint32_t i = 0; i < count; i++) {
+                uint16_t v;
+                std::memcpy(&v, indices + i * 2, 2);
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
+            first = lo + s.base_vertex;
+            last = hi + s.base_vertex;
+        }
+        if (last < first) return;
+        uint32_t span = last - first + 1;
+        for (size_t i = 0; i < streams.size(); i++) {
+            const auto& st = s.streams[i];
+            if (!st.vb || !streams[i].vb) continue;
+            if (kernel::R32(st.vb) & 0x70000) continue;  // a vertex buffer
+            uint32_t stride = st.stride ? st.stride : (s.vs ? s.vs->stream_stride[i] : 0);
+            if (!stride || uint64_t(span) * stride > kVertexCopyMax) continue;
+            uint32_t data = mem::VirtualFromPhysical(kernel::R32(st.vb + 4));
+            uint64_t skip = uint64_t(first) * stride;
+            uint32_t bytes = span * stride;
+            uint32_t copy = VertexScratch(kernel::HostPtr(uint32_t(data + skip)), bytes);
+            if (copy < skip || copy - skip < mem::kPhysicalSize) continue;  // the moved address must read as itself
+            uint8_t moved[kHeaderBytes] = {};
+            std::memcpy(moved, kernel::HostPtr(st.vb), 12);
+            uint32_t base = uint32_t(copy - skip);
+            std::memcpy(moved + 4, &base, 4);
+            streams[i].vb = Scratch(moved, kHeaderBytes);
+        }
+    }
+
     // a field of the render thread's State, when it differs from what was sent
     void Delta(const void* field, const void* value, size_t n) {
         uint8_t* sent = reinterpret_cast<uint8_t*>(&sent_) + At(sent_, field);
@@ -356,7 +424,7 @@ private:
     }
 
     // what changed since the last command, in 64 byte pieces
-    void SendState(const State& s) {
+    void SendState(const State& s, const std::array<State::Stream, 16>* sent_streams = nullptr) {
         const uint8_t* now = reinterpret_cast<const uint8_t*>(&s);
         Cmd c{Op::State};
         size_t first = cur_->bytes.size();
@@ -369,7 +437,11 @@ private:
         for (size_t i = 0; i < 4; i++) palettes[i] = Header(s.palettes[i]);
         Delta(&sent_.palettes, &palettes, sizeof(palettes));
         auto streams = s.streams;
-        for (auto& st : streams) st.vb = Header(st.vb);
+        if (sent_streams) {
+            streams = *sent_streams;
+        } else {
+            for (auto& st : streams) st.vb = Header(st.vb);
+        }
         Delta(&sent_.streams, &streams, sizeof(streams));
         Surface rt = s.rt, zs = s.zs;
         rt.header = Header(rt.header);
@@ -518,6 +590,9 @@ private:
     std::array<Recent<uint64_t>, 64> recent_uses_{};
     uint32_t ring_ = 0;
     uint64_t ring_pos_ = 0;
+    uint32_t vring_ = 0;
+    uint64_t vring_pos_ = 0;
+    std::array<uint64_t, kVertexParts> vring_used_{};
     Batch* cur_ = nullptr;
     State sent_;  // the state as the render thread will have it
     std::unordered_map<uint32_t, uint64_t> last_use_;

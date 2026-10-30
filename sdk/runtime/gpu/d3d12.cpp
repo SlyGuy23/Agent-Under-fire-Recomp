@@ -804,6 +804,9 @@ private:
     uint64_t presents_ = 0;
     // app::g_menus_4x3: 3D draws in the frame being drawn, and how many frames in a row were 2D or 3D
     uint32_t frame_3d_draws_ = 0;
+    uint32_t frame_draws_ = 0;  // app::g_sparse_4x3: all draws in the frame
+    int run_sparse_ = 0, run_full_ = 0;
+    bool shown_sparse_ = false;
     int run_2d_ = 0;
     int run_3d_ = 0;
     bool shown_4x3_ = false;
@@ -2851,6 +2854,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     }
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
+    frame_draws_++;
     if (cap_) CapStep(s.rt);
     if (DepthCopy(s)) return;
     DrawEnd draw_end{ext_};
@@ -3285,7 +3289,14 @@ void D3D12Backend::BlitFrame(Target& t) {
     run_3d_ = flat ? 0 : run_3d_ + 1;
     if (run_2d_ >= kSwitchFrames) shown_4x3_ = true;
     if (run_3d_ >= kSwitchFrames) shown_4x3_ = false;
-    bool wide = app::Widescreen() && !(app::g_menus_4x3 && shown_4x3_);
+    constexpr uint32_t kSparseDraws = 8;  // a loading screen's spinning icon
+    bool sparse = frame_draws_ <= kSparseDraws;
+    frame_draws_ = 0;
+    run_sparse_ = sparse ? run_sparse_ + 1 : 0;
+    run_full_ = sparse ? 0 : run_full_ + 1;
+    if (run_sparse_ >= kSwitchFrames) shown_sparse_ = true;
+    if (run_full_ >= kSwitchFrames) shown_sparse_ = false;
+    bool wide = app::Widescreen() && !(app::g_menus_4x3 && shown_4x3_) && !(app::g_sparse_4x3 && shown_sparse_);
     float aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
     float w = float(bb_w_);
     float h = float(bb_h_);
