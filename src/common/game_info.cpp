@@ -1,5 +1,6 @@
 #include <cstring>
 #include <cwchar>
+#include <filesystem>
 #include <string_view>
 
 #ifdef _WIN32
@@ -26,6 +27,24 @@ namespace {
 
 constexpr const char* kGameExe = "AgentUnderFireGame";
 
+// A driving mission is a separate executable the game relaunches into, with the mission in its launch data
+// (hdd\launch.bin, read once at boot). That data is kept as hdd\driving_launch.bin, so starting
+// AgentUnderFireDriving.exe on its own plays the last driving mission again without the on-foot mission before it.
+void KeepDrivingLaunch(bool relaunched) {
+    namespace fs = std::filesystem;
+    fs::path hdd = app::ExeDir() / "hdd", launch = hdd / "launch.bin", kept = hdd / "driving_launch.bin";
+    std::error_code ec;
+    if (relaunched) {
+        if (fs::exists(launch, ec)) fs::copy_file(launch, kept, fs::copy_options::overwrite_existing, ec);
+        LOGR("Driving: mission launch data kept for a direct restart%s", ec ? " (not written)" : "");
+    } else if (!fs::exists(launch, ec) && fs::exists(kept, ec)) {
+        fs::copy_file(kept, launch, fs::copy_options::overwrite_existing, ec);
+        LOGR("Driving: started on its own, playing the last driving mission again%s", ec ? " (not read)" : "");
+    } else if (!fs::exists(kept, ec)) {
+        LOGR("Driving: started on its own with no driving mission played yet");
+    }
+}
+
 // default.xbe only plays the EA Games and MGM films and the attract film before it loads the game: with Skip Intros
 // the launcher goes straight to the game's executable. A relaunch into the launcher (the game quitting to it) is let be.
 void Init() {
@@ -37,6 +56,7 @@ void Init() {
     bool relaunched = false;
 #endif
     if (launcher && overlay::g_skip_intros && !relaunched) kernel::Relaunch(kGameExe);
+    if (std::string_view(IMAGE_XBE) == "driving.xbe") KeepDrivingLaunch(relaunched);
 }
 
 // The driving missions cannot be run where this port is built (their data is too big to copy), so the log gets where
