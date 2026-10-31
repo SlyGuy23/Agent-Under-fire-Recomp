@@ -117,8 +117,7 @@ bool PcSettingsPage(const PageContext& c, const std::vector<PageNav>& nav) {
             default: break;
         }
     }
-    MouseHit hit = DrawList(c, "PC SETTINGS", rows, g_pc_sel, g_pc_scroll,
-                            "LEFT / RIGHT or click to change     B / ESC to go back");
+    MouseHit hit = DrawList(c, "PC SETTINGS", rows, g_pc_sel, g_pc_scroll, nullptr);
     ImVec2 m = ImGui::GetIO().MousePos;
     bool moved = m.x != g_last_mouse.x || m.y != g_last_mouse.y;
     g_last_mouse = m;
@@ -158,18 +157,26 @@ using controls::Context;
 using controls::Device;
 
 struct Tab {
-    const char* name;
     Context context;
     Device device;
 };
-constexpr Tab kTabs[] = {{"CONTROLLER", Context::OnFoot, Device::Controller},
-                         {"CONTROLLER - DRIVING", Context::Driving, Device::Controller},
-                         {"KEYBOARD & MOUSE", Context::OnFoot, Device::KeyboardMouse},
-                         {"KEYBOARD & MOUSE - DRIVING", Context::Driving, Device::KeyboardMouse}};
+// the tabs in LT / RT order: each device, on foot, driving and on rails
+constexpr Tab kTabs[] = {{Context::OnFoot, Device::Controller},        {Context::Driving, Device::Controller},
+                         {Context::OnRails, Device::Controller},       {Context::OnFoot, Device::KeyboardMouse},
+                         {Context::Driving, Device::KeyboardMouse},    {Context::OnRails, Device::KeyboardMouse}};
 constexpr int kTabCount = int(sizeof(kTabs) / sizeof(kTabs[0]));
+constexpr const char* kDeviceNames[] = {"CONTROLLER", "KEYBOARD & MOUSE"};
+constexpr const char* kContextNames[] = {"ON FOOT", "DRIVING", "ON RAILS"};
+
+int TabOf(Context c, Device d) {
+    for (int i = 0; i < kTabCount; i++)
+        if (kTabs[i].context == c && kTabs[i].device == d) return i;
+    return 0;
+}
 
 enum class RowKind { Action, Option, Reset, Heading };
-enum class Opt { LeftSens, LeftDead, LeftOuter, RightSens, RightDead, RightOuter, MouseSens, MouseInvert, MouseLook };
+enum class Opt { LeftSens, LeftDead, LeftOuter, RightSens, RightDead, RightOuter, MouseSens, MouseInvert, MouseLook,
+                 CrouchToggle, AimToggle };
 
 struct CRow {
     RowKind kind;
@@ -191,7 +198,20 @@ int64_t Ms() {
 
 std::string Pct(uint32_t v) { return std::to_string(v) + "%"; }
 
-std::vector<CRow> Rows(const Tab& t) {
+// the mouse looks around where no key is bound to looking: on foot turning and looking up and down, on rails aiming
+bool MouseLooks(Context c, Action a) {
+    if (c == Context::OnFoot) return a == Action::LSLeft || a == Action::LSRight || a == Action::RSUp || a == Action::RSDown;
+    if (c == Context::OnRails) return a >= Action::LSUp && a <= Action::LSRight;
+    return false;
+}
+
+std::string KeyText(const Tab& t, Action a, int slot) {
+    std::string k = controls::BindingName(t.context, t.device, a, slot);
+    if (k.empty() && slot == 0 && MouseLooks(t.context, a)) return "MOUSE";
+    return k.empty() ? "-" : k;
+}
+
+std::vector<CRow> Rows(const Tab& t, bool view_only) {
     std::vector<CRow> rows;
     controls::Options o = controls::GetOptions(t.context);
     for (Action a : controls::Actions(t.context, t.device)) {
@@ -200,9 +220,10 @@ std::vector<CRow> Rows(const Tab& t) {
         if (t.device == Device::Controller) {
             r.value = controls::BindingName(t.context, t.device, a, 0);
         } else {
-            std::string k0 = controls::BindingName(t.context, t.device, a, 0), k1 = controls::BindingName(t.context, t.device, a, 1);
-            r.value = (k0.empty() ? "-" : k0) + "   /   " + (k1.empty() ? "-" : k1);
+            std::string k0 = KeyText(t, a, 0), k1 = controls::BindingName(t.context, t.device, a, 1);
+            r.value = k1.empty() ? k0 : k0 + "  /  " + k1;
         }
+        if (view_only && (r.value.empty() || r.label == "NOT USED")) continue;
         rows.push_back(r);
     }
     auto opt = [&](Opt k, const char* label, std::string value) {
@@ -212,6 +233,12 @@ std::vector<CRow> Rows(const Tab& t) {
         r.value = std::move(value);
         rows.push_back(r);
     };
+    if (t.context == Context::OnFoot) {
+        rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, "GENERAL", ""});
+        opt(Opt::CrouchToggle, "CROUCH", o.crouch_toggle ? "TOGGLE" : "HOLD");
+        opt(Opt::AimToggle, "MANUAL AIM", o.aim_toggle ? "TOGGLE" : "HOLD");
+    }
+    if (view_only) return rows;
     rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, t.device == Device::Controller ? "STICKS" : "MOUSE", ""});
     if (t.device == Device::Controller) {
         opt(Opt::LeftSens, "LEFT STICK SENSITIVITY", Pct(o.left.sensitivity));
@@ -243,6 +270,8 @@ void StepOption(Context c, Opt k, int step) {
         case Opt::MouseSens: bump(o.mouse_sensitivity, o.mouse_sensitivity >= 200 ? 25 : 5, 5, 1000); break;
         case Opt::MouseInvert: o.mouse_invert_y = !o.mouse_invert_y; break;
         case Opt::MouseLook: o.mouse_look = controls::MouseLook((int(o.mouse_look) + step + 3) % 3); break;
+        case Opt::CrouchToggle: o.crouch_toggle = !o.crouch_toggle; break;
+        case Opt::AimToggle: o.aim_toggle = !o.aim_toggle; break;
     }
     controls::SetOptions(c, o);
     app::Save();
@@ -261,6 +290,8 @@ void Reset(const Tab& t) {
         o.mouse_x = d.mouse_x;
         o.mouse_y = d.mouse_y;
     }
+    o.crouch_toggle = d.crouch_toggle;
+    o.aim_toggle = d.aim_toggle;
     controls::SetOptions(t.context, o);
     app::Save();
 }
@@ -284,6 +315,60 @@ void Activate(const Tab& t, const CRow& r, int step) {
     }
 }
 
+// the two rows of tabs: the devices, then on foot, driving and on rails; the shown ones lit. Returns a clicked tab,
+// -1 for none. only: one context alone (the pause menu's page)
+int DrawTabs(const PageContext& c, ImDrawList* dl, int tab, bool clickable, int only = -1) {
+    int clicked = -1;
+    const Tab& t = kTabs[tab];
+    auto item = [&](float& x, float y, float size, const char* text, bool lit, int to) {
+        c.say(dl, x, y, size, lit ? c.lit : Dim(c.unlit), text, 0);
+        float w = c.width(size, text);
+        ImVec2 a = c.guest(x - 3, y - 2), b = c.guest(x + w + 3, y + size + 2);
+        if (clickable && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) clicked = to;
+        x += w + 18;
+    };
+    float x = kLabelX;
+    for (int d = 0; d < 2; d++) item(x, kTitleY - 8, 13, kDeviceNames[d], int(t.device) == d, TabOf(only >= 0 ? Context(only) : t.context, Device(d)));
+    if (only < 0) {
+        x = kLabelX;
+        for (int k = 0; k < 3; k++) item(x, kTitleY + 8, 11, kContextNames[k], int(t.context) == k, TabOf(Context(k), t.device));
+    } else {
+        x = kLabelX;
+        item(x, kTitleY + 8, 11, kContextNames[only], true, tab);
+    }
+    return clicked;
+}
+
+// the rows from kTopY, scrolled to keep sel in view; the hovered row (or -1) through hover
+void DrawRows(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& rows, int sel, int scroll, bool keyboard,
+              const std::string& sel_value, int* hover, float value_x) {
+    for (int i = scroll; i < int(rows.size()) && i < scroll + kVisibleRows; i++) {
+        const CRow& r = rows[size_t(i)];
+        float y = kTopY + 6 + kRowStep * float(i - scroll);
+        if (r.kind == RowKind::Heading) {
+            c.say(dl, kLabelX - 10, y + 3, kTextSize - 3, Dim(c.lit), r.label.c_str(), 0);
+            continue;
+        }
+        bool lit = i == sel;
+        std::string value = lit && !sel_value.empty() ? sel_value : r.value;
+        c.say(dl, kLabelX, y, kTextSize - 1, lit ? c.lit : c.unlit, r.label.c_str(), 0);
+        c.say(dl, value_x, y, kTextSize - 1, lit ? c.lit : c.value, value.c_str(), 0);
+        ImVec2 a = c.guest(kLabelX - 12, y - 2), b = c.guest(620, y + kRowStep - 2);
+        if (hover && ImGui::IsMouseHoveringRect(a, b, false)) *hover = i;
+    }
+    (void)keyboard;
+    if (scroll > 0) c.say(dl, 320, kTopY - 4, kTextSize - 3, c.unlit, "^", 0.5f);
+    if (scroll + kVisibleRows < int(rows.size())) c.say(dl, 320, kTopY + 6 + kRowStep * kVisibleRows - 4, kTextSize - 3, c.unlit, "v", 0.5f);
+}
+
+int Clamp(int scroll, int sel, int n) {
+    if (sel >= 0 && sel < scroll) scroll = sel;
+    if (sel >= scroll + kVisibleRows) scroll = sel - kVisibleRows + 1;
+    return std::clamp(scroll, 0, std::max(0, n - kVisibleRows));
+}
+
+int g_view_tab = 0, g_view_scroll = 0;
+
 }  // namespace
 
 bool PageMessage(uint32_t, uintptr_t) { return false; }
@@ -302,12 +387,9 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
             if (st == controls::CaptureState::Bound) app::Save();
         }
     }
-    bool just_bound = false;
-    if (!g_capturing && g_capture_at && Ms() - g_capture_at < 0) just_bound = true;
-    std::vector<CRow> rows = Rows(tab);
+    std::vector<CRow> rows = Rows(tab, false);
     if (g_sel < 0 || g_sel >= int(rows.size()) || rows[size_t(g_sel)].kind == RowKind::Heading) g_sel = 0;
     bool settling = ImGui::GetFrameCount() - g_ended_frame < 3;
-    (void)just_bound;
     if (!g_capturing && !settling) {
         for (PageNav n : nav) {
             const CRow& r = rows[size_t(g_sel)];
@@ -330,69 +412,92 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
         }
     }
     const Tab& shown = kTabs[g_tab];
-    rows = Rows(shown);
+    rows = Rows(shown, false);
     if (g_sel >= int(rows.size())) g_sel = 0;
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-    // the tabs along the top: the shown one lit
-    float tx = kLabelX;
-    for (int i = 0; i < kTabCount; i++) {
-        ImU32 col = i == g_tab ? c.lit : Dim(c.unlit);
-        c.say(dl, tx, kTitleY, 11, col, kTabs[i].name, 0);
-        float w = c.width(11, kTabs[i].name);
-        ImVec2 a = c.guest(tx - 3, kTitleY - 2), b = c.guest(tx + w + 3, kTitleY + 14);
-        if (!g_capturing && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) g_tab = i, g_sel = 0, g_scroll = 0;
-        tx += w + 14;
-    }
-    // the rows
-    if (g_sel < g_scroll) g_scroll = g_sel;
-    if (g_sel >= g_scroll + kVisibleRows) g_scroll = g_sel - kVisibleRows + 1;
-    g_scroll = std::clamp(g_scroll, 0, std::max(0, int(rows.size()) - kVisibleRows));
+    int clicked = DrawTabs(c, dl, g_tab, !g_capturing);
+    if (clicked >= 0 && clicked != g_tab) g_tab = clicked, g_sel = 0, g_scroll = 0;
+    g_scroll = Clamp(g_scroll, g_sel, int(rows.size()));
     ImVec2 m = ImGui::GetIO().MousePos;
     bool moved = m.x != g_mouse_last.x || m.y != g_mouse_last.y;
     g_mouse_last = m;
-    for (int i = g_scroll; i < int(rows.size()) && i < g_scroll + kVisibleRows; i++) {
-        const CRow& r = rows[size_t(i)];
-        float y = kTopY + kRowStep * float(i - g_scroll);
-        if (r.kind == RowKind::Heading) {
-            c.say(dl, kLabelX - 10, y + 4, kTextSize - 3, Dim(c.lit), r.label.c_str(), 0);
-            continue;
+    std::string sel_value;
+    const CRow& sr = rows[size_t(g_sel)];
+    if (g_capturing) sel_value = shown.device == Device::Controller ? "PRESS A BUTTON" : "PRESS A KEY";
+    else if (sr.kind == RowKind::Action && shown.device == Device::KeyboardMouse) {
+        std::string k0 = KeyText(shown, sr.action, 0), k1 = controls::BindingName(shown.context, shown.device, sr.action, 1);
+        if (k1.empty()) k1 = "-";
+        sel_value = (g_slot == 0 ? "[" + k0 + "]" : k0) + "  /  " + (g_slot == 1 ? "[" + k1 + "]" : k1);
+    }
+    int hover = -1;
+    DrawRows(c, dl, rows, g_sel, g_scroll, shown.device == Device::KeyboardMouse, sel_value,
+             (!g_capturing && !settling) ? &hover : nullptr, kValueX - 20);
+    if (hover >= 0) {
+        const CRow& r = rows[size_t(hover)];
+        if (moved) g_sel = hover;
+        float y = kTopY + 6 + kRowStep * float(hover - g_scroll);
+        if (r.kind == RowKind::Action && shown.device == Device::KeyboardMouse && moved) {
+            ImVec2 mid = c.guest(kValueX + 60, y);
+            g_slot = m.x < mid.x ? 0 : 1;
         }
-        bool sel = i == g_sel;
-        std::string value = r.value;
-        if (sel && g_capturing)
-            value = shown.device == Device::Controller ? "PRESS A BUTTON..." : "PRESS A KEY...  (ESC cancels)";
-        else if (sel && r.kind == RowKind::Action && shown.device == Device::KeyboardMouse) {
-            std::string k0 = controls::BindingName(shown.context, shown.device, r.action, 0);
-            std::string k1 = controls::BindingName(shown.context, shown.device, r.action, 1);
-            value = (g_slot == 0 ? "[ " + (k0.empty() ? std::string("-") : k0) + " ]" : (k0.empty() ? std::string("-") : k0)) + "   /   " +
-                    (g_slot == 1 ? "[ " + (k1.empty() ? std::string("-") : k1) + " ]" : (k1.empty() ? std::string("-") : k1));
-        }
-        c.say(dl, kLabelX, y, kTextSize - 1, sel ? c.lit : c.unlit, r.label.c_str(), 0);
-        c.say(dl, kValueX - 20, y, kTextSize - 1, sel ? c.lit : c.value, value.c_str(), 0);
-        ImVec2 a = c.guest(kLabelX - 12, y - 2), b = c.guest(620, y + kRowStep - 2);
-        if (!g_capturing && !settling && ImGui::IsMouseHoveringRect(a, b, false)) {
-            if (moved) g_sel = i;
-            if (r.kind == RowKind::Action && shown.device == Device::KeyboardMouse && moved) {
-                ImVec2 mid = c.guest(kValueX + 60, y);
-                g_slot = m.x < mid.x ? 0 : 1;
-            }
-            if (ImGui::IsMouseClicked(0)) Activate(shown, r, 1);
-            else if (ImGui::IsMouseClicked(1)) {
-                if (r.kind == RowKind::Option) StepOption(shown.context, r.opt, -1);
-                else if (r.kind == RowKind::Action && shown.device == Device::KeyboardMouse)
-                    controls::SetKeyBinding(shown.context, r.action, g_slot, controls::kNoKey), app::Save();
-            }
+        if (ImGui::IsMouseClicked(0)) Activate(shown, r, 1);
+        else if (ImGui::IsMouseClicked(1)) {
+            if (r.kind == RowKind::Option) StepOption(shown.context, r.opt, -1);
+            else if (r.kind == RowKind::Action && shown.device == Device::KeyboardMouse)
+                controls::SetKeyBinding(shown.context, r.action, g_slot, controls::kNoKey), app::Save();
         }
     }
     if (!g_capturing && ImGui::GetIO().MouseWheel != 0) g_scroll = std::max(0, g_scroll - int(ImGui::GetIO().MouseWheel));
-    if (g_scroll > 0) c.say(dl, 320, kTopY - 12, kTextSize - 3, c.unlit, "^", 0.5f);
-    if (g_scroll + kVisibleRows < int(rows.size())) c.say(dl, 320, kTopY + kRowStep * kVisibleRows - 4, kTextSize - 3, c.unlit, "v", 0.5f);
-    const char* hint = shown.device == Device::Controller
-                           ? "A change     LT / RT switch tab     B back"
-                           : "ENTER or click to change     LEFT / RIGHT choose key     RIGHT CLICK clear     Q / E switch tab";
-    c.say(dl, 320, kTopY + kRowStep * kVisibleRows + 6, kTextSize - 4, Dim(c.unlit), hint, 0.5f);
     return true;
+}
+
+// the pause menu's page: the controls of this context for the device in use, nothing to change but the toggles;
+// LT / RT (or a click) shows the other device
+bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, controls::Context context, bool opened) {
+    if (opened) g_view_tab = TabOf(context, controls::ActiveDevice()), g_view_scroll = 0;
+    for (PageNav n : nav) {
+        const Tab& t = kTabs[g_view_tab];
+        switch (n) {
+            case PageNav::Up: g_view_scroll = std::max(0, g_view_scroll - 1); break;
+            case PageNav::Down: g_view_scroll++; break;
+            case PageNav::PrevTab:
+            case PageNav::NextTab:
+                g_view_tab = TabOf(context, t.device == Device::Controller ? Device::KeyboardMouse : Device::Controller);
+                g_view_scroll = 0;
+                break;
+            case PageNav::Back:
+            case PageNav::Accept: return false;
+            default: break;
+        }
+    }
+    const Tab& t = kTabs[g_view_tab];
+    std::vector<CRow> rows = Rows(t, true);
+    while (!rows.empty() && rows.back().kind != RowKind::Action) rows.pop_back();  // only the controls
+    g_view_scroll = std::clamp(g_view_scroll, 0, std::max(0, int(rows.size()) - kVisibleRows));
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    int clicked = DrawTabs(c, dl, g_view_tab, true, int(context));
+    if (clicked >= 0) g_view_tab = clicked, g_view_scroll = 0;
+    if (ImGui::GetIO().MouseWheel != 0) g_view_scroll = std::max(0, g_view_scroll - int(ImGui::GetIO().MouseWheel));
+    DrawRows(c, dl, rows, -1, g_view_scroll, t.device == Device::KeyboardMouse, "", nullptr, kValueX - 20);
+    return true;
+}
+
+// a still list of a context's controls for the device in use, from y (the game's pre-mission Controller Setup)
+void ControlsList(const PageContext& c, controls::Context context, float y, int max_rows) {
+    const Tab& t = kTabs[TabOf(context, controls::ActiveDevice())];
+    std::vector<CRow> rows = Rows(t, true);
+    while (!rows.empty() && rows.back().kind != RowKind::Action) rows.pop_back();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    // two columns when they do not fit in one
+    int per = int(rows.size()) > max_rows ? (int(rows.size()) + 1) / 2 : int(rows.size());
+    float step = std::min(20.0f, 300.0f / float(std::max(per, 1)));
+    for (int i = 0; i < int(rows.size()); i++) {
+        int col = i / per, k = i % per;
+        float x = col ? 330 : 60, yy = y + step * float(k);
+        c.say(dl, x, yy, 12, c.unlit, rows[size_t(i)].label.c_str(), 0);
+        c.say(dl, x + 270, yy, 12, c.lit, rows[size_t(i)].value.c_str(), 1);
+    }
 }
 
 }  // namespace menus

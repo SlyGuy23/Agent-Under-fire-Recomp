@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "app/app.h"
+#include "common/controls.h"
 
 namespace input {
 struct Pad;
@@ -33,5 +34,7 @@ void Window(void* hwnd);
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);
 // a page is up: the game gets no input
 bool PageOpen();
+// what the mission picked in the front end plays as (its pre-mission Controller Setup lists those controls)
+void SetMissionQuery(controls::Context (*query)());
 
 }  // namespace menus

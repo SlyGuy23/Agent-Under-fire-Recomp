@@ -12,6 +12,8 @@
 #include <string_view>
 #include <vector>
 
+#include "common/controls.h"
+#include "common/menu_font.h"
 #include "common/overlay.h"
 #include "core/input.h"
 #include "core/log.h"
@@ -287,9 +289,81 @@ std::vector<uint8_t> Text(std::string_view text, const uint8_t* tmpl, uint32_t s
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// the pause menu's MISSION page: Continue Mission, Restart Mission and Quit Mission in the italic lettering, rows 26
+// apart from y 173 at x 111 (a black shadow a pixel down and right first), the >> marker (a 64x64 sheet) 3 above the
+// selected row. Controls goes under Quit Mission.
+
+constexpr float kPauseX = 111, kPauseTop = 173, kPauseStep = 26, kMarkerX = 87, kMarkerAbove = 3;
+constexpr int kPauseRows = 3;
+std::atomic<uint64_t> g_pause_seen{0};
+std::atomic<int> g_pause_lit{-1};
+std::atomic<bool> g_pause_selected{false};
+std::array<float, 4> g_pause_lit_color{0.83f, 0.93f, 1.0f, 1.0f}, g_pause_unlit_color{0.45f, 0.54f, 0.62f, 1.0f};
+
+bool Paused() { return controls::CurrentGameState() == controls::GameState::Paused; }
+
+// a row of the pause menu's MISSION page, -1 when not one
+int PauseRow(const gpu::State& s, const Box& b) {
+    if (!TextureSize(s, 256, 128) || !Near(b.x0, kPauseX, 3)) return -1;
+    float r = (b.y0 - kPauseTop) / kPauseStep;
+    int row = int(std::lround(r));
+    if (row < 0 || row >= kPauseRows || std::fabs(r - row) > 0.25f) return -1;
+    return row;
+}
+
+// text in the italic lettering (menu_font.h) laid out from a line of the game's in it: its first letter's vertices
+// give the vertex order and everything else that is not position, coordinates or colour
+std::vector<uint8_t> ItalicText(std::string_view text, const uint8_t* tmpl, uint32_t stride, const Layout& l, float x,
+                                float y, const std::array<float, 4>& color) {
+    std::vector<uint8_t> out;
+    Box first = BoxOf(tmpl, stride, l, 0, 6);
+    std::array<std::array<bool, 2>, 6> corners;
+    for (uint32_t i = 0; i < 6; i++) {
+        const float* p = At(tmpl, stride, i, l.pos);
+        corners[i] = {std::fabs(p[0] - first.x1) < std::fabs(p[0] - first.x0), std::fabs(p[1] - first.y1) < std::fabs(p[1] - first.y0)};
+    }
+    for (char ch : text) {
+        const MenuGlyph* g = FindMenuGlyph(ch);
+        if (!g) {
+            x += kMenuSpace;
+            continue;
+        }
+        size_t at = out.size();
+        out.resize(at + 6 * stride);
+        for (uint32_t i = 0; i < 6; i++) {
+            uint8_t* d = out.data() + at + i * stride;
+            std::memcpy(d, tmpl + i * stride, stride);
+            float* p = reinterpret_cast<float*>(d + l.pos);
+            float* t = reinterpret_cast<float*>(d + l.tc);
+            bool right = corners[i][0], bottom = corners[i][1];
+            p[0] = x + (right ? float(g->x1 - g->x0 + 1) : 0);
+            p[1] = y + float(g->dy) + (bottom ? float(g->y1 - g->y0 + 1) : 0);
+            t[0] = float(right ? g->x1 : g->x0) / 256.0f;
+            t[1] = float(bottom ? g->y1 : g->y0) / 128.0f;
+            std::memcpy(d + l.color, color.data(), 16);
+        }
+        x += g->advance;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// the Controller Setup shown before a mission: its title, CONTROLLER SETUP (16 letters, 96 vertices) in the italic
+// lettering at 90,78, then the controller's picture and its two pictures of labels (256x256 sheets). Those go, and
+// a list of the mission's controls takes their place.
+
+std::atomic<uint64_t> g_setup_seen{0};
+uint64_t g_setup_frame = ~0ull;  // the frame whose title was drawn: its pictures that follow go
+controls::Context (*g_mission_query)() = nullptr;
+
+bool SetupTitle(const gpu::State& s, const Box& b, uint32_t count) {
+    return count == 96 && TextureSize(s, 256, 128) && Near(b.x0, 90.5f, 2) && Near(b.y0, 78.5f, 2);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // pages
 
-enum class Page { None, Quit, PcSettings, Controls };
+enum class Page { None, Quit, PcSettings, Controls, PauseControls };
 std::atomic<Page> g_page{Page::None};
 
 enum class Nav { Up, Down, Left, Right, Accept, Back, PrevTab, NextTab };
@@ -301,7 +375,10 @@ void Push(Nav n) {
     if (g_nav.size() < 32) g_nav.push_back(n);
 }
 
+std::atomic<bool> g_opened{false};  // a page opened since the pages last drew
+
 void Open(Page p) {
+    g_opened.store(true);
     {
         std::lock_guard lock(g_nav_lock);
         g_nav.clear();
@@ -396,6 +473,42 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
 
+    // the pre-mission Controller Setup: its pictures go
+    if (SetupTitle(s, b, count)) {
+        g_setup_seen.store(Frame() + 1);
+        g_setup_frame = Frame();
+    } else if (count == 6 && g_setup_frame == Frame() && TextureSize(s, 256, 256) && b.x0 >= 40 && b.y0 >= 120 &&
+               b.x1 <= 620 && b.y1 <= 470) {
+        Hide(v, stride, l, count);
+        return;
+    }
+
+    // the pause menu
+    if (Paused()) {
+        bool page = g_page.load() == Page::PauseControls;
+        if (count == 6 && TextureSize(s, 64, 64) && Near(b.x0, kMarkerX, 3)) {
+            if (page) Hide(v, stride, l, count);
+            else if (g_pause_selected.load()) MoveY(v, stride, l, count, kPauseTop + kPauseStep * kPauseRows - kMarkerAbove - b.y0);
+            return;
+        }
+        int row = PauseRow(s, b);
+        if (row >= 0) {
+            auto color = ColorOf(v, stride, l);
+            if (!IsShadow(color)) {
+                if (row == kPauseRows - 1) g_pause_seen.store(Frame() + 1);
+                if (Brightness(color) > Brightness(g_pause_unlit_color) + 0.3f || Brightness(color) > 2.4f) {
+                    g_pause_lit.store(row);
+                    g_pause_lit_color = color;
+                } else {
+                    g_pause_unlit_color = color;
+                }
+                if (g_pause_selected.load() && row == g_pause_lit.load()) SetColor(v, stride, l, count, g_pause_unlit_color);
+            }
+            if (page) Hide(v, stride, l, count);
+            return;
+        }
+    }
+
     if (count == 6) {
         // a main menu bar: its row moved up, and OPTIONS unlit while QUIT GAME is selected
         int band = BarBand(s, b);
@@ -450,6 +563,16 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
 
+    // Controls under Quit Mission, shadow and letters each after the game's own
+    if (count >= 6 && Paused() && PauseRow(s, b) == kPauseRows - 1 && g_page.load() != Page::PauseControls) {
+        auto color = ColorOf(v, stride, l);
+        if (!IsShadow(color)) color = g_pause_selected.load() ? g_pause_lit_color : g_pause_unlit_color;
+        Box first = BoxOf(v, stride, l, 0, 6);
+        std::vector<uint8_t> text = ItalicText("Controls", v, stride, l, first.x0, first.y0 + kPauseStep, color);
+        if (!text.empty()) emit(prim, text.data(), uint32_t(text.size() / stride));
+        return;
+    }
+
     if (count == 6) {
         int band = BarBand(s, b);
         if (band >= 0 && band % kMainItems == kMainItems - 1) {
@@ -484,6 +607,8 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
 
 bool PageOpen() { return g_page.load() != Page::None; }
 
+void SetMissionQuery(controls::Context (*query)()) { g_mission_query = query; }
+
 void PadInner(int port, input::Pad& pad, const Held& h);
 
 void Pad(int port, input::Pad& pad) {
@@ -516,6 +641,26 @@ void PadInner(int, input::Pad& pad, const Held& h) {
         if (lt) Push(Nav::PrevTab);
         if (rt) Push(Nav::NextTab);
         pad = Neutral(pad);
+        return;
+    }
+
+    // the pause menu: Controls past Quit Mission
+    bool pause = Recent(g_pause_seen.load()) && Paused();
+    if (!pause) g_pause_selected.store(false);
+    if (pause) {
+        if (!g_pause_selected.load()) {
+            if (dirs[1] && g_pause_lit.load() == kPauseRows - 1) {
+                g_pause_selected.store(true);
+                Take(pad, 1);
+            }
+        } else {
+            input::Pad out = Neutral(pad);
+            if (dirs[0]) g_pause_selected.store(false);
+            else if (a) Open(Page::PauseControls);
+            out.analog[1] = pad.analog[1];      // B and START still close the pause menu
+            out.buttons |= pad.buttons & 0x10;
+            pad = out;
+        }
         return;
     }
 
@@ -594,16 +739,28 @@ bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*) { return false; }
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <wincodec.h>
+
+#include <cstdio>
+#include <cwctype>
+#include <filesystem>
 
 #include <imgui.h>
 
+#include "common/menu_font.h"
 #include "common/menus_pages.h"
+
+#ifdef _MSC_VER
+#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "ole32.lib")
+#endif
 
 namespace menus {
 
 namespace {
 
-ImFont* g_font = nullptr;  // Bahnschrift, the nearest a Windows install has to the menus' condensed sans
+ImFont* g_font = nullptr;  // the game's lettering (GameFont), else Bahnschrift
+bool g_game_font = false;
 
 // console coordinates (640x480) to the window's
 ImVec2 Guest(float x, float y) {
@@ -701,6 +858,95 @@ void QuitPage(const std::vector<Nav>& nav) {
 
 }  // namespace
 
+// The game's own italic lettering for the pages, from the texture pack's image of its font sheet (any size, the
+// sheet's 256x128 layout scaled): each character of menu_font.h goes into ImGui's atlas as a glyph of a font of its
+// own. Without the image the pages fall back to Bahnschrift.
+bool LoadSheet(const std::filesystem::path& path, std::vector<uint8_t>& bgra, UINT& w, UINT& h) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    IWICImagingFactory* wic = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return false;
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICBitmapSource* src = nullptr;
+    HRESULT hr = wic->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+    if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+    if (SUCCEEDED(hr)) hr = WICConvertBitmapSource(GUID_WICPixelFormat32bppBGRA, frame, &src);
+    if (SUCCEEDED(hr)) hr = src->GetSize(&w, &h);
+    if (SUCCEEDED(hr) && (w < 256 || h < 128 || w > 8192 || h > 4096 || w * 128 != h * 256)) hr = E_FAIL;
+    if (SUCCEEDED(hr)) {
+        bgra.resize(size_t(w) * h * 4);
+        hr = src->CopyPixels(nullptr, w * 4, UINT(bgra.size()), bgra.data());
+    }
+    if (src) src->Release();
+    if (frame) frame->Release();
+    if (decoder) decoder->Release();
+    wic->Release();
+    return SUCCEEDED(hr);
+}
+
+std::filesystem::path FindSheet() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path root = app::ExeDir() / "textures" / "replacement";
+    if (!fs::is_directory(root, ec)) return {};
+    for (fs::recursive_directory_iterator it(root, ec), end; it != end; it.increment(ec)) {
+        if (ec) break;
+        const fs::path& p = it->path();
+        std::wstring name = p.filename().wstring(), ext = p.extension().wstring();
+        for (auto& ch : ext) ch = wchar_t(towlower(ch));
+        std::string key = kMenuFontKey;
+        if (ext == L".png" && name.find(std::wstring(key.begin(), key.end())) != std::wstring::npos) return p;
+    }
+    return {};
+}
+
+ImFont* GameFont(ImGuiIO& io) {
+    std::filesystem::path path = FindSheet();
+    std::vector<uint8_t> px;
+    UINT w = 0, h = 0;
+    if (path.empty() || !LoadSheet(path, px, w, h)) {
+        LOGI("menus: the font sheet %s is not in the texture pack, the pages use Bahnschrift", kMenuFontKey);
+        return nullptr;
+    }
+    float k = float(w) / 256.0f;  // sheet pixels a texel
+    ImFontConfig cfg;
+    cfg.SizePixels = std::round(kMenuLineHeight * k);
+    cfg.GlyphRanges = io.Fonts->GetGlyphRangesDefault();
+    std::snprintf(cfg.Name, sizeof(cfg.Name), "AUF menus");
+    ImFont* font = io.Fonts->AddFontDefault(&cfg);  // the rest of its characters, should any be drawn
+    std::vector<int> ids;
+    for (const MenuGlyph& g : kMenuGlyphs) {
+        int gw = int(std::lround((g.x1 - g.x0 + 1) * k)), gh = int(std::lround((g.y1 - g.y0 + 1) * k));
+        ids.push_back(io.Fonts->AddCustomRectFontGlyph(font, ImWchar(static_cast<unsigned char>(g.c)), gw, gh,
+                                                       g.advance * k, ImVec2(0, (g.dy + 2) * k)));
+    }
+    int space = io.Fonts->AddCustomRectFontGlyph(font, ImWchar(' '), 1, 1, kMenuSpace * k, ImVec2(0, 0));
+    io.Fonts->Build();
+    unsigned char* atlas = nullptr;
+    int aw = 0, ah = 0;
+    io.Fonts->GetTexDataAsRGBA32(&atlas, &aw, &ah);
+    auto put = [&](const ImFontAtlasCustomRect* r, const MenuGlyph* g) {
+        for (int y = 0; y < r->Height; y++)
+            for (int x = 0; x < r->Width; x++) {
+                uint8_t a = 0;
+                if (g) {
+                    // the sheet's pixels under the glyph's rectangle, stretched over the quad as the game does
+                    float sx = (g->x0 + float(x) / r->Width * (g->x1 - g->x0)) * k;
+                    float sy = (g->y0 + float(y) / r->Height * (g->y1 - g->y0)) * k;
+                    int ix = std::clamp(int(sx), 0, int(w) - 1), iy = std::clamp(int(sy), 0, int(h) - 1);
+                    a = px[(size_t(iy) * w + ix) * 4 + 3];
+                }
+                unsigned char* d = atlas + (size_t(r->Y + y) * aw + r->X + x) * 4;
+                d[0] = d[1] = d[2] = 255;
+                d[3] = a;
+            }
+    };
+    for (size_t i = 0; i < ids.size(); i++) put(io.Fonts->GetCustomRectByIndex(ids[i]), &kMenuGlyphs[i]);
+    put(io.Fonts->GetCustomRectByIndex(space), nullptr);
+    LOGI("menus: the pages use the game's lettering (%ux%u sheet)", w, h);
+    return font;
+}
+
 void Window(void*) {
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->AddFontDefault();  // the F10 panel's
@@ -715,6 +961,9 @@ void Window(void*) {
         cfg.OversampleH = 2;
         g_font = io.Fonts->AddFontFromFileTTF(utf8, 48.0f, &cfg);
         if (g_font) break;
+    }
+    if (kMenus) {
+        if (ImFont* f = GameFont(io)) g_font = f, g_game_font = true;
     }
 }
 
@@ -747,13 +996,31 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
 void Ui() {
     if (!kMenus) return;
     Page page = g_page.load();
-    if (page == Page::None) return;
+    if (page == Page::None) {
+        if (Recent(g_setup_seen.load())) {
+            controls::Context c = g_mission_query ? g_mission_query() : controls::Context::OnFoot;
+            ControlsList(Context(), c, 130, 14);
+        }
+        return;
+    }
     std::vector<Nav> nav = TakeNav();
     ImGuiIO& io = ImGui::GetIO();
     io.MouseDrawCursor = false;
-    io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;  // the pages take the mouse
+    // the pages take the mouse, unless the controller is in use (the cursor is hidden then, controls.cpp)
+    if (controls::ActiveDevice() == controls::Device::KeyboardMouse) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+    else io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     if (page == Page::Quit) {
         QuitPage(nav);
+        return;
+    }
+    bool opened = g_opened.exchange(false);
+    if (page == Page::PauseControls) {
+        // over the pause menu's panel
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        dl->AddRectFilled(Guest(40, 66), Guest(600, 420), IM_COL32(6, 12, 34, 238));
+        std::vector<PageNav> pn;
+        for (Nav n : nav) pn.push_back(PageNav(int(n)));
+        if (!ControlsViewPage(Context(), pn, controls::Context::OnFoot, opened)) g_page.store(Page::None);
         return;
     }
     std::vector<PageNav> pn;

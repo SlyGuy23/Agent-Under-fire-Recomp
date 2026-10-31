@@ -449,7 +449,9 @@ void Draw(double fps) {
     io.KeyRepeatRate = 0.1f;  // held arrows step ten times a second
     io.FontGlobalScale = std::max(1.0f, io.DisplaySize.y / 720.0f);
     if (Open()) {
-        io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+        // the cursor stays hidden while the controller is in use (controls.cpp)
+        if (controls::ActiveDevice() == controls::Device::KeyboardMouse) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+        else io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         io.MouseDrawCursor = false;
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) Toggle();
         else Panel();

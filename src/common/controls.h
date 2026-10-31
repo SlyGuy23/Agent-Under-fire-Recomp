@@ -25,8 +25,16 @@ struct Pad;
 
 namespace controls {
 
-enum class Context : uint8_t { OnFoot, Driving };
-inline constexpr int kContexts = 2;
+// on foot (bond_eng.xbe), driving and the on-rails gunner runs (both driving.xbe, told apart by the level)
+enum class Context : uint8_t { OnFoot, Driving, OnRails };
+inline constexpr int kContexts = 3;
+
+// where the player is: Menu (front end, loading), Paused (the in-mission pause menu) or Playing. Remapping, the
+// keyboard and mouse layout and the toggles apply only while Playing; the menus get the controller as it is and a
+// fixed set of menu keys (arrows or WASD, Enter, Escape...), so they always work the same.
+enum class GameState : uint8_t { Menu, Paused, Playing };
+void SetGameStateQuery(GameState (*query)());
+GameState CurrentGameState();
 
 enum class Device : uint8_t { Controller, KeyboardMouse };
 
@@ -69,7 +77,15 @@ struct Options {
     MouseLook mouse_look = MouseLook::Auto;
     MouseAxis mouse_x = MouseAxis::RightX, mouse_y = MouseAxis::RightY;  // Stick only; each context's defaults differ
     StickOptions left, right;  // the controller's sticks; sticks::g_modern off leaves them as they are
+    bool crouch_toggle = false;  // on foot: a press crouches, the next stands (else held)
+    bool aim_toggle = false;     // on foot: a press brings up the manual aim, the next puts it away
 };
+
+// driving.xbe: whether this run is a driving mission or an on-rails one
+void SetDrivingMode(Context c);
+// on foot with the keyboard and mouse: what the keys bound to FIRE give instead (the gadget's use while one is
+// raised); Action::RT, or Action::None, keeps them on FIRE
+void SetFireRedirect(Action (*query)());
 
 // where this executable plays, and which device drives it now
 Context CurrentContext();

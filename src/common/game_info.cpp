@@ -53,8 +53,19 @@ void KeepDrivingLaunch(bool relaunched) {
 
 // default.xbe only plays the EA Games and MGM films and the attract film before it loads the game: with Skip Intros
 // the launcher goes straight to the game's executable. A relaunch into the launcher (the game quitting to it) is let be.
+controls::GameState OnFootState();
+controls::GameState DrivingState();
+controls::Action FireRedirect();
+controls::Context PickedMission();
+
 void Init() {
     overlay::ApplyVolume();
+    if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
+        controls::SetGameStateQuery(OnFootState);
+        controls::SetFireRedirect(FireRedirect);
+        menus::SetMissionQuery(PickedMission);
+    }
+    if (std::string_view(IMAGE_XBE) == "driving.xbe") controls::SetGameStateQuery(DrivingState);
     bool launcher = std::string_view(IMAGE_XBE) == "default.xbe";
 #ifdef _WIN32
     bool relaunched = std::wcsstr(GetCommandLineW(), L"--relaunched") != nullptr;
@@ -147,6 +158,49 @@ void MouseLook(int port) {
     if (!(ys > 0) || (kernel::R32(ps + kFlags) & kFrozen)) return;
     *f(kYaw) -= yaw * ys;
     *f(kPitch) -= pitch * (pscale > 0 ? pscale : ys);
+}
+
+// Where the on-foot player is (controls::GameState): a level loaded (its playerState array set) and the pause menu
+// shut is play; the pause menu open is Paused; no level is the front end.
+controls::GameState OnFootState() {
+    constexpr uint32_t kPlayerState = 0x2A88B8, kPaused = 0x3B2428;
+    if (!kernel::R32(kPlayerState)) return controls::GameState::Menu;
+    return kernel::R32(kPaused) ? controls::GameState::Paused : controls::GameState::Playing;
+}
+
+// driving.xbe: the mission object's state (+0x404: 1 playing, 2 paused, 3 complete, 4 failed) and its kind of
+// controls (+0x408: 1 for the on-rails gunner's), and the pause menu's flag (3 while it is open)
+controls::GameState DrivingState() {
+    constexpr uint32_t kMission = 0x1C2C2C, kMenu = 0x1BEB1C;
+    uint32_t m = kernel::R32(kMission);
+    if (m >= 0x7F00000) m = 0;
+    if (m) controls::SetDrivingMode(kernel::G<uint8_t>(m + 0x408) ? controls::Context::OnRails : controls::Context::Driving);
+    if (kernel::R32(kMenu) == 3) return controls::GameState::Paused;
+    return m && kernel::R32(m + 0x404) == 1 ? controls::GameState::Playing : controls::GameState::Menu;
+}
+
+// The mission picked in the front end ([0x2A9F98], 0 to 11): Precious Cargo and Forbidden Depths are on-rails
+// gunner runs, Dangerous Pursuit and Streets of Bucharest driving, the rest on foot
+controls::Context PickedMission() {
+    switch (kernel::R32(0x2A9F98)) {
+        case 1: case 8: return controls::Context::OnRails;
+        case 2: case 6: return controls::Context::Driving;
+        default: return controls::Context::OnFoot;
+    }
+}
+
+// On foot, the item in player 0's hands ([[0x329390]+0x278] is the player, +0x2EC what it holds): a gadget (its
+// byte +0x395 set, the flag the game's own fire code reads) and no mounted gun (+0x2F0) is used with B, where FIRE
+// would only put it away
+controls::Action FireRedirect() {
+    if (!kernel::R32(0x2A88B8)) return controls::Action::RT;
+    auto ok = [](uint32_t va) { return va >= 0x10000 && va < 0x7F00000; };  // in the console's memory
+    uint32_t players = kernel::R32(0x329390);
+    uint32_t player = ok(players) ? kernel::R32(players + 0x278) : 0;
+    uint32_t held = ok(player) ? kernel::R32(player + 0x2EC) : 0;
+    if (!ok(held)) return controls::Action::RT;
+    if (!held || kernel::R32(player + 0x2F0)) return controls::Action::RT;
+    return kernel::G<uint8_t>(held + 0x395) ? controls::Action::B : controls::Action::RT;
 }
 
 void GamePad(int port, input::Pad& pad) {
