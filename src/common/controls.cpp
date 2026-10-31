@@ -881,11 +881,24 @@ Options GetOptions(Context c) {
     return g_state[int(c)].options;
 }
 
+// On foot and on rails share their sensitivities and deadzones (the sticks' and the mouse's), so aiming feels the
+// same in both: setting one sets the other's too
+void ShareAiming(Context from) {
+    if (from != Context::OnFoot && from != Context::OnRails) return;
+    const Options& f = g_state[int(from)].options;
+    Options& t = g_state[int(from == Context::OnFoot ? Context::OnRails : Context::OnFoot)].options;
+    t.left = f.left;
+    t.right = f.right;
+    t.mouse_sensitivity = f.mouse_sensitivity;
+    t.mouse_invert_y = f.mouse_invert_y;
+}
+
 void SetOptions(Context c, const Options& o) {
     std::lock_guard lock(g_lock);
     Options& s = g_state[int(c)].options;
     s = o;
     Clamp(s);
+    ShareAiming(c);
 }
 
 Options DefaultOptions(Context c) { return Defaults(c); }
@@ -1116,12 +1129,19 @@ void Load(const void* table) {
                 std::swap(s.remap[int(A::Black)], s.remap[int(A::White)]);
         }
     }
+    ShareAiming(Context::OnFoot);
 #else
     (void)table;
 #endif
 }
 
 void Save(void* table) {
+#if CONTROLS_TOML
+    {
+        std::lock_guard lock(g_lock);
+        ShareAiming(Context::OnFoot);
+    }
+#endif
 #if CONTROLS_TOML
     toml::table& t = *static_cast<toml::table*>(table);
     std::lock_guard lock(g_lock);
