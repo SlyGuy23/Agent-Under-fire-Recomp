@@ -10,8 +10,8 @@ namespace {
 constexpr int kS = int(kFigureScale);
 constexpr int kMargin = 3;              // source texels kept round the figure: the filter's reach and the outline's
 constexpr float kEdgeLo = 0.2f, kEdgeHi = 0.6f;  // upscaled coverage mapped to 0 and 1, smoothstepped between
-constexpr int kOutline = 3;             // outline radius, in upscaled texels
-constexpr float kOutlineAlpha = 0.45f;
+constexpr int kOutline = 2;             // outline radius, in upscaled texels
+constexpr float kOutlineAlpha = 0.22f;  // faint: it smooths the edge more than it draws a line
 constexpr float kOutlineBgr[3] = {0.90f, 0.65f, 0.55f};  // the pause screen frame's periwinkle
 
 void CatmullRom(float t, float w[4]) {
@@ -96,10 +96,12 @@ void SmoothFigure(const uint8_t* src, uint32_t pitch, uint32_t w, uint32_t h, st
             }
         }
     }
-    // crisp coverage, then the outline as its dilation
+    // crisp coverage, then the outline as its dilation; a see-through figure keeps its strongest alpha
+    float amax = 0;
+    for (size_t i = 0; i < in.size(); i += 4) amax = std::max(amax, in[i + 3]);
     std::vector<float> cover(size_t(ow) * oh);
     for (size_t i = 0; i < cover.size(); i++) {
-        float t = std::clamp((up[i * 4 + 3] - kEdgeLo) / (kEdgeHi - kEdgeLo), 0.0f, 1.0f);
+        float t = std::clamp((up[i * 4 + 3] / amax - kEdgeLo) / (kEdgeHi - kEdgeLo), 0.0f, 1.0f);
         cover[i] = t * t * (3 - 2 * t);
     }
     std::vector<float> rowmax(cover.size()), grown(cover.size());
@@ -123,8 +125,8 @@ void SmoothFigure(const uint8_t* src, uint32_t pitch, uint32_t w, uint32_t h, st
         uint8_t* dst = &out[(size_t(y0 * kS + y) * OW + size_t(x0) * kS) * 4];
         for (int x = 0; x < ow; x++) {
             size_t i = size_t(y) * ow + x;
-            float a = cover[i], cov = std::max(up[i * 4 + 3], 1e-3f);
-            float o = grown[i] * kOutlineAlpha * (1 - a);
+            float a = cover[i] * amax, cov = std::max(up[i * 4 + 3], 1e-3f);
+            float o = grown[i] * kOutlineAlpha * amax * (1 - cover[i]);
             float oa = a + o;
             if (oa <= 0) continue;
             for (int c = 0; c < 3; c++) {

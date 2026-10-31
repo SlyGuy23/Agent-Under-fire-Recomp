@@ -347,6 +347,8 @@ struct Tex {
     uint64_t pack_key = 0;      // its pack image is still loading
     uint32_t pack_gen = 0;      // texturedumper::Generation the key was taken at, 0 after new bytes
     uint64_t dump_key = 0;      // the name the pack and the dumps know its bytes by, for captures
+    uint32_t fresh_run = 0;     // up two a frame it gets new bytes, down one a frame it does not: animated on the CPU
+    bool figure = false;        // swap is its SwapFigure upscale
 };
 
 struct PsoKey {
@@ -562,7 +564,8 @@ private:
     void LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint32_t* colours);
     void LatchPackImage(Tex& tx);
     void CreatePackTexture(Tex& r, const texturedumper::Image& img);
-    void SwapFigure(Tex& tx, const TextureDesc& d, const uint8_t* p, bool fresh);
+    void SwapFigure(Tex& tx, const TextureDesc& d, const FormatInfo& fi, bool fresh);
+    const Tex* SurfacePackImage(const TextureDesc& d);
     void ReleasePackTextures();
     void EnsurePixelShader(const PixelKey& pk, DrawShaders& sh);
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
@@ -1341,6 +1344,32 @@ ComPtr<ID3D12Resource> D3D12Backend::CreatePixelTexture(const std::vector<uint8_
     return tex;
 }
 
+// The texture pack's image for a surface's bytes, keyed as a texture's are with kSurfaceKeyTag added to the shape, or
+// null. A surface is written once by the CPU and shown, so the image is waited for (up to kSurfacePackWaitMs) rather
+// than drawn a frame late.
+const Tex* D3D12Backend::SurfacePackImage(const TextureDesc& d) {
+    constexpr uint32_t kSurfaceKeyTag = 0x53555246;  // "SURF"
+    constexpr int kSurfacePackWaitMs = 500, kSurfacePackStepMs = 5;
+    if (!texturedumper::Replacing()) return nullptr;
+    uint32_t shape[] = {d.format, d.width, d.height, kSurfaceKeyTag};
+    uint64_t key = Hash(kernel::HostPtr(d.data), LevelSize(d, 0), Hash(shape, sizeof(shape)));
+    auto it = pack_textures_.find(key);
+    if (it == pack_textures_.end()) {
+        texturedumper::Image img;
+        texturedumper::Lookup got = texturedumper::Take(key, img);
+        for (int waited = 0; got == texturedumper::Lookup::Loading && waited < kSurfacePackWaitMs; waited += kSurfacePackStepMs) {
+            Sleep(kSurfacePackStepMs);
+            got = texturedumper::Take(key, img);
+        }
+        if (got != texturedumper::Lookup::Ready) return nullptr;
+        LOGI("texture pack: surface %08X %ux%u drawn from the pack (%016llx)", d.data, d.width, d.height,
+             static_cast<unsigned long long>(key));
+        it = pack_textures_.emplace(key, Tex{}).first;
+        CreatePackTexture(it->second, img);
+    }
+    return it->second.res ? &it->second : nullptr;
+}
+
 // CPU pixels of a color surface into its host target, scaled
 void D3D12Backend::UploadTarget(Target& t, const Surface& s) {
     g_perf.rtups++;
@@ -1357,13 +1386,15 @@ void D3D12Backend::UploadTarget(Target& t, const Surface& s) {
     } else {
         DecodeLevel(d, 0, 0, static_cast<const uint8_t*>(kernel::HostPtr(d.data)), nullptr, px, pitch);
     }
-    ComPtr<ID3D12Resource> tex = CreatePixelTexture(px, pitch, d.width, d.height);
+    // a whole picture the CPU wrote (Agent Under Fire's driving loading screens): the pack's image in its place
+    const Tex* packed = over ? nullptr : SurfacePackImage(d);
+    ComPtr<ID3D12Resource> tex = packed ? packed->res : CreatePixelTexture(px, pitch, d.width, d.height);
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
     SetBlitTarget(Cpu(rtv_heap_.Get(), t.view, rtv_inc_), t.w, t.h);
     float uv[4] = {0, 0, 1, 1};
     float mul = 1 / t.range;
-    Blit(tex.Get(), kBgra, uv, {.alpha = true, .mul = mul, .rtv = t.fmt, .over = over});
-    CurrentFrame().garbage.push_back(tex);
+    Blit(tex.Get(), packed ? packed->fmt : kBgra, uv, {.alpha = true, .mul = mul, .rtv = t.fmt, .over = over});
+    if (!packed) CurrentFrame().garbage.push_back(tex);
     t.epoch = DirtyEpoch(t.data);
     t.sig = MemSig(t.data, t.bytes);
 }
@@ -1859,6 +1890,9 @@ void ReadStagePalette(const State& s, int stage, const TextureDesc& d, StagePale
     palette.hash = Hash(palette.colours, sizeof(palette.colours));
 }
 
+bool IdentityProjection(const State& s);
+constexpr uint32_t kMenuFvf = 0x145;  // Agent Under Fire's menus: XYZ, diffuse, one texture set, under an identity projection
+
 // a texture in guest memory: made again when its layout changed, uploaded again when its bytes did
 ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const TextureDesc& d, const FormatInfo& fi,
                                                DrawTextures& stages) {
@@ -1882,6 +1916,7 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
         uint64_t sig = MemSig(d.data, total) ^ DirtyEpoch(d.data) ^ palette.hash;
         g_perf.sig += PerfMs(perf_t);
         fresh = sig != tx.sig || !same;
+        tx.fresh_run = fresh ? std::min(tx.fresh_run + 2, 64u) : (tx.fresh_run ? tx.fresh_run - 1 : 0);
         if (fresh) {
             PerfScope perf_up{g_perf.texup};
             g_perf.texups++;
@@ -1893,10 +1928,19 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
     }
     if (tx.pack_gen != texturedumper::Generation()) LatchPackKey(tx, d, fi, colours);
     if (tx.pack_key) LatchPackImage(tx);
-    constexpr uint32_t kFmtLinA8R8G8B8 = 0x12, kFigureSize = 128;
-    if (app::g_smooth_figures && d.linear && d.format == kFmtLinA8R8G8B8 && d.width == kFigureSize &&
-        d.height == kFigureSize && d.pitch >= kFigureSize * 4)
-        SwapFigure(tx, d, static_cast<const uint8_t*>(kernel::HostPtr(d.data)), fresh);
+    // the menus' and the driving pause screen's running figures: 128x128 A8R8G8B8 the title rewrites every frame,
+    // linear in the driving missions, swizzled under the menus' 2D draws in the game
+    constexpr uint32_t kFmtA8R8G8B8 = 0x06, kFmtLinA8R8G8B8 = 0x12, kFigureSize = 128, kFigureRun = 3;
+    bool figure_size = d.width == kFigureSize && d.height == kFigureSize && !d.cube && d.depth <= 1;
+    bool driving_figure = app::g_smooth_figures && d.linear && d.format == kFmtLinA8R8G8B8 && d.pitch >= kFigureSize * 4;
+    bool menu_figure = !d.linear && d.format == kFmtA8R8G8B8 && tx.fresh_run >= kFigureRun && s.vs_handle == kMenuFvf &&
+                       IdentityProjection(s);
+    if (figure_size && (driving_figure || menu_figure)) {
+        SwapFigure(tx, d, fi, fresh || !tx.figure);
+    } else if (tx.figure) {
+        tx.figure = false;
+        tx.swap = nullptr;
+    }
     const Tex& drawn = tx.swap ? *tx.swap : tx;
     stages.key[stage] = tx.dump_key;
     FillTextureView(drawn, d, stages.sv[stage]);
@@ -1906,7 +1950,7 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
 }
 
 // app::g_smooth_figures: the figure upscaled (SmoothFigure) is drawn in the texture's place, made again on new bytes
-void D3D12Backend::SwapFigure(Tex& tx, const TextureDesc& d, const uint8_t* p, bool fresh) {
+void D3D12Backend::SwapFigure(Tex& tx, const TextureDesc& d, const FormatInfo& fi, bool fresh) {
     Tex& f = figures_[d.data];
     if (!f.res) {
         f.fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1920,14 +1964,21 @@ void D3D12Backend::SwapFigure(Tex& tx, const TextureDesc& d, const uint8_t* p, b
         fresh = true;
     }
     if (fresh) {
-        std::vector<uint8_t> px;
-        SmoothFigure(p, d.pitch, d.width, d.height, px);
+        const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
+        std::vector<uint8_t> src, px;
+        uint32_t pitch = d.pitch;
+        if (!d.linear) {  // swizzled: decoded to rows first
+            DecodeLevel(d, 0, 0, p, nullptr, src, pitch);
+            p = src.data();
+        }
+        SmoothFigure(p, pitch, d.width, d.height, px);
         D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         Transition(f.res.Get(), st, D3D12_RESOURCE_STATE_COPY_DEST);
         UploadTextureLevel(f, 0, 0, px, d.width * kFigureScale * 4);
         Transition(f.res.Get(), st, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
     tx.swap = &f;
+    tx.figure = true;
 }
 
 // after new bytes or a texture setting change: the name the pack and the dumps know the bytes by
