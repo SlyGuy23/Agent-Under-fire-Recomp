@@ -960,7 +960,13 @@ void PadInner(int, input::Pad& pad, const Held& h) {
         if (under == kControllerRow) out.buttons |= 2;  // the game goes down to Invert Pitch
     } else if (a) {
         Open(Page::PcSettings);
+    } else if (back) {
+        // B still leaves the options for the main menu
+        g_pc_selected.store(false);
+        out.analog[1] = pad.analog[1];
     }
+    if (!a && !dirs[0] && !dirs[1]) out.analog[1] = pad.analog[1];
+    out.buttons |= pad.buttons & 0x20;  // and BACK
     pad = out;
 }
 
@@ -1041,8 +1047,9 @@ void SayIn(ImFont* f, ImDrawList* dl, float x, float y, float size, ImU32 col, c
     float px = size * GuestScale();
     ImVec2 p = Guest(x, y);
     if (align != 0) p.x -= f->CalcTextSizeA(px, FLT_MAX, 0, text).x * align;
-    float o = std::max(1.0f, GuestScale());
-    dl->AddText(f, px, ImVec2(p.x + o, p.y + o), IM_COL32(0, 0, 0, 230), text);
+    // the game's shadow: a console pixel down and right, soft enough not to read as an outline at high resolutions
+    float o = std::max(1.0f, GuestScale() * 0.7f);
+    dl->AddText(f, px, ImVec2(p.x + o, p.y + o), IM_COL32(0, 0, 0, 150), text);
     dl->AddText(f, px, p, col, text);
 }
 
@@ -1405,8 +1412,8 @@ void DrawPrompts() {
         if (!k.ready) continue;
         float cx = (p.x0 + p.x1) / 2, cy = (p.y0 + p.y1) / 2;
         // as tall as the button, or narrower where a wide key would reach the words beside it
-        float h = (p.y1 - p.y0) * 1.15f, w = h * k.aspect;
-        float most = (p.x1 - p.x0) * 1.6f;
+        float h = (p.y1 - p.y0) * 0.72f, w = h * k.aspect;
+        float most = (p.x1 - p.x0) * 1.15f;
         if (w > most) w = most, h = w / k.aspect;
         dl->AddImage(tex, Guest(cx - w / 2, cy - h / 2), Guest(cx + w / 2, cy + h / 2), k.uv0, k.uv1);
     }
@@ -1517,7 +1524,7 @@ void Ui() {
     if (page == Page::PauseControls) {
         // over the pause menu's panel
         ImDrawList* dl = ImGui::GetForegroundDrawList();
-        dl->AddRectFilled(Guest(40, 66), Guest(600, 420), IM_COL32(6, 12, 34, 238));
+        dl->AddRectFilled(Guest(32, 66), Guest(608, 420), IM_COL32(6, 12, 34, 238));
         std::vector<PageNav> pn;
         for (Nav n : nav) pn.push_back(PageNav(int(n)));
         if (!ControlsViewPage(Context(), pn, controls::CurrentContext(), opened)) g_page.store(Page::None);

@@ -212,6 +212,7 @@ struct CRow {
     Action action = Action::None;
     Opt opt = Opt::LeftSens;
     std::string label, value;
+    std::string desc;  // a line saying what it does, shown under the row while it is selected
 };
 
 int g_tab = 0, g_sel = -1, g_scroll = 0, g_slot = 0;
@@ -268,8 +269,7 @@ std::vector<CRow> Rows(const Tab& t, bool view_only) {
         opt(Opt::AimToggle, "MANUAL AIM", o.aim_toggle ? "TOGGLE" : "HOLD");
         if (t.device == Device::Controller && !view_only) {
             opt(Opt::SmartFire, "FIRE USES GADGET", o.smart_fire ? "ON" : "OFF");
-            rows.push_back({RowKind::Note, Action::None, Opt::LeftSens,
-                            "With a gadget out RT uses it rather than switching back to your weapon", ""});
+            rows.back().desc = "With a gadget out RT uses it rather than switching back to your weapon";
         }
     }
     if (view_only) return rows;
@@ -385,9 +385,14 @@ int DrawTabs(const PageContext& c, ImDrawList* dl, int tab, bool clickable, int 
 void DrawRows(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& rows, int sel, int scroll, bool keyboard,
               const std::string& sel_value, int* hover, float value_x) {
     constexpr float kStep = 21;
+    float extra = 0;  // the selected row's description pushes the rows after it down
     for (int i = scroll; i < int(rows.size()) && i < scroll + kControlRows; i++) {
         const CRow& r = rows[size_t(i)];
-        float y = g_rows_y + kStep * float(i - scroll);
+        float y = g_rows_y + kStep * float(i - scroll) + extra;
+        if (i == sel && !r.desc.empty()) {
+            c.say(dl, kLabelX + 8, y + 16, 11, Dim(c.lit), r.desc.c_str(), 0);
+            extra += 13;
+        }
         if (r.kind == RowKind::Heading) {
             c.title(dl, kLabelX - 10, y + 5, 11, Dim(c.lit), r.label.c_str(), 0);
             continue;
@@ -423,6 +428,69 @@ int g_view_tab = 0, g_view_scroll = 0;
 
 bool PageMessage(uint32_t, uintptr_t) { return false; }
 
+namespace {
+
+// the controls as a grid: two halves side by side, each row an action and what gives it; on the keyboard and mouse
+// tab a row has two keys. sel: the selected row (-1 none), slot its key; hover gets the row and key under the mouse.
+struct GridHit {
+    int row = -1, slot = 0;
+};
+constexpr float kGridRow = 17, kGridHalf = 262, kGridGap = 12, kGridText = 14;
+
+GridHit DrawGrid(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& rows, float top, int sel, int slot,
+                 bool keyboard, const std::string& waiting, const Tab& t) {
+    GridHit hit;
+    int n = int(rows.size());
+    int per = std::max(1, (n + 1) / 2);
+    float x0 = 320 - (kGridHalf * 2 + kGridGap) / 2;
+    dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kGridHalf * 2 + kGridGap + 6, top + 20 + kGridRow * float(per)),
+                      IM_COL32(4, 8, 24, 190), 4 * c.scale());
+    for (int h = 0; h < 2; h++) {
+        float x = x0 + float(h) * (kGridHalf + kGridGap);
+        c.title(dl, x + 6, top, 11, Dim(c.lit), "Action", 0);
+        c.title(dl, x + kGridHalf - 6, top, 11, Dim(c.lit), "Control", 1);
+        dl->AddLine(c.guest(x, top + 14), c.guest(x + kGridHalf, top + 14), Dim(c.unlit), std::max(1.0f, c.scale()));
+    }
+    ImVec2 m = ImGui::GetIO().MousePos;
+    for (int i = 0; i < n; i++) {
+        int h = i / per, k = i % per;
+        float x = x0 + float(h) * (kGridHalf + kGridGap), y = top + 18 + kGridRow * float(k);
+        bool lit = i == sel;
+        ImU32 shade = lit ? IM_COL32(120, 170, 255, 70) : k % 2 == 0 ? IM_COL32(120, 150, 230, 34) : IM_COL32(120, 150, 230, 14);
+        dl->AddRectFilled(c.guest(x, y - 1), c.guest(x + kGridHalf, y + kGridRow - 1), shade);
+        const CRow& r = rows[size_t(i)];
+        std::string label = Titled(r.label), value;
+        if (lit && !waiting.empty()) value = waiting;
+        else if (keyboard) {
+            std::string k0 = KeyText(t, r.action, 0), k1 = controls::BindingName(t.context, t.device, r.action, 1);
+            if (k1.empty()) k1 = "-";
+            value = lit ? (slot == 0 ? "[" + k0 + "]  /  " + k1 : k0 + "  /  [" + k1 + "]") : (k1 == "-" ? k0 : k0 + "  /  " + k1);
+        } else {
+            value = r.value.empty() ? "-" : r.value;
+        }
+        float vs = kGridText, ls = kGridText;
+        while (vs > 9 && c.width(vs, value.c_str()) > kGridHalf * 0.58f) vs -= 1;
+        float room = kGridHalf - 18 - c.width(vs, value.c_str());
+        while (ls > 9 && c.width(ls, label.c_str()) > room) ls -= 1;
+        c.say(dl, x + 6, y + (kGridText - ls) * 0.7f, ls, lit ? c.lit : c.unlit, label.c_str(), 0);
+        c.say(dl, x + kGridHalf - 6, y + (kGridText - vs) * 0.7f, vs, c.lit, value.c_str(), 1);
+        ImVec2 a = c.guest(x, y - 1), b = c.guest(x + kGridHalf, y + kGridRow - 1);
+        if (m.x >= a.x && m.x < b.x && m.y >= a.y && m.y < b.y) {
+            hit.row = i;
+            // the keyboard's two keys: the left one left of the value's middle
+            float mid = x + kGridHalf - 6 - c.width(vs, value.c_str()) / 2;
+            hit.slot = keyboard && m.x > c.guest(mid, y).x ? 1 : 0;
+        }
+    }
+    return hit;
+}
+
+int g_section = 0;   // 0 the grid of controls, 1 the list of general and stick or mouse options
+int g_cell = 0;      // the grid's selected row
+int g_opt_sel = -1;  // the list's selected row
+
+}  // namespace
+
 bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
     const Tab& tab = kTabs[g_tab];
     // waiting for an input to bind: the page stands still until it comes (a controller gives up after 6 seconds)
@@ -437,69 +505,125 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
             if (st == controls::CaptureState::Bound) app::Save();
         }
     }
-    std::vector<CRow> rows = Rows(tab, false);
-    if (g_sel < 0 || g_sel >= int(rows.size()) || rows[size_t(g_sel)].kind == RowKind::Heading || rows[size_t(g_sel)].kind == RowKind::Note) g_sel = 0;
     bool settling = ImGui::GetFrameCount() - g_ended_frame < 3;
+    auto split = [&](const Tab& t, std::vector<CRow>& actions, std::vector<CRow>& options) {
+        actions.clear(), options.clear();
+        for (const CRow& r : Rows(t, false)) (r.kind == RowKind::Action ? actions : options).push_back(r);
+    };
+    std::vector<CRow> actions, options;
+    split(tab, actions, options);
+    int per = std::max(1, (int(actions.size()) + 1) / 2);
+    g_cell = std::clamp(g_cell, 0, std::max(0, int(actions.size()) - 1));
+    if (g_opt_sel < 0 || g_opt_sel >= int(options.size()) || options[size_t(g_opt_sel)].kind == RowKind::Heading)
+        g_opt_sel = Next(options, -1, 1);
+    bool keyboard = tab.device == Device::KeyboardMouse;
+    auto change_tab = [&](int to) {
+        g_tab = (to + kTabCount) % kTabCount;
+        g_cell = 0, g_slot = 0, g_section = 0, g_scroll = 0;
+    };
     if (!g_capturing && !settling) {
         for (PageNav n : nav) {
-            const CRow& r = rows[size_t(g_sel)];
-            switch (n) {
-                case PageNav::Up: g_sel = Next(rows, g_sel, -1); break;
-                case PageNav::Down: g_sel = Next(rows, g_sel, 1); break;
-                case PageNav::Left:
-                case PageNav::Right: {
-                    int step = n == PageNav::Left ? -1 : 1;
-                    if (r.kind == RowKind::Option) StepOption(tab.context, r.opt, step);
-                    else if (r.kind == RowKind::Action && tab.device == Device::KeyboardMouse) g_slot = step < 0 ? 0 : 1;
-                    break;
+            if (n == PageNav::Back) {
+                g_section = 0;
+                return false;
+            }
+            if (n == PageNav::PrevTab || n == PageNav::NextTab) {
+                change_tab(g_tab + (n == PageNav::NextTab ? 1 : -1));
+                split(kTabs[g_tab], actions, options);
+                per = std::max(1, (int(actions.size()) + 1) / 2);
+                continue;
+            }
+            const Tab& t = kTabs[g_tab];
+            if (g_section == 0) {
+                int h = g_cell / per, k = g_cell % per;
+                switch (n) {
+                    case PageNav::Up:
+                        if (k > 0) g_cell--;
+                        break;
+                    case PageNav::Down:
+                        if (k + 1 < per && g_cell + 1 < int(actions.size())) g_cell++;
+                        else g_section = 1, g_opt_sel = Next(options, -1, 1);
+                        break;
+                    case PageNav::Left:
+                        if (keyboard && g_slot == 1) g_slot = 0;
+                        else if (h > 0) g_cell -= per, g_slot = keyboard ? 1 : 0;
+                        break;
+                    case PageNav::Right:
+                        if (keyboard && g_slot == 0) g_slot = 1;
+                        else if (h == 0 && g_cell + per < int(actions.size())) g_cell += per, g_slot = 0;
+                        break;
+                    case PageNav::Accept:
+                        if (!actions.empty()) Activate(t, actions[size_t(g_cell)], 1);
+                        break;
+                    default: break;
                 }
-                case PageNav::Accept: Activate(tab, r, 1); break;
-                case PageNav::Back: g_sel = -1; return false;
-                case PageNav::PrevTab: g_tab = (g_tab + kTabCount - 1) % kTabCount, g_sel = 0, g_scroll = 0; break;
-                case PageNav::NextTab: g_tab = (g_tab + 1) % kTabCount, g_sel = 0, g_scroll = 0; break;
+            } else {
+                const CRow& r = options[size_t(g_opt_sel)];
+                switch (n) {
+                    case PageNav::Up: {
+                        int first = Next(options, -1, 1);
+                        if (g_opt_sel == first) g_section = 0, g_cell = std::min(per - 1, int(actions.size()) - 1);
+                        else g_opt_sel = Next(options, g_opt_sel, -1);
+                        break;
+                    }
+                    case PageNav::Down: {
+                        int nx = Next(options, g_opt_sel, 1);
+                        if (nx > g_opt_sel) g_opt_sel = nx;
+                        break;
+                    }
+                    case PageNav::Left:
+                    case PageNav::Right:
+                        if (r.kind == RowKind::Option) StepOption(t.context, r.opt, n == PageNav::Left ? -1 : 1);
+                        break;
+                    case PageNav::Accept: Activate(t, r, 1); break;
+                    default: break;
+                }
             }
             if (g_capturing) break;
         }
     }
     const Tab& shown = kTabs[g_tab];
-    rows = Rows(shown, false);
-    if (g_sel >= int(rows.size())) g_sel = 0;
-
+    split(shown, actions, options);
+    keyboard = shown.device == Device::KeyboardMouse;
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-    g_tabs_y = 112, g_rows_y = 156;  // clear of the title's bar
+    g_tabs_y = 112;
     int clicked = DrawTabs(c, dl, g_tab, !g_capturing);
-    if (clicked >= 0 && clicked != g_tab) g_tab = clicked, g_sel = 0, g_scroll = 0;
-    g_scroll = Clamp(g_scroll, g_sel, int(rows.size()));
-    ImVec2 m = ImGui::GetIO().MousePos;
-    bool moved = m.x != g_mouse_last.x || m.y != g_mouse_last.y;
-    g_mouse_last = m;
-    std::string sel_value;
-    const CRow& sr = rows[size_t(g_sel)];
-    if (g_capturing) sel_value = shown.device == Device::Controller ? "PRESS A BUTTON" : "PRESS A KEY";
-    else if (sr.kind == RowKind::Action && shown.device == Device::KeyboardMouse) {
-        std::string k0 = KeyText(shown, sr.action, 0), k1 = controls::BindingName(shown.context, shown.device, sr.action, 1);
-        if (k1.empty()) k1 = "-";
-        sel_value = (g_slot == 0 ? "[" + k0 + "]" : k0) + "  /  " + (g_slot == 1 ? "[" + k1 + "]" : k1);
-    }
-    int hover = -1;
-    DrawRows(c, dl, rows, g_sel, g_scroll, shown.device == Device::KeyboardMouse, sel_value,
-             (!g_capturing && !settling) ? &hover : nullptr, kValueX - 20);
-    if (hover >= 0) {
-        const CRow& r = rows[size_t(hover)];
-        if (moved) g_sel = hover;
-        float y = g_rows_y + 21 * float(hover - g_scroll);
-        if (r.kind == RowKind::Action && shown.device == Device::KeyboardMouse && moved) {
-            ImVec2 mid = c.guest(kValueX + 60, y);
-            g_slot = m.x < mid.x ? 0 : 1;
+    if (clicked >= 0 && clicked != g_tab) change_tab(clicked);
+    ImVec2 delta = ImGui::GetIO().MouseDelta;
+    bool moved = delta.x != 0 || delta.y != 0;
+    bool idle = !g_capturing && !settling;
+    if (g_section == 0) {
+        std::string waiting = g_capturing ? (keyboard ? "PRESS A KEY" : "PRESS A BUTTON") : "";
+        GridHit hit = DrawGrid(c, dl, actions, 152, g_cell, g_slot, keyboard, waiting, shown);
+        float bottom = 152 + 20 + kGridRow * float(std::max(1, (int(actions.size()) + 1) / 2));
+        c.title(dl, 320, bottom + 4, 11, Dim(c.unlit), "v  General & Sticks  v", 0.5f);
+        if (idle && hit.row >= 0) {
+            if (moved) g_cell = hit.row, g_slot = hit.slot;
+            if (ImGui::IsMouseClicked(0)) g_cell = hit.row, g_slot = hit.slot, Activate(shown, actions[size_t(hit.row)], 1);
+            else if (ImGui::IsMouseClicked(1) && keyboard)
+                controls::SetKeyBinding(shown.context, actions[size_t(hit.row)].action, hit.slot, controls::kNoKey), app::Save();
         }
-        if (ImGui::IsMouseClicked(0)) Activate(shown, r, 1);
-        else if (ImGui::IsMouseClicked(1)) {
-            if (r.kind == RowKind::Option) StepOption(shown.context, r.opt, -1);
-            else if (r.kind == RowKind::Action && shown.device == Device::KeyboardMouse)
-                controls::SetKeyBinding(shown.context, r.action, g_slot, controls::kNoKey), app::Save();
+        ImVec2 a = c.guest(200, bottom), b = c.guest(440, bottom + 18);
+        if (idle && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) g_section = 1;
+        if (idle && ImGui::GetIO().MouseWheel < 0) g_section = 1;
+    } else {
+        c.title(dl, 320, 146, 11, Dim(c.unlit), "^  Controls  ^", 0.5f);
+        ImVec2 a = c.guest(220, 144), b = c.guest(420, 160);
+        if (idle && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) g_section = 0;
+        g_rows_y = 166;
+        int hover = -1;
+        g_scroll = Clamp(g_scroll, g_opt_sel, int(options.size()));
+        DrawRows(c, dl, options, g_opt_sel, g_scroll, keyboard, "", idle ? &hover : nullptr, kValueX + 20);
+        if (hover >= 0 && options[size_t(hover)].kind != RowKind::Heading) {
+            if (moved) g_opt_sel = hover;
+            const CRow& r = options[size_t(hover)];
+            if (ImGui::IsMouseClicked(0)) Activate(shown, r, 1);
+            else if (ImGui::IsMouseClicked(1) && r.kind == RowKind::Option) StepOption(shown.context, r.opt, -1);
         }
+        float wheel = ImGui::GetIO().MouseWheel;
+        if (idle && wheel > 0 && g_scroll == 0) g_section = 0;
+        else if (idle && wheel != 0) g_scroll = std::max(0, g_scroll - int(wheel));
     }
-    if (!g_capturing && ImGui::GetIO().MouseWheel != 0) g_scroll = std::max(0, g_scroll - int(ImGui::GetIO().MouseWheel));
     return true;
 }
 
@@ -513,7 +637,7 @@ void DrawTable(const PageContext& c, ImDrawList* dl, controls::Context context, 
     rows.erase(std::remove_if(rows.begin(), rows.end(), [](const CRow& r) { return r.kind != RowKind::Action; }), rows.end());
     int per = std::max(1, std::min(max_rows, (int(rows.size()) + 1) / 2));
     if (int(rows.size()) <= max_rows / 2) per = int(rows.size());
-    constexpr float kRow = 17, kHalf = 272, kGap = 16, kText = 14;
+    constexpr float kRow = 17, kHalf = 262, kGap = 12, kText = 14;  // inside the pause page's panel (40 to 600)
     int halves = (int(rows.size()) + per - 1) / per;
     float x0 = 320 - (kHalf * float(halves) + kGap * float(halves - 1)) / 2;
     ImU32 rule = Dim(c.unlit);
