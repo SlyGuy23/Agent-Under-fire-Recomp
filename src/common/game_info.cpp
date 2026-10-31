@@ -239,7 +239,13 @@ void GameRumble(int, uint16_t& left, uint16_t& right) {
 }
 
 void GamePad(int port, input::Pad& pad) {
-    if (port == 0 && std::string_view(IMAGE_XBE) == "bond_eng.xbe") ReloadExpiry();
+    if (port == 0 && std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
+        ReloadExpiry();
+        // the game's controller setup 1 ([0x205288], its binding tables at 0x20503C): the left stick moves forward,
+        // back and sideways, the right stick turns and looks; buttons as setup 0. The port's remapping builds on it.
+        constexpr uint32_t kSetup = 0x205288;
+        if (kernel::R32(kSetup) != 1) kernel::W32(kSetup, 1);
+    }
     overlay::Pad(port, pad);
     MouseLook(port);
 }

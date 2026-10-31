@@ -229,7 +229,7 @@ std::string Pct(uint32_t v) { return std::to_string(v) + "%"; }
 
 // the mouse looks around where no key is bound to looking: on foot turning and looking up and down, on rails aiming
 bool MouseLooks(Context c, Action a) {
-    if (c == Context::OnFoot) return a == Action::LSLeft || a == Action::LSRight || a == Action::RSUp || a == Action::RSDown;
+    if (c == Context::OnFoot) return a >= Action::RSUp && a <= Action::RSRight;
     if (c == Context::OnRails) return a >= Action::LSUp && a <= Action::LSRight;
     return false;
 }

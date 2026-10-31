@@ -52,16 +52,16 @@ using A = Action;
 
 // ---- the tables to edit ----
 
-// What each console input does, as the menus label it, in the order of Action. On foot: the game's standard
-// controller setup (its CONTROLLER option offers others, which move these around), named as its Controller Setup
-// picture names them.
+// What each console input does, as the menus label it, in the order of Action. On foot: the game's second
+// controller setup (configuration 1, which game_info.cpp keeps on): the left stick moves on both axes, the right
+// one looks; buttons as the game's Controller Setup picture names them.
 constexpr const char* kLabels[kContexts][kActions] = {
     // on foot (bond_eng.xbe), as the game's own Controller Setup picture names them
     {"ACTION / OPEN", "USE GADGET", "CROUCH", "JUMP", "ALT. FIRE", "CYCLE WEAPON", "PAUSE", "CENTER VIEW",
      "MANUAL AIM", "FIRE", "CROUCH (STICK CLICK)", "MANUAL AIM (STICK CLICK)",
      "NEXT WEAPON", "PREVIOUS WEAPON", "PREVIOUS GADGET", "NEXT GADGET",
-     "MOVE FORWARD", "MOVE BACK", "LOOK LEFT", "LOOK RIGHT",
-     "LOOK UP", "LOOK DOWN", "STRAFE LEFT", "STRAFE RIGHT", "RELOAD"},
+     "MOVE FORWARD", "MOVE BACK", "MOVE LEFT", "MOVE RIGHT",
+     "LOOK UP", "LOOK DOWN", "LOOK LEFT", "LOOK RIGHT", "RELOAD"},
     // driving (driving.xbe, from the missions' own control files, drivecfg.def); NOT USED: nothing in that mode
     {"FIRE PRIMARY", "HANDBRAKE", "FIRE WEAPON", "CHANGE CAMERA", "PREVIOUS WEAPON", "NEXT WEAPON", "PAUSE", "NOT USED",
      "BRAKE / REVERSE", "ACCELERATE", "NOT USED", "FIRE WEAPON (STICK CLICK)",
@@ -80,7 +80,7 @@ constexpr const char* kLabels[kContexts][kActions] = {
 // the order a menu lists the actions in; every action once
 constexpr A kMenuOrder[kContexts][kActions] = {
     {A::RT, A::LT, A::Y, A::Reload, A::A, A::X, A::B, A::White, A::Black,
-     A::LSUp, A::LSDown, A::RSLeft, A::RSRight, A::LSLeft, A::LSRight, A::RSUp, A::RSDown,
+     A::LSUp, A::LSDown, A::LSLeft, A::LSRight, A::RSLeft, A::RSRight, A::RSUp, A::RSDown,
      A::DpadUp, A::DpadDown, A::DpadLeft, A::DpadRight, A::LSClick, A::RSClick, A::Back, A::Start},
     {A::RT, A::LT, A::LSLeft, A::LSRight, A::B, A::A, A::X, A::RSClick, A::White, A::Black, A::Y, A::RSDown,
      A::DpadLeft, A::DpadRight, A::Start,
@@ -97,8 +97,6 @@ struct DefaultPad {
     A physical, gives;
 };
 constexpr DefaultPad kOnFootPad[] = {
-    {A::LSLeft, A::RSLeft}, {A::LSRight, A::RSRight},  // strafe
-    {A::RSLeft, A::LSLeft}, {A::RSRight, A::LSRight},  // turn
     {A::X, A::Reload},                                 // reload, and the gadget's use while one is out
     {A::B, A::X},                                      // crouch
     {A::Black, A::White}, {A::White, A::Black},        // RB cycles weapons, LB alt. fire
@@ -130,8 +128,8 @@ struct DefaultKeys {
 constexpr DefaultKeys kOnFootKeys[] = {
     {A::LSUp, {'W', kUp}},                  // move
     {A::LSDown, {'S', kDown}},
-    {A::RSLeft, {'A', kLeft}},              // strafe
-    {A::RSRight, {'D', kRight}},
+    {A::LSLeft, {'A', kLeft}},              // move left and right
+    {A::LSRight, {'D', kRight}},
     {A::RT, {kMouseLeft}},                  // fire (or use the gadget raised, SetFireRedirect)
     {A::LT, {kMouseRight}},                 // manual aim
     {A::Y, {kSpace}},                       // jump
@@ -139,12 +137,11 @@ constexpr DefaultKeys kOnFootKeys[] = {
     {A::Reload, {'R'}},                     // reload
     {A::X, {'C', kLCtrl}},                  // crouch
     {A::B, {'G', kMouse4}},                 // use gadget
-    {A::White, {'Q'}},                      // cycle weapon
     {A::Black, {'F', kMouse5}},             // alt. fire
     {A::DpadUp, {kWheelUp}},                // next weapon
     {A::DpadDown, {kWheelDown}},            // previous weapon
     {A::DpadLeft, {'Z'}},                   // previous gadget
-    {A::DpadRight, {'X'}},                  // next gadget
+    {A::DpadRight, {'Q'}},                  // next gadget
     {A::Back, {'V', kMouseMiddle}},         // centre the view
     {A::Start, {kEscape}},                  // pause
 };
@@ -183,7 +180,7 @@ constexpr DefaultKeys kOnRailsKeys[] = {
 // Where mouse motion goes when mouse look falls back to a stick (no camera hook taking it), X then Y: on foot the
 // game turns with the left stick's X and looks up and down with the right stick's Y
 constexpr MouseAxis kMouseAxes[kContexts][2] = {
-    {MouseAxis::LeftX, MouseAxis::RightY},   // on foot
+    {MouseAxis::RightX, MouseAxis::RightY},  // on foot
     {MouseAxis::None, MouseAxis::None},      // driving: the right stick only looks back
     {MouseAxis::LeftX, MouseAxis::LeftY},    // on rails: aim (the right stick's Y zooms as well)
 };
@@ -311,7 +308,7 @@ struct Toggle {
 };
 Toggle g_crouch, g_aim;
 GameState g_last_state = GameState::Menu;
-constexpr int kLayout = 4;  // 4: RB cycles weapons;  // 3: reload on its own, X with the gadget, B crouching  // settings written before 2 had the game's stick layout as the on-foot default
+constexpr int kLayout = 5;  // 5: on foot the game setup 1, new keys; 4:  // 4: RB cycles weapons;  // 3: reload on its own, X with the gadget, B crouching  // settings written before 2 had the game's stick layout as the on-foot default
 
 int64_t Now() {
     if (g_clock) return g_clock();
@@ -614,8 +611,8 @@ void PlayExtras(Inputs& out, const Options& o, bool keyboard) {
     // other way round, aiming with what looks (the right stick, as the modern layout turns with it) and zooming
     // with what moves forward and back: the two Y axes trade places while aiming
     if (out.v[int(A::LT)] >= kPressed || out.v[int(A::RSClick)] >= kPressed) {
-        std::swap(out.v[int(A::LSUp)], out.v[int(A::RSUp)]);
-        std::swap(out.v[int(A::LSDown)], out.v[int(A::RSDown)]);
+        // the crosshair is on the game's left stick in every setup, the zoom on its right stick's Y
+        for (int i = 0; i < 4; i++) std::swap(out.v[int(A::LSUp) + i], out.v[int(A::RSUp) + i]);
     }
 }
 
@@ -1076,6 +1073,7 @@ void Load(const void* table) {
         // layout 4 gave driving and on rails keys of their own (weapons, look back, zoom): older ones give way
         const toml::table* kb = (*x)["keyboard"].as_table();
         if (layout < 4 && c != int(Context::OnFoot)) kb = nullptr;
+        if (layout < 5 && c == int(Context::OnFoot)) kb = nullptr;  // 5: E use, R reload, Q next gadget, A/D move
         if (kb) {
             for (auto&& [name, node] : *kb) {
                 A a = ActionFromToken(name.str());
@@ -1103,6 +1101,15 @@ void Load(const void* table) {
                 if (physical == A::None || !target) continue;
                 s.remap[int(physical)] = ActionFromToken(*target);  // NONE and unknown names: nothing
             }
+            // layout 5: on foot the game's setup 1, whose left stick X moves sideways and right stick X turns, the
+            // other way round from before: the console's X inputs trade meanings
+            if (layout < 5 && c == int(Context::OnFoot))
+                for (A& t : s.remap) {
+                    if (t == A::LSLeft) t = A::RSLeft;
+                    else if (t == A::RSLeft) t = A::LSLeft;
+                    else if (t == A::LSRight) t = A::RSRight;
+                    else if (t == A::RSRight) t = A::LSRight;
+                }
             // layout 4: on foot RB (the console's Black) cycles weapons and LB (White) is the alt. fire
             if (layout < 4 && c == int(Context::OnFoot) && s.remap[int(A::Black)] == A::Black &&
                 s.remap[int(A::White)] == A::White)
