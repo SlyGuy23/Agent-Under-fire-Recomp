@@ -91,6 +91,10 @@ void SetDrivingMode(Context c);
 // on foot with the keyboard and mouse: what the keys bound to FIRE give instead (the gadget's use while one is
 // raised); Action::RT, or Action::None, keeps them on FIRE
 void SetFireRedirect(Action (*query)());
+// on foot: Reload pressed with a weapon in hand (the game's own reload request, game_info.cpp)
+void SetReloadRequest(void (*request)());
+// on foot, the device in use has Reload bound: A (action) no longer reloads (src/game/hooks.cpp)
+bool SeparateReload();
 
 // where this executable plays, and which device drives it now
 Context CurrentContext();

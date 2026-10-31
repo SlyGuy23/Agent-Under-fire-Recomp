@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "common/controls.h"
@@ -19,6 +20,7 @@
 #include "core/log.h"
 #include "gpu/state.h"
 #include "gpu/texture.h"
+#include "gpu/shaders.h"
 #include "image_symbols.h"
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
@@ -390,6 +392,8 @@ std::atomic<int> g_drive_lit{-1};
 std::atomic<uint32_t> g_drive_lit_color{0xFFFFFFFF}, g_drive_unlit_color{0xFF5A9BE5};
 std::atomic<float> g_drive_x{109};  // the rows' left edge (the letters, not the shadows)
 
+bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1);
+
 // the stream i vertices of the draw whose stream 0 vertices are v
 uint8_t* StreamOf(const gpu::State& s, const uint8_t* v, int i) {
     const auto& s0 = s.streams[0];
@@ -408,7 +412,7 @@ uint32_t Channels(uint32_t c) { return ((c >> 16) & 0xFF) + ((c >> 8) & 0xFF) + 
 
 void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
     constexpr uint32_t kFan = 6;
-    if (prim != kFan || count != 4 || stride < 16 || !TextureSize(s, 256, 256) || !Paused()) return;
+    if (prim != kFan || count != 4 || stride < 16) return;
     float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
     for (uint32_t i = 0; i < 4; i++) {
         const float* p = At(v, stride, i, 0);
@@ -418,6 +422,19 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
     auto collapse = [&] {
         for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[0] = x0, At(v, stride, i, 0)[1] = y0;
     };
+    // a button prompt (coordinates in stream 2)
+    if (const uint8_t* tc = StreamOf(s, v, 2); tc && s.streams[2].stride >= 8) {
+        float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+        for (uint32_t i = 0; i < 4; i++) {
+            const float* t = reinterpret_cast<const float*>(tc + i * s.streams[2].stride);
+            u0 = std::min(u0, t[0]), u1 = std::max(u1, t[0]), v0 = std::min(v0, t[1]), v1 = std::max(v1, t[1]);
+        }
+        if (PromptQuad(s, x0, y0, x1, y1, u0, v0, u1, v1)) {
+            collapse();
+            return;
+        }
+    }
+    if (!TextureSize(s, 256, 256) || !Paused()) return;
     // the marker
     if (Near(x0, 88, 2) && Near(x1 - x0, 10, 1.5f) && Near(y1 - y0, 13, 1.5f)) {
         if (page) collapse();
@@ -443,14 +460,121 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
             g_drive_lit_color.store(c);
         } else {
             g_drive_unlit_color.store(c);
-            if (row == 0) g_drive_x.store(x0);
         }
+        // the rows' left edge: the leftmost letter of the frame's rows
+        static uint64_t frame = ~0ull;
+        static float left = 1e9f;
+        if (frame != Frame()) {
+            if (left < 1e8f) g_drive_x.store(left);
+            frame = Frame();
+            left = 1e9f;
+        }
+        left = std::min(left, x0);
         if (g_pause_selected.load() && Channels(c) > 600) {
             uint32_t u = g_drive_unlit_color.load();
             for (uint32_t i = 0; i < 4; i++) std::memcpy(col + i * s.streams[1].stride, &u, 4);
         }
     }
     if (page) collapse();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Button prompts: while the keyboard and mouse play, the menus' A, B and direction pictures make way for keyboard
+// keys (ENTER, BACKSPACE, the arrows), which the pages draw where the game's were (Ui). The pictures are told by
+// their texture's pack key and the part of it drawn.
+
+enum class Prompt : uint8_t { A, B, UpDown, LeftRight };
+struct PromptPart {
+    uint64_t key;
+    float u0, v0, u1, v1;  // texels of the sheet, -1 for the whole texture
+    Prompt prompt;
+};
+constexpr PromptPart kPrompts[] = {
+    // bond_eng.xbe: the A and B buttons (32x64 each), the D-pad pictures and the stick pictures in the button sheet
+    {0x94de8205578ce49full, -1, -1, -1, -1, Prompt::A},
+    {0x08e4f0ae95c16b80ull, -1, -1, -1, -1, Prompt::B},
+    {0x7ffff33c7f8a7768ull, 225, 89, 248, 112, Prompt::UpDown},
+    {0x7ffff33c7f8a7768ull, 125, 89, 147, 112, Prompt::LeftRight},
+    // the pause menu's stick pictures (32x32): CHANGE PAGE and SCROLL
+    {0x7e8cc44b3a0258fcull, 16, 1, 32, 16, Prompt::LeftRight},
+    {0x7e8cc44b3a0258fcull, 16, 17, 32, 32, Prompt::UpDown},
+    // driving.xbe's pause menu (a 256x256 sheet): A, B, CHANGE PAGE and SCROLL
+    {0xa0aa68c1c1fc6b94ull, 99, 100, 131, 164, Prompt::A},
+    {0xa0aa68c1c1fc6b94ull, 99, 34, 131, 98, Prompt::B},
+    {0xa0aa68c1c1fc6b94ull, 202, 150, 218, 165, Prompt::LeftRight},
+    {0xa0aa68c1c1fc6b94ull, 202, 176, 218, 191, Prompt::UpDown},
+};
+
+struct PromptRect {
+    Prompt prompt;
+    float x0, y0, x1, y1;  // console coordinates
+};
+std::mutex g_prompt_lock;
+std::vector<PromptRect> g_prompts_building, g_prompts_shown;
+uint64_t g_prompts_frame = ~0ull;
+std::atomic<uint64_t> g_prompts_seen{0};
+
+bool Keyboard() { return controls::ActiveDevice() == controls::Device::KeyboardMouse; }
+
+// the pack key of the texture on stage 0, kept per texture and its bytes' place (hashed once)
+uint64_t StageKey(const gpu::State& s) {
+    uint32_t header = s.textures[0];
+    if (!header) return 0;
+    gpu::TextureDesc d;
+    if (!gpu::Describe(header, d) || !d.data) return 0;
+    static std::mutex lock;
+    static std::unordered_map<uint64_t, uint64_t> cache;
+    uint64_t id = uint64_t(header) << 32 | d.data;
+    std::lock_guard l(lock);
+    if (auto it = cache.find(id); it != cache.end()) return it->second;
+    uint32_t colours[256] = {};
+    constexpr uint32_t kFmtP8 = 0x0B;
+    if (d.format == kFmtP8 && s.palettes[0]) {
+        uint32_t ph = s.palettes[0];
+        uint32_t va = mem::VirtualFromPhysical(kernel::R32(ph + 4));
+        size_t bytes = (256u >> (kernel::R32(ph) >> 30)) * 4;
+        std::memcpy(colours, kernel::HostPtr(va), bytes);
+    }
+    // the texture pack's key (texturedumper::Key): the level's bytes over its shape, then a P8 texture's palette
+    uint32_t shape[] = {d.format, d.width, d.height};
+    uint64_t key = gpu::Hash(kernel::HostPtr(d.data), gpu::LevelSize(d, 0), gpu::Hash(shape, sizeof(shape)));
+    if (d.format == kFmtP8) key = gpu::Hash(colours, sizeof(colours), key);
+    if (!key) key = 1;
+    if (cache.size() > 4096) cache.clear();
+    cache[id] = key;
+    return key;
+}
+
+// a prompt picture drawn: kept for the pages to draw the key over, true when the game's should go
+bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1) {
+    if (x1 - x0 > 48 || y1 - y0 > 48 || x1 <= x0 || y1 <= y0) return false;
+    uint64_t key = StageKey(s);
+    if (!key) return false;
+    gpu::TextureDesc d;
+    gpu::Describe(s.textures[0], d);
+    float tu0 = u0 * float(d.width), tu1 = u1 * float(d.width), tv0 = v0 * float(d.height), tv1 = v1 * float(d.height);
+    for (const PromptPart& p : kPrompts) {
+        if (p.key != key) continue;
+        if (p.u0 >= 0 && !(Near(tu0, p.u0, 2) && Near(tu1, p.u1, 2) && Near(tv0, p.v0, 2) && Near(tv1, p.v1, 2))) continue;
+        std::lock_guard l(g_prompt_lock);
+        uint64_t f = Frame();
+        if (f != g_prompts_frame) {
+            g_prompts_shown.swap(g_prompts_building);
+            g_prompts_building.clear();
+            g_prompts_frame = f;
+        }
+        g_prompts_building.push_back({p.prompt, x0, y0, x1, y1});
+        g_prompts_seen.store(f + 1);
+        return Keyboard();
+    }
+    return false;
+}
+
+std::vector<PromptRect> ShownPrompts() {
+    std::lock_guard l(g_prompt_lock);
+    if (!Recent(g_prompts_seen.load())) return {};
+    // the frame being drawn now has them all once the next one starts; until then the last whole one
+    return g_prompts_shown.empty() ? g_prompts_building : g_prompts_shown;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -568,6 +692,12 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
 
+    // a button prompt: the keyboard's key in its place while the keyboard and mouse play
+    if (count == 6 && PromptQuad(s, b.x0, b.y0, b.x1, b.y1, b.u0, b.v0, b.u1, b.v1)) {
+        Hide(v, stride, l, count);
+        return;
+    }
+
     if (OptionsTitle(s, b)) {
         g_title_line.assign(v, v + 6 * stride);
         g_title_box = b;
@@ -579,8 +709,10 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     if (SetupTitle(s, b, count)) {
         g_setup_seen.store(Frame() + 1);
         g_setup_frame = Frame();
-    } else if (count == 6 && g_setup_frame == Frame() && TextureSize(s, 256, 256) && b.x0 >= 40 && b.y0 >= 120 &&
+    } else if (count == 6 && g_setup_frame == Frame() && b.x0 >= 40 && b.y0 >= 120 && b.y0 < 400 &&
                b.x1 <= 620 && b.y1 <= 470) {
+        // every picture after the title, the labels and their lines too (the driving and rail pages use other
+        // sheets than the on-foot one), above the footer
         Hide(v, stride, l, count);
         return;
     }
@@ -1064,21 +1196,101 @@ bool AddSheetFont(ImGuiIO& io, const MenuFont& mf, const char* name, SheetFont& 
     return true;
 }
 
+// The sheet at its own size (a texel a pixel), its letters as connected shapes: a glyph keeps only the pixels of
+// its own shapes (those mostly inside its rectangle) and a texel round them, so the upscaled image's blur of the
+// letters next to it in the sheet does not show as lines along its edges.
+struct SheetShapes {
+    int w = 256, h = 128;
+    std::vector<int> label;  // per texel: shape number + 1, 0 none
+    std::vector<int> size;   // per shape: texels
+};
+
+SheetShapes Shapes(const SheetFont& sf) {
+    SheetShapes sh;
+    sh.h = int(std::lround(sf.h / sf.k));
+    int w = sh.w, h = sh.h, k = std::max(1, int(std::lround(sf.k)));
+    std::vector<uint8_t> on(size_t(w) * h);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int sum = 0;
+            for (int dy = 0; dy < k; dy++)
+                for (int dx = 0; dx < k; dx++) {
+                    int sx = std::min(int(sf.w) - 1, x * k + dx), sy = std::min(int(sf.h) - 1, y * k + dy);
+                    sum += sf.px[(size_t(sy) * sf.w + sx) * 4 + 3];
+                }
+            on[size_t(y) * w + x] = sum / (k * k) > 40;
+        }
+    sh.label.assign(on.size(), 0);
+    std::vector<int> stack;
+    for (int i = 0; i < w * h; i++) {
+        if (!on[size_t(i)] || sh.label[size_t(i)]) continue;
+        int n = int(sh.size.size()) + 1, count = 0;
+        stack.push_back(i);
+        sh.label[size_t(i)] = n;
+        while (!stack.empty()) {
+            int p = stack.back();
+            stack.pop_back();
+            count++;
+            int px = p % w, py = p / w;
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int qx = px + dx, qy = py + dy;
+                    if (qx < 0 || qy < 0 || qx >= w || qy >= h) continue;
+                    int q = qy * w + qx;
+                    if (on[size_t(q)] && !sh.label[size_t(q)]) sh.label[size_t(q)] = n, stack.push_back(q);
+                }
+        }
+        sh.size.push_back(count);
+    }
+    return sh;
+}
+
+// the texels a glyph keeps: its shapes and one texel round them that no other shape has
+std::vector<uint8_t> GlyphMask(const SheetShapes& sh, const MenuGlyph& g) {
+    int x0 = g.x0, x1 = g.x1, y0 = g.y0, y1 = g.y1;
+    std::vector<int> inside(sh.size.size() + 1, 0);
+    for (int y = y0; y < y1 && y < sh.h; y++)
+        for (int x = x0; x < x1 && x < sh.w; x++) inside[size_t(sh.label[size_t(y) * sh.w + x])]++;
+    auto own = [&](int l) { return l > 0 && inside[size_t(l)] * 2 >= sh.size[size_t(l - 1)]; };
+    int w = x1 - x0 + 2, h = y1 - y0 + 2;  // a texel of margin round the rectangle
+    std::vector<uint8_t> m(size_t(w) * h, 0);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int sx = x0 - 1 + x, sy = y0 - 1 + y;
+            if (sx < 0 || sy < 0 || sx >= sh.w || sy >= sh.h) continue;
+            int l = sh.label[size_t(sy) * sh.w + sx];
+            if (l && !own(l)) continue;
+            bool near = own(l);
+            for (int dy = -1; dy <= 1 && !near; dy++)
+                for (int dx = -1; dx <= 1 && !near; dx++) {
+                    int qx = sx + dx, qy = sy + dy;
+                    if (qx >= 0 && qy >= 0 && qx < sh.w && qy < sh.h) near = own(sh.label[size_t(qy) * sh.w + qx]);
+                }
+            m[size_t(y) * w + x] = near;
+        }
+    return m;
+}
+
 // after the atlas is built: the glyphs' pixels from the sheet, white with the sheet's coverage
 void FillSheetFont(ImGuiIO& io, const SheetFont& sf) {
     unsigned char* atlas = nullptr;
     int aw = 0, ah = 0;
     io.Fonts->GetTexDataAsRGBA32(&atlas, &aw, &ah);
+    SheetShapes shapes = Shapes(sf);
     auto put = [&](const ImFontAtlasCustomRect* r, const MenuGlyph* g) {
+        std::vector<uint8_t> mask;
+        if (g) mask = GlyphMask(shapes, *g);
+        int mw = g ? g->x1 - g->x0 + 2 : 0;
         for (int y = 0; y < r->Height; y++)
             for (int x = 0; x < r->Width; x++) {
                 uint8_t a = 0;
                 if (g) {
                     // the sheet's pixels under the glyph's rectangle, stretched over the quad as the game does
-                    float sx = (g->x0 + float(x) / r->Width * (g->x1 - g->x0)) * sf.k;
-                    float sy = (g->y0 + float(y) / r->Height * (g->y1 - g->y0)) * sf.k;
-                    int ix = std::clamp(int(sx), 0, int(sf.w) - 1), iy = std::clamp(int(sy), 0, int(sf.h) - 1);
-                    a = sf.px[(size_t(iy) * sf.w + ix) * 4 + 3];
+                    float tx = g->x0 + float(x) / r->Width * (g->x1 - g->x0);
+                    float ty = g->y0 + float(y) / r->Height * (g->y1 - g->y0);
+                    int ix = std::clamp(int(tx * sf.k), 0, int(sf.w) - 1), iy = std::clamp(int(ty * sf.k), 0, int(sf.h) - 1);
+                    int mx = std::clamp(int(tx) - g->x0 + 1, 0, mw - 1), my = std::clamp(int(ty) - g->y0 + 1, 0, g->y1 - g->y0 + 1);
+                    if (mask[size_t(my) * mw + mx]) a = sf.px[(size_t(iy) * sf.w + ix) * 4 + 3];
                 }
                 unsigned char* d = atlas + (size_t(r->Y + y) * aw + r->X + x) * 4;
                 d[0] = d[1] = d[2] = 255;
@@ -1088,6 +1300,116 @@ void FillSheetFont(ImGuiIO& io, const SheetFont& sf) {
     for (size_t i = 0; i < sf.ids.size(); i++) put(io.Fonts->GetCustomRectByIndex(sf.ids[i]), &sf.font->glyphs[i]);
     put(io.Fonts->GetCustomRectByIndex(sf.space), nullptr);
     LOGI("menus: the pages use the game's lettering %s (%ux%u sheet)", sf.font->key, sf.w, sf.h);
+}
+
+// The keyboard's keys for the button prompts: pictures in the texture pack's folders (kb_enter.png and so on), put
+// into ImGui's atlas beside the lettering.
+struct KeyPicture {
+    const wchar_t* file;
+    std::vector<uint8_t> px;  // BGRA
+    UINT w = 0, h = 0;
+    int id = -1;
+    float aspect = 1;
+    ImVec2 uv0, uv1;
+    bool ready = false;
+};
+KeyPicture g_keys[4] = {{L"kb_enter.png"}, {L"kb_backspace.png"}, {L"kb_updown.png"}, {L"kb_leftright.png"}};  // Prompt order
+
+std::filesystem::path FindFile(const wchar_t* file) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path root = app::ExeDir() / "textures" / "replacement";
+    if (!fs::is_directory(root, ec)) return {};
+    for (fs::recursive_directory_iterator it(root, ec), end; it != end; it.increment(ec)) {
+        if (ec) break;
+        std::wstring name = it->path().filename().wstring();
+        for (auto& ch : name) ch = wchar_t(towlower(ch));
+        if (name == file) return it->path();
+    }
+    return {};
+}
+
+// any picture as BGRA (LoadSheet wants a font sheet's proportions)
+bool LoadPicture(const std::filesystem::path& path, std::vector<uint8_t>& bgra, UINT& w, UINT& h) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    IWICImagingFactory* wic = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return false;
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICBitmapSource* src = nullptr;
+    HRESULT hr = wic->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+    if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
+    if (SUCCEEDED(hr)) hr = WICConvertBitmapSource(GUID_WICPixelFormat32bppBGRA, frame, &src);
+    if (SUCCEEDED(hr)) hr = src->GetSize(&w, &h);
+    if (SUCCEEDED(hr) && (w < 8 || h < 8 || w > 2048 || h > 2048)) hr = E_FAIL;
+    if (SUCCEEDED(hr)) {
+        bgra.resize(size_t(w) * h * 4);
+        hr = src->CopyPixels(nullptr, w * 4, UINT(bgra.size()), bgra.data());
+    }
+    if (src) src->Release();
+    if (frame) frame->Release();
+    if (decoder) decoder->Release();
+    wic->Release();
+    return SUCCEEDED(hr);
+}
+
+constexpr int kKeyHeight = 96;  // atlas pixels a key picture is tall
+
+void AddKeyPictures(ImGuiIO& io) {
+    for (KeyPicture& k : g_keys) {
+        std::filesystem::path p = FindFile(k.file);
+        if (p.empty() || !LoadPicture(p, k.px, k.w, k.h)) continue;
+        k.aspect = float(k.w) / float(k.h);
+        k.id = io.Fonts->AddCustomRectRegular(std::max(1, int(std::lround(kKeyHeight * k.aspect))), kKeyHeight);
+    }
+}
+
+void FillKeyPictures(ImGuiIO& io) {
+    unsigned char* atlas = nullptr;
+    int aw = 0, ah = 0;
+    io.Fonts->GetTexDataAsRGBA32(&atlas, &aw, &ah);
+    for (KeyPicture& k : g_keys) {
+        if (k.id < 0) continue;
+        ImFontAtlasCustomRect* r = io.Fonts->GetCustomRectByIndex(k.id);
+        // box filtered down to the rectangle
+        for (int y = 0; y < r->Height; y++)
+            for (int x = 0; x < r->Width; x++) {
+                int sx0 = int(float(x) * k.w / r->Width), sx1 = std::max(sx0 + 1, int(float(x + 1) * k.w / r->Width));
+                int sy0 = int(float(y) * k.h / r->Height), sy1 = std::max(sy0 + 1, int(float(y + 1) * k.h / r->Height));
+                float acc[4] = {}, n = 0;
+                for (int sy = sy0; sy < sy1 && sy < int(k.h); sy++)
+                    for (int sx = sx0; sx < sx1 && sx < int(k.w); sx++) {
+                        const uint8_t* q = &k.px[(size_t(sy) * k.w + sx) * 4];
+                        float a = q[3] / 255.0f;
+                        acc[0] += q[2] * a, acc[1] += q[1] * a, acc[2] += q[0] * a, acc[3] += q[3];
+                        n++;
+                    }
+                unsigned char* d = atlas + (size_t(r->Y + y) * aw + r->X + x) * 4;
+                float alpha = n ? acc[3] / n : 0;
+                for (int c = 0; c < 3; c++) d[c] = uint8_t(alpha > 0 ? std::clamp(acc[c] / n / (alpha / 255.0f), 0.0f, 255.0f) : 0);
+                d[3] = uint8_t(std::clamp(alpha, 0.0f, 255.0f));
+            }
+        io.Fonts->CalcCustomRectUV(r, &k.uv0, &k.uv1);
+        k.ready = true;
+        k.px.clear();
+    }
+}
+
+// the keyboard's keys over the prompts the game drew this frame
+void DrawPrompts() {
+    if (!Keyboard()) return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImTextureID tex = ImGui::GetIO().Fonts->TexID;
+    for (const PromptRect& p : ShownPrompts()) {
+        const KeyPicture& k = g_keys[int(p.prompt)];
+        if (!k.ready) continue;
+        float cx = (p.x0 + p.x1) / 2, cy = (p.y0 + p.y1) / 2;
+        // as tall as the button, or narrower where a wide key would reach the words beside it
+        float h = (p.y1 - p.y0) * 1.15f, w = h * k.aspect;
+        float most = (p.x1 - p.x0) * 1.6f;
+        if (w > most) w = most, h = w / k.aspect;
+        dl->AddImage(tex, Guest(cx - w / 2, cy - h / 2), Guest(cx + w / 2, cy + h / 2), k.uv0, k.uv1);
+    }
 }
 
 void Window(void*) {
@@ -1110,8 +1432,12 @@ void Window(void*) {
         static SheetFont body, title;  // kept until the atlas has their pixels
         bool have_body = AddSheetFont(io, kBodyFont, "AUF list", body);
         bool have_title = AddSheetFont(io, kTitleFont, "AUF titles", title);
-        if (have_body || have_title) {
+        AddKeyPictures(io);
+        bool have_keys = false;
+        for (const KeyPicture& k : g_keys) have_keys |= k.id >= 0;
+        if (have_body || have_title || have_keys) {
             io.Fonts->Build();
+            FillKeyPictures(io);
             if (have_body) FillSheetFont(io, body), g_font = body.im, g_game_font = true;
             if (have_title) FillSheetFont(io, title), g_title_font = title.im;
             body.px.clear(), title.px.clear();
@@ -1160,6 +1486,7 @@ void DrivingPauseRow() {
 }
 
 void Ui() {
+    if (kMenus || kDrivingImage) DrawPrompts();
     if (kDrivingImage) {
         if (g_page.load() == Page::None) {
             DrivingPauseRow();

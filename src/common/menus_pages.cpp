@@ -359,9 +359,12 @@ constexpr int kControlRows = 11;
 int DrawTabs(const PageContext& c, ImDrawList* dl, int tab, bool clickable, int only = -1) {
     int clicked = -1;
     const Tab& t = kTabs[tab];
-    auto item = [&](float& x, float y, float size, const char* text, bool lit, int to) {
-        c.title(dl, x, y, size, lit ? c.lit : Dim(c.unlit), text, 0);
-        float w = c.title_width(size, text);
+    auto item = [&](float& x, float y, float size, const char* name, bool lit, int to) {
+        // in the stats screen's way: capitals and small letters, "Keyboard & Mouse"
+        std::string titled = Titled(name);
+        const char* text = titled.c_str();
+        c.title(dl, x, y, size + 2, lit ? c.lit : Dim(c.unlit), text, 0);
+        float w = c.title_width(size + 2, text);
         ImVec2 a = c.guest(x - 3, y - 2), b = c.guest(x + w + 3, y + size + 2);
         if (clickable && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) clicked = to;
         x += w + 18;
@@ -500,55 +503,23 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
     return true;
 }
 
-// the pause menu's page: the controls of this context for the device in use, nothing to change but the toggles;
-// LT / RT (or a click) shows the other device
-bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, controls::Context context, bool opened) {
-    if (opened) g_view_tab = TabOf(context, controls::ActiveDevice()), g_view_scroll = 0;
-    for (PageNav n : nav) {
-        const Tab& t = kTabs[g_view_tab];
-        switch (n) {
-            case PageNav::Up: g_view_scroll = std::max(0, g_view_scroll - 1); break;
-            case PageNav::Down: g_view_scroll++; break;
-            case PageNav::PrevTab:
-            case PageNav::NextTab:
-                g_view_tab = TabOf(context, t.device == Device::Controller ? Device::KeyboardMouse : Device::Controller);
-                g_view_scroll = 0;
-                break;
-            case PageNav::Back:
-            case PageNav::Accept: return false;
-            default: break;
-        }
-    }
-    const Tab& t = kTabs[g_view_tab];
-    std::vector<CRow> rows = Rows(t, true);
-    while (!rows.empty() && rows.back().kind != RowKind::Action) rows.pop_back();  // only the controls
-    g_view_scroll = std::clamp(g_view_scroll, 0, std::max(0, int(rows.size()) - kControlRows));
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    g_tabs_y = 80, g_rows_y = 128;
-    int clicked = DrawTabs(c, dl, g_view_tab, true, int(context));
-    if (clicked >= 0) g_view_tab = clicked, g_view_scroll = 0;
-    if (ImGui::GetIO().MouseWheel != 0) g_view_scroll = std::max(0, g_view_scroll - int(ImGui::GetIO().MouseWheel));
-    DrawRows(c, dl, rows, -1, g_view_scroll, t.device == Device::KeyboardMouse, "", nullptr, kValueX - 20);
-    return true;
-}
+namespace {
 
-// a table of a context's controls for the device in use, over the game's pre-mission Controller Setup: two halves
-// side by side, each an ACTION and a CONTROL column, a row a control
-void ControlsList(const PageContext& c, controls::Context context, float y, int max_rows) {
-    const Tab& t = kTabs[TabOf(context, controls::ActiveDevice())];
+// a table of a context's controls for a device: halves side by side, each an ACTION and a CONTROL column, a row a
+// control, on a dark panel so the text stands off whatever is behind it
+void DrawTable(const PageContext& c, ImDrawList* dl, controls::Context context, Device device, float top, int max_rows) {
+    const Tab& t = kTabs[TabOf(context, device)];
     std::vector<CRow> rows = Rows(t, true);
-    while (!rows.empty() && rows.back().kind != RowKind::Action) rows.pop_back();
     rows.erase(std::remove_if(rows.begin(), rows.end(), [](const CRow& r) { return r.kind != RowKind::Action; }), rows.end());
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    std::string caption = std::string(kContextNames[int(context)]) + "   -   " + kDeviceNames[int(t.device)];
-    c.title(dl, 320, y, 12, c.lit, caption.c_str(), 0.5f);
     int per = std::max(1, std::min(max_rows, (int(rows.size()) + 1) / 2));
     if (int(rows.size()) <= max_rows / 2) per = int(rows.size());
     constexpr float kRow = 17, kHalf = 272, kGap = 16, kText = 14;
     int halves = (int(rows.size()) + per - 1) / per;
     float x0 = 320 - (kHalf * float(halves) + kGap * float(halves - 1)) / 2;
-    float top = y + 24;
     ImU32 rule = Dim(c.unlit);
+    float height = 18 + kRow * float(per) + 2;
+    dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kHalf * float(halves) + kGap * float(halves - 1) + 6, top + height),
+                      IM_COL32(4, 8, 24, 190), 4 * c.scale());
     for (int h = 0; h < halves; h++) {
         float x = x0 + float(h) * (kHalf + kGap);
         c.title(dl, x + 6, top, 10, Dim(c.lit), "ACTION", 0);
@@ -558,7 +529,8 @@ void ControlsList(const PageContext& c, controls::Context context, float y, int 
     for (int i = 0; i < int(rows.size()); i++) {
         int h = i / per, k = i % per;
         float x = x0 + float(h) * (kHalf + kGap), yy = top + 18 + kRow * float(k);
-        if (k % 2 == 0) dl->AddRectFilled(c.guest(x, yy - 1), c.guest(x + kHalf, yy + kRow - 1), IM_COL32(255, 255, 255, 14));
+        dl->AddRectFilled(c.guest(x, yy - 1), c.guest(x + kHalf, yy + kRow - 1),
+                          k % 2 == 0 ? IM_COL32(120, 150, 230, 34) : IM_COL32(120, 150, 230, 14));
         std::string label = Titled(rows[size_t(i)].label), value = rows[size_t(i)].value;
         // the two share the row: the value keeps its size where it can, the label gives way first
         float vs = kText, ls = kText;
@@ -568,6 +540,110 @@ void ControlsList(const PageContext& c, controls::Context context, float y, int 
         c.say(dl, x + 6, yy + (kText - ls) * 0.7f, ls, c.unlit, label.c_str(), 0);
         c.say(dl, x + kHalf - 6, yy + (kText - vs) * 0.7f, vs, c.lit, value.c_str(), 1);
     }
+}
+
+// the pause page's OPTIONS tab: what can be changed in a mission, for this context
+std::vector<CRow> PauseOptions(controls::Context context) {
+    std::vector<CRow> rows;
+    controls::Options o = controls::GetOptions(context);
+    auto opt = [&](Opt k, const char* label, std::string value) {
+        CRow r{RowKind::Option};
+        r.opt = k;
+        r.label = label;
+        r.value = std::move(value);
+        rows.push_back(r);
+    };
+    auto heading = [&](const char* name) { rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, name, ""}); };
+    if (context == Context::OnFoot) {
+        heading("GENERAL");
+        opt(Opt::CrouchToggle, "CROUCH", o.crouch_toggle ? "TOGGLE" : "HOLD");
+        opt(Opt::AimToggle, "MANUAL AIM", o.aim_toggle ? "TOGGLE" : "HOLD");
+        opt(Opt::SmartFire, "FIRE USES GADGET (CONTROLLER)", o.smart_fire ? "ON" : "OFF");
+    }
+    heading("CONTROLLER");
+    opt(Opt::LeftSens, "LEFT STICK SENSITIVITY", Pct(o.left.sensitivity));
+    opt(Opt::LeftDead, "LEFT STICK DEADZONE", Pct(o.left.deadzone));
+    opt(Opt::LeftOuter, "LEFT STICK OUTER DEADZONE", Pct(o.left.outer_deadzone));
+    opt(Opt::RightSens, "RIGHT STICK SENSITIVITY", Pct(o.right.sensitivity));
+    opt(Opt::RightDead, "RIGHT STICK DEADZONE", Pct(o.right.deadzone));
+    opt(Opt::RightOuter, "RIGHT STICK OUTER DEADZONE", Pct(o.right.outer_deadzone));
+    heading("MOUSE");
+    opt(Opt::MouseSens, "MOUSE SENSITIVITY", Pct(o.mouse_sensitivity));
+    opt(Opt::MouseInvert, "INVERT MOUSE Y", o.mouse_invert_y ? "ON" : "OFF");
+    return rows;
+}
+
+int g_pause_sel = -1, g_pause_scroll = 0;
+
+}  // namespace
+
+// the pause menu's page: tabs CONTROLLER and KEYBOARD & MOUSE show the context's controls as a table, OPTIONS the
+// toggles, sensitivities and deadzones to change. LT / RT (Q / E) or a click changes the tab.
+bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, controls::Context context, bool opened) {
+    constexpr const char* kNames[] = {"CONTROLLER", "KEYBOARD & MOUSE", "OPTIONS"};
+    if (opened) g_view_tab = controls::ActiveDevice() == Device::Controller ? 0 : 1, g_pause_sel = -1, g_pause_scroll = 0;
+    g_view_tab = std::clamp(g_view_tab, 0, 2);
+    std::vector<CRow> rows = PauseOptions(context);
+    if (g_pause_sel < 0 || g_pause_sel >= int(rows.size()) || rows[size_t(g_pause_sel)].kind != RowKind::Option)
+        g_pause_sel = Next(rows, -1, 1);
+    for (PageNav n : nav) {
+        switch (n) {
+            case PageNav::PrevTab: g_view_tab = (g_view_tab + 2) % 3; break;
+            case PageNav::NextTab: g_view_tab = (g_view_tab + 1) % 3; break;
+            case PageNav::Back: return false;
+            case PageNav::Up:
+                if (g_view_tab == 2) g_pause_sel = Next(rows, g_pause_sel, -1);
+                break;
+            case PageNav::Down:
+                if (g_view_tab == 2) g_pause_sel = Next(rows, g_pause_sel, 1);
+                break;
+            case PageNav::Left:
+            case PageNav::Right:
+            case PageNav::Accept:
+                if (g_view_tab == 2) StepOption(context, rows[size_t(g_pause_sel)].opt, n == PageNav::Left ? -1 : 1);
+                else if (n != PageNav::Accept) g_view_tab = n == PageNav::Left ? (g_view_tab + 2) % 3 : (g_view_tab + 1) % 3;
+                break;
+            default: break;
+        }
+    }
+    rows = PauseOptions(context);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    // the tabs, and the context's name
+    float x = kLabelX - 30;
+    for (int i = 0; i < 3; i++) {
+        std::string name = Titled(kNames[i]);
+        c.title(dl, x, 80, 15, i == g_view_tab ? c.lit : Dim(c.unlit), name.c_str(), 0);
+        float w = c.title_width(15, name.c_str());
+        if (ImGui::IsMouseHoveringRect(c.guest(x - 3, 78), c.guest(x + w + 3, 96), false) && ImGui::IsMouseClicked(0)) g_view_tab = i;
+        x += w + 22;
+    }
+    c.title(dl, 570, 82, 13, Dim(c.lit), Titled(kContextNames[int(context)]).c_str(), 1);
+    if (g_view_tab < 2) {
+        DrawTable(c, dl, context, g_view_tab == 0 ? Device::Controller : Device::KeyboardMouse, 112, 14);
+        return true;
+    }
+    // OPTIONS: the list, left and right (or a click) to change
+    g_rows_y = 116;
+    int hover = -1;
+    g_pause_scroll = Clamp(g_pause_scroll, g_pause_sel, int(rows.size()));
+    DrawRows(c, dl, rows, g_pause_sel, g_pause_scroll, false, "", &hover, kValueX + 40);
+    if (hover >= 0 && rows[size_t(hover)].kind == RowKind::Option) {
+        ImVec2 m = ImGui::GetIO().MouseDelta;
+        if (m.x != 0 || m.y != 0) g_pause_sel = hover;
+        if (ImGui::IsMouseClicked(0)) StepOption(context, rows[size_t(hover)].opt, 1);
+        else if (ImGui::IsMouseClicked(1)) StepOption(context, rows[size_t(hover)].opt, -1);
+    }
+    if (ImGui::GetIO().MouseWheel != 0) g_pause_scroll = std::max(0, g_pause_scroll - int(ImGui::GetIO().MouseWheel));
+    return true;
+}
+
+// a table of a context's controls for the device in use, over the game's pre-mission Controller Setup
+void ControlsList(const PageContext& c, controls::Context context, float y, int max_rows) {
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    Device d = controls::ActiveDevice();
+    std::string caption = Titled(kContextNames[int(context)]) + "   -   " + Titled(kDeviceNames[int(d)]);
+    c.title(dl, 320, y, 14, c.lit, caption.c_str(), 0.5f);
+    DrawTable(c, dl, context, d, y + 24, max_rows);
 }
 
 }  // namespace menus

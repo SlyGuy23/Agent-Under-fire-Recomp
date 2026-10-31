@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <cwchar>
@@ -59,6 +60,7 @@ controls::GameState OnFootState();
 bool GuestPointer(uint32_t va) { return (va >= 0x10000 && va < 0x7F00000) || (va >= 0x80000000u && va < 0x84000000u); }
 controls::GameState DrivingState();
 controls::Action FireRedirect();
+void ReloadRequest();
 controls::Context PickedMission();
 
 void Init() {
@@ -66,6 +68,7 @@ void Init() {
     if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
         controls::SetGameStateQuery(OnFootState);
         controls::SetFireRedirect(FireRedirect);
+        controls::SetReloadRequest(ReloadRequest);
         menus::SetMissionQuery(PickedMission);
     }
     if (std::string_view(IMAGE_XBE) == "driving.xbe") controls::SetGameStateQuery(DrivingState);
@@ -205,7 +208,33 @@ controls::Action FireRedirect() {
     return kernel::G<uint8_t>(held + 0x395) ? controls::Action::B : controls::Action::RT;
 }
 
+// Reload on its own: the game checks [0x333524] every frame (0xBBD7C) and reloads the weapon in hand once it is
+// ready, clearing it; nothing of its own ever sets it. It is let go of after half a second if still set, so a
+// request made just before the weapon was put away does not reload later.
+std::atomic<int64_t> g_reload_at{0};
+constexpr uint32_t kReloadRequest = 0x333524;
+
+int64_t SteadyMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+void ReloadRequest() {
+    if (!kernel::R32(0x2A88B8)) return;
+    kernel::W32(kReloadRequest, 1);
+    g_reload_at.store(SteadyMs());
+}
+
+void ReloadExpiry() {
+    int64_t at = g_reload_at.load();
+    if (at && SteadyMs() - at > 500) {
+        if (kernel::R32(0x2A88B8)) kernel::W32(kReloadRequest, 0);
+        g_reload_at.store(0);
+    }
+}
+
 void GamePad(int port, input::Pad& pad) {
+    if (port == 0 && std::string_view(IMAGE_XBE) == "bond_eng.xbe") ReloadExpiry();
     overlay::Pad(port, pad);
     MouseLook(port);
 }

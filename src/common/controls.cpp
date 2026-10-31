@@ -101,6 +101,7 @@ constexpr DefaultPad kOnFootPad[] = {
     {A::RSLeft, A::LSLeft}, {A::RSRight, A::LSRight},  // turn
     {A::X, A::Reload},                                 // reload, and the gadget's use while one is out
     {A::B, A::X},                                      // crouch
+    {A::Black, A::White}, {A::White, A::Black},        // RB cycles weapons, LB alt. fire
 };
 
 // On rails the game aims with both sticks and zooms with the right one's Y as well: the right stick aims (as the
@@ -108,6 +109,11 @@ constexpr DefaultPad kOnFootPad[] = {
 constexpr DefaultPad kOnRailsPad[] = {
     {A::RSUp, A::LSUp}, {A::RSDown, A::LSDown}, {A::RSLeft, A::LSLeft}, {A::RSRight, A::LSRight},
     {A::LSUp, A::RSUp}, {A::LSDown, A::RSDown}, {A::LSLeft, A::None}, {A::LSRight, A::None},
+    {A::Black, A::White}, {A::White, A::DpadDown},  // RB next weapon, LB previous
+};
+// Driving: RB (the console's Black) next weapon, LB (White) previous
+constexpr DefaultPad kDrivingPad[] = {
+    {A::Black, A::White}, {A::White, A::Black},
 };
 
 // Windows virtual key codes the defaults use
@@ -207,7 +213,7 @@ constexpr const char* kTokens[kActions] = {
     "LS_UP", "LS_DOWN", "LS_LEFT", "LS_RIGHT", "RS_UP", "RS_DOWN", "RS_LEFT", "RS_RIGHT", "RELOAD"};
 
 constexpr const char* kInputNames[kActions] = {
-    "A", "B", "X", "Y", "BLACK", "WHITE", "START", "BACK", "LT", "RT", "LEFT STICK CLICK", "RIGHT STICK CLICK",
+    "A", "B", "X", "Y", "RB (BLACK)", "LB (WHITE)", "START", "BACK", "LT", "RT", "LEFT STICK CLICK", "RIGHT STICK CLICK",
     "D-PAD UP", "D-PAD DOWN", "D-PAD LEFT", "D-PAD RIGHT",
     "LEFT STICK UP", "LEFT STICK DOWN", "LEFT STICK LEFT", "LEFT STICK RIGHT",
     "RIGHT STICK UP", "RIGHT STICK DOWN", "RIGHT STICK LEFT", "RIGHT STICK RIGHT", "RELOAD"};
@@ -296,6 +302,8 @@ CaptureRequest g_capture;
 std::atomic<bool> g_blocked{false}, g_cursor_wanted{false};
 GameState (*g_state_query)() = nullptr;
 A (*g_fire_redirect)() = nullptr;
+void (*g_reload_request)() = nullptr;
+bool g_reload_held = false;
 std::atomic<int> g_drive_mode{int(Context::Driving)};
 // the toggles: the console input as the player holds it last poll, and whether the game gets it held
 struct Toggle {
@@ -303,7 +311,7 @@ struct Toggle {
 };
 Toggle g_crouch, g_aim;
 GameState g_last_state = GameState::Menu;
-constexpr int kLayout = 3;  // 3: reload on its own, X with the gadget, B crouching  // settings written before 2 had the game's stick layout as the on-foot default
+constexpr int kLayout = 4;  // 4: RB cycles weapons;  // 3: reload on its own, X with the gadget, B crouching  // settings written before 2 had the game's stick layout as the on-foot default
 
 int64_t Now() {
     if (g_clock) return g_clock();
@@ -329,6 +337,8 @@ void DefaultBindings(Context c, Device d) {
             for (const DefaultPad& p : kOnFootPad) s.remap[int(p.physical)] = p.gives;
         if (c == Context::OnRails)
             for (const DefaultPad& p : kOnRailsPad) s.remap[int(p.physical)] = p.gives;
+        if (c == Context::Driving)
+            for (const DefaultPad& p : kDrivingPad) s.remap[int(p.physical)] = p.gives;
         return;
     }
     for (auto& k : s.keys) std::fill(std::begin(k), std::end(k), kNoKey);
@@ -570,11 +580,24 @@ void ApplyToggle(Toggle& t, float& v) {
 void PlayExtras(Inputs& out, const Options& o, bool keyboard) {
     float reload = out.v[int(A::Reload)];
     out.v[int(A::Reload)] = 0;
+    if (Ctx() == Context::OnRails) {
+        // the game's right stick Y zooms, but turns the view as well when not aiming: only while aiming
+        if (out.v[int(A::LT)] < kPressed && out.v[int(A::RSClick)] < kPressed)
+            out.v[int(A::RSUp)] = out.v[int(A::RSDown)] = 0;
+        return;
+    }
     if (Ctx() != Context::OnFoot) return;
-    if (reload > 0) {
-        // the item in hand decides: a gadget is used (B), a weapon reloaded (A)
-        A to = g_fire_redirect && g_fire_redirect() == A::B ? A::B : A::A;
-        out.v[int(to)] = std::max(out.v[int(to)], reload);
+    {
+        // the item in hand decides: a gadget is used (B), a weapon reloaded (the game's reload request; A would
+        // use what is in front of the player as well)
+        bool gadget = g_fire_redirect && g_fire_redirect() == A::B;
+        bool held = reload >= kPressed;
+        if (gadget) out.v[int(A::B)] = std::max(out.v[int(A::B)], reload);
+        else if (held && !g_reload_held) {
+            if (g_reload_request) g_reload_request();
+            else out.v[int(A::A)] = std::max(out.v[int(A::A)], reload);
+        }
+        g_reload_held = held;
     }
     if ((keyboard || o.smart_fire) && g_fire_redirect) {
         A to = g_fire_redirect();
@@ -784,6 +807,18 @@ GameState CurrentGameState() {
 
 void SetDrivingMode(Context c) {
     if (c == Context::Driving || c == Context::OnRails) g_drive_mode.store(int(c));
+}
+
+void SetReloadRequest(void (*request)()) {
+    std::lock_guard lock(g_lock);
+    g_reload_request = request;
+}
+
+bool SeparateReload() {
+    std::lock_guard lock(g_lock);
+    const ContextState& s = g_state[int(Context::OnFoot)];
+    if (g_device == Device::KeyboardMouse) return s.keys[int(A::Reload)][0] != kNoKey || s.keys[int(A::Reload)][1] != kNoKey;
+    return Source(Context::OnFoot, A::Reload) != A::None;
 }
 
 void SetFireRedirect(Action (*query)()) {
@@ -1038,7 +1073,10 @@ void Load(const void* table) {
         o.smart_fire = (*x)["smart_fire"].value_or(o.smart_fire);
         Clamp(o);
         // keys: an action left out keeps its default, an empty list is unbound, "" an empty slot
-        if (const toml::table* kb = (*x)["keyboard"].as_table()) {
+        // layout 4 gave driving and on rails keys of their own (weapons, look back, zoom): older ones give way
+        const toml::table* kb = (*x)["keyboard"].as_table();
+        if (layout < 4 && c != int(Context::OnFoot)) kb = nullptr;
+        if (kb) {
             for (auto&& [name, node] : *kb) {
                 A a = ActionFromToken(name.str());
                 if (a == A::None) continue;
@@ -1057,6 +1095,7 @@ void Load(const void* table) {
         // the modern stick layout came in with layout 2: older on-foot controller bindings give way to it
         const toml::table* pad = (*x)["controller"].as_table();
         if (layout < 3 && (c == int(Context::OnFoot) || c == int(Context::OnRails))) pad = nullptr;
+        if (layout < 4 && c != int(Context::OnFoot)) pad = nullptr;  // 4: RB next weapon, LB previous
         if (pad) {
             for (auto&& [name, node] : *pad) {
                 A physical = ActionFromToken(name.str());
@@ -1064,6 +1103,10 @@ void Load(const void* table) {
                 if (physical == A::None || !target) continue;
                 s.remap[int(physical)] = ActionFromToken(*target);  // NONE and unknown names: nothing
             }
+            // layout 4: on foot RB (the console's Black) cycles weapons and LB (White) is the alt. fire
+            if (layout < 4 && c == int(Context::OnFoot) && s.remap[int(A::Black)] == A::Black &&
+                s.remap[int(A::White)] == A::White)
+                std::swap(s.remap[int(A::Black)], s.remap[int(A::White)]);
         }
     }
 #else
