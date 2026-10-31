@@ -15,6 +15,10 @@ namespace overlay {
 inline bool g_skip_intros = false;
 inline bool g_fps_counter = false;
 inline uint32_t g_master_volume = 100;  // percent
+// the character pack, textures\replacement\AUF Characters 4x: drawn while on, left out of the pack while off
+inline bool g_hd_characters = true;
+inline constexpr const wchar_t* kCharacterPack = L"AUF Characters 4x";
+bool PackFolderOff(const std::wstring& folder);  // app::g_pack_folder_off
 
 inline std::atomic<uint64_t> g_frames{0};  // frames the game presented, counted in Draw
 

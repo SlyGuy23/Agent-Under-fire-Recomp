@@ -25,7 +25,7 @@ std::string Titled(const std::string& in) {
         size_t j = out.find(' ', i);
         if (j == std::string::npos) j = out.size();
         std::string w = out.substr(i, j - i);
-        static const char* kKeep[] = {"HUD", "FPS", "LT", "RT", "PC", "D-PAD", "4:3", "A", "B", "X", "Y", "UI"};
+        static const char* kKeep[] = {"HUD", "HD", "FPS", "LT", "RT", "PC", "D-PAD", "4:3", "A", "B", "X", "Y", "UI"};
         bool keep = false;
         for (const char* k : kKeep) keep |= w == k;
         if (!keep) {
@@ -205,7 +205,7 @@ int TabOf(Context c, Device d) {
 
 enum class RowKind { Action, Option, Reset, Heading, Note };  // Note: small text under the row before it
 enum class Opt { LeftSens, LeftDead, LeftOuter, RightSens, RightDead, RightOuter, MouseSens, MouseInvert, MouseLook,
-                 CrouchToggle, AimToggle, SmartFire };
+                 CrouchToggle, AimToggle, SmartFire, KbmAutoAim };
 
 struct CRow {
     RowKind kind;
@@ -272,6 +272,11 @@ std::vector<CRow> Rows(const Tab& t, bool view_only) {
             rows.back().desc = "With a gadget out RT uses it rather than switching back to your weapon";
         }
     }
+    if (t.device == Device::KeyboardMouse && !view_only && (t.context == Context::OnFoot || t.context == Context::OnRails)) {
+        if (t.context == Context::OnRails) rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, "GENERAL", ""});
+        opt(Opt::KbmAutoAim, "AUTO LOCK-ON", o.kbm_auto_aim ? "ON" : "OFF");
+        rows.back().desc = "The game's aim assist pulling your aim onto enemies, on foot and on rails";
+    }
     if (view_only) return rows;
     rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, t.device == Device::Controller ? "STICKS" : "MOUSE", ""});
     if (t.device == Device::Controller) {
@@ -307,6 +312,7 @@ void StepOption(Context c, Opt k, int step) {
         case Opt::CrouchToggle: o.crouch_toggle = !o.crouch_toggle; break;
         case Opt::AimToggle: o.aim_toggle = !o.aim_toggle; break;
         case Opt::SmartFire: o.smart_fire = !o.smart_fire; break;
+        case Opt::KbmAutoAim: o.kbm_auto_aim = !o.kbm_auto_aim; break;
     }
     controls::SetOptions(c, o);
     app::Save();
@@ -328,6 +334,7 @@ void Reset(const Tab& t) {
     o.crouch_toggle = d.crouch_toggle;
     o.aim_toggle = d.aim_toggle;
     if (t.device == Device::Controller) o.smart_fire = d.smart_fire;
+    else o.kbm_auto_aim = d.kbm_auto_aim;
     controls::SetOptions(t.context, o);
     app::Save();
 }
@@ -679,6 +686,9 @@ std::vector<CRow> PauseOptions(controls::Context context) {
         opt(Opt::AimToggle, "MANUAL AIM", o.aim_toggle ? "TOGGLE" : "HOLD");
         opt(Opt::SmartFire, "FIRE USES GADGET (CONTROLLER)", o.smart_fire ? "ON" : "OFF");
     }
+    if (context == Context::OnRails) heading("GENERAL");
+    if (context == Context::OnFoot || context == Context::OnRails)
+        opt(Opt::KbmAutoAim, "AUTO LOCK-ON (KEYBOARD & MOUSE)", o.kbm_auto_aim ? "ON" : "OFF");
     heading("CONTROLLER");
     opt(Opt::LeftSens, "LEFT STICK SENSITIVITY", Pct(o.left.sensitivity));
     opt(Opt::LeftDead, "LEFT STICK DEADZONE", Pct(o.left.deadzone));

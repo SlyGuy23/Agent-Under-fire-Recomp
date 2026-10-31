@@ -85,3 +85,17 @@ X86_FUNC(sub_00077A20) {
     RailsMouseAim(ctx.ecx);
     __imp__sub_00077A20(ctx, base);
 }
+
+// The gunner's auto-aim (0x76310, the camera's turn toward the current target [0x1C6C18]): with the keyboard and mouse
+// and the port's AUTO LOCK-ON off it sees no target, which also clears its auto-aiming flag; the target is put back.
+X86_EXTERN_FUNC(__imp__sub_00076310);
+X86_FUNC(sub_00076310) {
+    if (!controls::AimAssistOff()) {
+        __imp__sub_00076310(ctx, base);
+        return;
+    }
+    const uint32_t target = kernel::R32(0x1C6C18);
+    kernel::W32(0x1C6C18, 0);
+    __imp__sub_00076310(ctx, base);
+    kernel::W32(0x1C6C18, target);
+}

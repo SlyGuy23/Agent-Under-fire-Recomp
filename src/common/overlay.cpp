@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cwctype>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -35,6 +36,14 @@ int64_t NowMs() {
 bool Open() { return g_open.load(std::memory_order_relaxed); }
 
 void ApplyVolume() { audio::g_master_volume.store(std::min<uint32_t>(g_master_volume, 100) / 100.0f); }
+
+bool PackFolderOff(const std::wstring& folder) {
+    if (g_hd_characters) return false;
+    std::wstring want = kCharacterPack;
+    return folder.size() == want.size() && std::equal(folder.begin(), folder.end(), want.begin(), [](wchar_t a, wchar_t b) {
+               return std::towlower(a) == std::towlower(b);
+           });
+}
 
 void Toggle() {
     bool open = !g_open.load(std::memory_order_relaxed);
@@ -339,6 +348,13 @@ const Entry kEntries[] = {
          Changed(false);
      },
      [] { return true; }},
+    {"TEXTURES", "HD CHARACTER TEXTURES", [] { return std::string(OnOff(g_hd_characters)); },
+     [](int) {
+         g_hd_characters = !g_hd_characters;
+         app::g_pack_folders++;  // the pack is listed again at the next frame
+         Changed(false);
+     },
+     [] { return app::Get().custom_textures; }},
     {"TEXTURES", "TEXTURE DUMPING", [] { return std::string(OnOff(app::Get().dump_textures)); },
      [](int) {
          app::Get().dump_textures = !app::Get().dump_textures;
@@ -371,6 +387,8 @@ void Defaults() {
     g_skip_intros = false;
     g_fps_counter = false;
     app::g_menus_4x3 = true;
+    if (!g_hd_characters) app::g_pack_folders++;
+    g_hd_characters = true;
     g_master_volume = 100;
     ApplyVolume();
     Changed(display);

@@ -791,6 +791,11 @@ Context CurrentContext() {
 }
 
 Device ActiveDevice() { return g_device.load(); }
+bool AimAssistOff() {
+    if (g_device.load() != Device::KeyboardMouse) return false;
+    std::lock_guard lock(g_lock);
+    return !g_state[int(Ctx())].options.kbm_auto_aim;
+}
 
 bool (*g_cutscene)() = nullptr;
 void SetCutsceneQuery(bool (*query)()) { g_cutscene = query; }
@@ -894,6 +899,7 @@ void ShareAiming(Context from) {
     t.right = f.right;
     t.mouse_sensitivity = f.mouse_sensitivity;
     t.mouse_invert_y = f.mouse_invert_y;
+    t.kbm_auto_aim = f.kbm_auto_aim;
 }
 
 void SetOptions(Context c, const Options& o) {
@@ -1087,6 +1093,7 @@ void Load(const void* table) {
         o.crouch_toggle = (*x)["crouch_toggle"].value_or(o.crouch_toggle);
         o.aim_toggle = (*x)["aim_toggle"].value_or(o.aim_toggle);
         o.smart_fire = (*x)["smart_fire"].value_or(o.smart_fire);
+        o.kbm_auto_aim = (*x)["kbm_auto_aim"].value_or(o.kbm_auto_aim);
         Clamp(o);
         // keys: an action left out keeps its default, an empty list is unbound, "" an empty slot
         // layout 4 gave driving and on rails keys of their own (weapons, look back, zoom): older ones give way
@@ -1168,7 +1175,7 @@ void Save(void* table) {
                       {"right_stick_outer_deadzone", int64_t(o.right.outer_deadzone)},
                       {"crouch_toggle", o.crouch_toggle},
                       {"aim_toggle", o.aim_toggle},
-                      {"smart_fire", o.smart_fire}};
+                      {"smart_fire", o.smart_fire}, {"kbm_auto_aim", o.kbm_auto_aim}};
         toml::table kb, pad;
         for (int i = 0; i < kActions; i++) {
             // each slot in its place, "" for an empty one before a bound one

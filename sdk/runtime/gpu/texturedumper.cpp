@@ -56,6 +56,7 @@ struct Latched {
     bool replacing = false;
     bool dumping = false;
     uint32_t format = 0;
+    uint32_t folders = 0;  // app::g_pack_folders
     bool operator==(const Latched&) const = default;
 };
 
@@ -179,6 +180,14 @@ void ListPack(const fs::path& dir) {
     fs::recursive_directory_iterator it(dir, ec);
     for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         const fs::path& p = it->path();
+        // a folder the game has turned off (app::g_pack_folder_off), with everything under it
+        std::error_code dir_ec;
+        if (it.depth() == 0 && app::g_pack_folder_off && it->is_directory(dir_ec) &&
+            app::g_pack_folder_off(p.filename().wstring())) {
+            LOGR("texture pack: %s left out", Utf8(p.filename()).c_str());
+            it.disable_recursion_pending();
+            continue;
+        }
         bool image = _wcsicmp(p.extension().c_str(), L".dds") == 0 || _wcsicmp(p.extension().c_str(), L".png") == 0;
         uint64_t key = image ? KeyInName(p.stem().wstring()) : 0;
         if (key) g.files.emplace(key, p);
@@ -491,8 +500,10 @@ Image Decode(const TextureDesc& d, const uint8_t* guest, const uint32_t* palette
 // the settings into g.set; false when none changed
 bool LatchSettings() {
     const app::Settings& s = app::Get();
-    Latched now{s.custom_textures, s.dump_textures, s.texture_dump_format};
+    Latched now{s.custom_textures, s.dump_textures, s.texture_dump_format, app::g_pack_folders.load()};
     if (now == g.set) return false;
+    // a folder turned on or off: the pack is listed again at once (UpdatePackFiles), not after the settling wait
+    if (now.folders != g.set.folders) g.changed = Clock::time_point{};
     g.set = now;
     fs::path root = app::ExeDir() / "textures";
     g.pack_dir = root / "replacement";

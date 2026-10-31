@@ -68,3 +68,20 @@ X86_FUNC(sub_000C5340) {
     X86_MEMF32(ps + 0x24) = v0[0] + d[0] * s;
     X86_MEMF32(ps + 0x28) = v0[1] + d[1] * s;           // vz is zeroed by the ground trace anyway
 }
+
+// The game's auto-aim (0xB8BB0, the player's target search each think) bends the aim and the shots onto an enemy
+// while player+0x716 is set (at spawn: every difficulty but 00 Agent). With the keyboard and mouse and the port's
+// AUTO LOCK-ON off the search runs as if it were clear, so the aim follows the view; the byte is put back after, so
+// the option can come back on at any time.
+X86_EXTERN_FUNC(__imp__sub_000B8BB0);
+X86_FUNC(sub_000B8BB0) {
+    if (!controls::AimAssistOff()) {
+        __imp__sub_000B8BB0(ctx, base);
+        return;
+    }
+    const uint32_t player = ctx.ecx;
+    const uint8_t allowed = X86_MEM8(player + 0x716);
+    X86_MEM8(player + 0x716) = 0;
+    __imp__sub_000B8BB0(ctx, base);
+    X86_MEM8(player + 0x716) = allowed;
+}

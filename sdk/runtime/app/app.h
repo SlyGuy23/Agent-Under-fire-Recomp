@@ -49,6 +49,11 @@ bool Widescreen();
 inline bool g_menus_4x3 = true;
 // small figures drawn from 128x128 linear A8R8G8B8 textures are upscaled smooth with an outline (gpu::SmoothFigure)
 inline bool g_smooth_figures = false;
+// a folder right under textures\replacement\ (its name as given) the texture pack leaves out while this says so. Set by
+// the game, which bumps g_pack_folders whenever an answer may have changed: the pack is listed again at the next
+// present and every texture looks its image up again (gpu::texturedumper)
+inline bool (*g_pack_folder_off)(const std::wstring& folder) = nullptr;
+inline std::atomic<uint32_t> g_pack_folders{0};
 // frames the game has swapped (D3DDevice_Swap), for hooks that look at a whole frame's draws
 inline std::atomic<uint64_t> g_swaps{0};
 // where the console's frame was last shown in the window, in window pixels: x, y, width, height (set by the renderer)

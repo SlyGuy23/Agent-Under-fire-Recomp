@@ -66,6 +66,7 @@ controls::Context PickedMission();
 
 void Init() {
     overlay::ApplyVolume();
+    app::g_pack_folder_off = overlay::PackFolderOff;  // the HD Character Textures setting
     if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
         controls::SetGameStateQuery(OnFootState);
         controls::SetFireRedirect(FireRedirect);
@@ -374,7 +375,7 @@ const app::GameInfo app::kGame = {
     .options = {{"skip_intros", &overlay::g_skip_intros, nullptr}, {"fps_counter", &overlay::g_fps_counter, nullptr},
                 {"master_volume", nullptr, &overlay::g_master_volume}, {"modern_sticks", &sticks::g_modern, nullptr},
                 {"stick_deadzone", nullptr, &sticks::g_deadzone},
-                {"menus_4x3", &app::g_menus_4x3, nullptr}},
+                {"menus_4x3", &app::g_menus_4x3, nullptr}, {"hd_character_textures", &overlay::g_hd_characters, nullptr}},
     .load = controls::Load,
     .save = controls::Save,
     .init = Init,

@@ -85,6 +85,7 @@ struct Options {
     StickOptions left, right;  // the controller's sticks; sticks::g_modern off leaves them as they are
     bool crouch_toggle = false;  // on foot: a press crouches, the next stands (else held)
     bool aim_toggle = false;     // on foot: a press brings up the manual aim, the next puts it away
+    bool kbm_auto_aim = false;   // on foot and on rails, the keyboard and mouse: the game's auto-aim (lock-on)
     bool smart_fire = true;      // on foot, the controller: FIRE with a gadget raised uses it (the keyboard always does)
 };
 
@@ -101,6 +102,8 @@ bool SeparateReload();
 // where this executable plays, and which device drives it now
 Context CurrentContext();
 Device ActiveDevice();
+// the game's auto-aim is off now: the keyboard and mouse in use, its auto lock-on option off (hooks.cpp)
+bool AimAssistOff();
 
 // names: the settings file token ("RT", "LS_UP"), the console input as a binding shows it ("RT", "LEFT STICK UP"),
 // and what the action does in that context ("FIRE WEAPON", from the label table at the top of controls.cpp)
