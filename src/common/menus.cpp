@@ -397,6 +397,7 @@ std::atomic<float> g_drive_x{109};  // the rows' left edge (the letters, not the
 
 bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1);
 void LabelQuad(float x0, float y0, float x1, float y1);
+uint64_t StageKey(const gpu::State& s);
 
 // the stream i vertices of the draw whose stream 0 vertices are v
 uint8_t* StreamOf(const gpu::State& s, const uint8_t* v, int i) {
@@ -439,6 +440,27 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
         }
     }
     if (!TextureSize(s, 256, 256)) return;
+    // the lettering's black shadow copy (2 down and right): most of the way under the letters, fainter, so it no
+    // longer reads as a line along them at PC resolutions
+    if (uint8_t* col = StreamOf(s, v, 1); col && s.streams[1].stride >= 4) {
+        uint64_t key = StageKey(s);
+        if (key == 0x03fc5f1b2a199c51ull || key == 0x3a69e5569f788462ull || key == 0xf3b5a8f28d4357d7ull) {
+            uint32_t c;
+            std::memcpy(&c, col, 4);
+            if (Channels(c) < 60) {
+                constexpr float kPull = 1.4f;
+                for (uint32_t i = 0; i < 4; i++) {
+                    At(v, stride, i, 0)[0] -= kPull, At(v, stride, i, 0)[1] -= kPull;
+                    uint8_t* ci = col + i * s.streams[1].stride;
+                    uint32_t ca;
+                    std::memcpy(&ca, ci, 4);
+                    ca = (ca & 0x00FFFFFFu) | (uint32_t(((ca >> 24) * 3) / 5) << 24);
+                    std::memcpy(ci, &ca, 4);
+                }
+                x0 -= kPull, x1 -= kPull, y0 -= kPull, y1 -= kPull;
+            }
+        }
+    }
     if (y1 - y0 < 40 && x1 - x0 < 40) LabelQuad(x0, y0, x1, y1);  // a letter (a prompt's words, perhaps)
     if (!Paused()) return;
     // the marker
@@ -726,6 +748,18 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     Layout l = MenuLayout(s, prim, stride, count);
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
+
+    // the lettering's black shadow copy, a console pixel down and right: at PC resolutions that is a hard dark edge
+    // along every letter (a line under and beside the text). It moves most of the way under the letters, fainter.
+    if (count % 6 == 0 && TextureSize(s, 256, 128) && IsShadow(ColorOf(v, stride, l))) {
+        constexpr float kPull = 0.65f, kFade = 0.6f;
+        for (uint32_t i = 0; i < count; i++) {
+            float* p = At(v, stride, i, l.pos);
+            p[0] -= kPull, p[1] -= kPull;
+            At(v, stride, i, l.color)[3] *= kFade;
+        }
+        b = BoxOf(v, stride, l, 0, count);
+    }
 
     // a button prompt: the keyboard's key in its place while the keyboard and mouse play
     if (count == 6 && PromptQuad(s, b.x0, b.y0, b.x1, b.y1, b.u0, b.v0, b.u1, b.v1)) {
