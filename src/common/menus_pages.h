@@ -19,6 +19,9 @@ struct PageContext {
     // text at console coordinates with the list's shadow; align 0 left, 0.5 centre, 1 right
     void (*say)(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align);
     float (*width)(float size, const char* text);  // a text's width in console pixels
+    // the same in the italic title lettering
+    void (*title)(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align);
+    float (*title_width)(float size, const char* text);
     ImU32 lit, unlit, value;  // the list's colours: the selected row, the others, values
 };
 

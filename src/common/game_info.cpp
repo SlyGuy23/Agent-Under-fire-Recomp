@@ -54,6 +54,9 @@ void KeepDrivingLaunch(bool relaunched) {
 // default.xbe only plays the EA Games and MGM films and the attract film before it loads the game: with Skip Intros
 // the launcher goes straight to the game's executable. A relaunch into the launcher (the game quitting to it) is let be.
 controls::GameState OnFootState();
+
+// a pointer the game keeps that is safe to read through: its image and heap, or the 64 MB physical window
+bool GuestPointer(uint32_t va) { return (va >= 0x10000 && va < 0x7F00000) || (va >= 0x80000000u && va < 0x84000000u); }
 controls::GameState DrivingState();
 controls::Action FireRedirect();
 controls::Context PickedMission();
@@ -173,7 +176,7 @@ controls::GameState OnFootState() {
 controls::GameState DrivingState() {
     constexpr uint32_t kMission = 0x1C2C2C, kMenu = 0x1BEB1C;
     uint32_t m = kernel::R32(kMission);
-    if (m >= 0x7F00000) m = 0;
+    if (!GuestPointer(m)) m = 0;
     if (m) controls::SetDrivingMode(kernel::G<uint8_t>(m + 0x408) ? controls::Context::OnRails : controls::Context::Driving);
     if (kernel::R32(kMenu) == 3) return controls::GameState::Paused;
     return m && kernel::R32(m + 0x404) == 1 ? controls::GameState::Playing : controls::GameState::Menu;
@@ -194,11 +197,10 @@ controls::Context PickedMission() {
 // would only put it away
 controls::Action FireRedirect() {
     if (!kernel::R32(0x2A88B8)) return controls::Action::RT;
-    auto ok = [](uint32_t va) { return va >= 0x10000 && va < 0x7F00000; };  // in the console's memory
     uint32_t players = kernel::R32(0x329390);
-    uint32_t player = ok(players) ? kernel::R32(players + 0x278) : 0;
-    uint32_t held = ok(player) ? kernel::R32(player + 0x2EC) : 0;
-    if (!ok(held)) return controls::Action::RT;
+    uint32_t player = GuestPointer(players) ? kernel::R32(players + 0x278) : 0;
+    uint32_t held = GuestPointer(player) ? kernel::R32(player + 0x2EC) : 0;
+    if (!GuestPointer(held)) return controls::Action::RT;
     if (!held || kernel::R32(player + 0x2F0)) return controls::Action::RT;
     return kernel::G<uint8_t>(held + 0x395) ? controls::Action::B : controls::Action::RT;
 }
@@ -237,8 +239,8 @@ Quad g_last_quad;
 
 void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
     static const bool kMenus = std::string_view(IMAGE_XBE) == "bond_eng.xbe";
+    menus::Draw(state, prim, v, stride, count);  // the front end's menus, and driving.xbe's pause menu
     if (!kMenus) return;
-    menus::Draw(state, prim, v, stride, count);
     const auto& s = *static_cast<const gpu::State*>(state);
     constexpr uint32_t kTriangleList = 5, kFloat4 = 0x42, kFloat2 = 0x22;
     static constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};

@@ -2,6 +2,7 @@
 #include "common/menus_pages.h"
 
 #include <algorithm>
+#include <cctype>
 #include <string>
 
 #include "common/overlay.h"
@@ -11,8 +12,36 @@ namespace menus {
 namespace {
 
 // the options list's places, in console pixels
-constexpr float kTitleY = 96, kTopY = 120, kRowStep = 23, kLabelX = 96, kValueX = 352, kTextSize = 15;
+// (the screen's title, OPTIONS at y 78, reads PC SETTINGS or CONTROLLER SETUP while a page is up: menus.cpp)
+constexpr float kTitleY = 112, kTopY = 116, kRowStep = 22, kLabelX = 96, kValueX = 352, kTextSize = 16;
 constexpr int kVisibleRows = 12;
+
+// labels as the options list writes them, "Controller Setup": each word's first letter a capital, the rest small,
+// short all-capital names (HUD, FPS, LT) kept
+std::string Titled(const std::string& in) {
+    std::string out = in;
+    size_t i = 0;
+    while (i < out.size()) {
+        size_t j = out.find(' ', i);
+        if (j == std::string::npos) j = out.size();
+        std::string w = out.substr(i, j - i);
+        static const char* kKeep[] = {"HUD", "FPS", "LT", "RT", "PC", "D-PAD", "4:3", "A", "B", "X", "Y", "UI"};
+        bool keep = false;
+        for (const char* k : kKeep) keep |= w == k;
+        if (!keep) {
+            bool first = true;
+            for (size_t k = i; k < j; k++) {
+                char& ch = out[k];
+                if (std::isalpha(static_cast<unsigned char>(ch))) {
+                    ch = first ? char(std::toupper(static_cast<unsigned char>(ch))) : char(std::tolower(static_cast<unsigned char>(ch)));
+                    first = false;
+                }
+            }
+        }
+        i = j + 1;
+    }
+    return out;
+}
 
 struct Row {
     std::string label, value;
@@ -33,7 +62,7 @@ ImU32 Dim(ImU32 c) { return (c & 0x00FFFFFF) | (uint32_t(0x78) << 24); }
 MouseHit DrawList(const PageContext& c, const char* title, const std::vector<Row>& rows, int sel, int& scroll,
                   const char* hint) {
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-    c.say(dl, kLabelX, kTitleY, kTextSize + 1, c.lit, title, 0);
+    (void)title;
     if (sel < scroll) scroll = sel;
     if (sel >= scroll + kVisibleRows) scroll = sel - kVisibleRows + 1;
     scroll = std::clamp(scroll, 0, std::max(0, int(rows.size()) - kVisibleRows));
@@ -43,11 +72,11 @@ MouseHit DrawList(const PageContext& c, const char* title, const std::vector<Row
         const Row& r = rows[size_t(i)];
         float y = kTopY + kRowStep * float(i - scroll);
         if (r.heading) {
-            c.say(dl, kLabelX - 10, y + 4, kTextSize - 3, Dim(c.lit), r.label.c_str(), 0);
+            c.title(dl, kLabelX - 10, y + 5, 11, Dim(c.lit), r.label.c_str(), 0);
             continue;
         }
         ImU32 col = i == sel ? c.lit : (r.enabled ? c.unlit : Dim(c.unlit));
-        c.say(dl, kLabelX, y, kTextSize, col, r.label.c_str(), 0);
+        c.say(dl, kLabelX, y, kTextSize, col, Titled(r.label).c_str(), 0);
         if (!r.value.empty()) c.say(dl, kValueX, y, kTextSize, i == sel ? c.lit : (r.enabled ? c.value : Dim(c.value)), r.value.c_str(), 0);
         ImVec2 a = c.guest(kLabelX - 12, y - 2), b = c.guest(600, y + kRowStep - 2);
         if (ImGui::IsMouseHoveringRect(a, b, false)) {
@@ -56,8 +85,8 @@ MouseHit DrawList(const PageContext& c, const char* title, const std::vector<Row
             if (ImGui::IsMouseClicked(1)) hit.step = -1;
         }
     }
-    if (scroll > 0) c.say(dl, 320, kTopY - 14, kTextSize - 3, c.unlit, "^", 0.5f);
-    if (scroll + kVisibleRows < int(rows.size())) c.say(dl, 320, kTopY + kRowStep * kVisibleRows - 4, kTextSize - 3, c.unlit, "v", 0.5f);
+    if (scroll > 0) c.title(dl, 320, kTopY - 12, 11, c.unlit, "^", 0.5f);
+    if (scroll + kVisibleRows < int(rows.size())) c.title(dl, 320, kTopY + kRowStep * kVisibleRows - 2, 11, c.unlit, "v", 0.5f);
     if (hint) c.say(dl, 320, kTopY + kRowStep * kVisibleRows + 6, kTextSize - 4, Dim(c.unlit), hint, 0.5f);
     hit.wheel = io.MouseWheel;
     return hit;
@@ -174,9 +203,9 @@ int TabOf(Context c, Device d) {
     return 0;
 }
 
-enum class RowKind { Action, Option, Reset, Heading };
+enum class RowKind { Action, Option, Reset, Heading, Note };  // Note: small text under the row before it
 enum class Opt { LeftSens, LeftDead, LeftOuter, RightSens, RightDead, RightOuter, MouseSens, MouseInvert, MouseLook,
-                 CrouchToggle, AimToggle };
+                 CrouchToggle, AimToggle, SmartFire };
 
 struct CRow {
     RowKind kind;
@@ -237,6 +266,11 @@ std::vector<CRow> Rows(const Tab& t, bool view_only) {
         rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, "GENERAL", ""});
         opt(Opt::CrouchToggle, "CROUCH", o.crouch_toggle ? "TOGGLE" : "HOLD");
         opt(Opt::AimToggle, "MANUAL AIM", o.aim_toggle ? "TOGGLE" : "HOLD");
+        if (t.device == Device::Controller && !view_only) {
+            opt(Opt::SmartFire, "FIRE USES GADGET", o.smart_fire ? "ON" : "OFF");
+            rows.push_back({RowKind::Note, Action::None, Opt::LeftSens,
+                            "With a gadget out RT uses it rather than switching back to your weapon", ""});
+        }
     }
     if (view_only) return rows;
     rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, t.device == Device::Controller ? "STICKS" : "MOUSE", ""});
@@ -272,6 +306,7 @@ void StepOption(Context c, Opt k, int step) {
         case Opt::MouseLook: o.mouse_look = controls::MouseLook((int(o.mouse_look) + step + 3) % 3); break;
         case Opt::CrouchToggle: o.crouch_toggle = !o.crouch_toggle; break;
         case Opt::AimToggle: o.aim_toggle = !o.aim_toggle; break;
+        case Opt::SmartFire: o.smart_fire = !o.smart_fire; break;
     }
     controls::SetOptions(c, o);
     app::Save();
@@ -292,6 +327,7 @@ void Reset(const Tab& t) {
     }
     o.crouch_toggle = d.crouch_toggle;
     o.aim_toggle = d.aim_toggle;
+    if (t.device == Device::Controller) o.smart_fire = d.smart_fire;
     controls::SetOptions(t.context, o);
     app::Save();
 }
@@ -300,7 +336,7 @@ int Next(const std::vector<CRow>& rows, int sel, int d) {
     int n = int(rows.size());
     for (int k = 0; k < n; k++) {
         sel = (sel + d + n) % n;
-        if (rows[size_t(sel)].kind != RowKind::Heading) return sel;
+        if (rows[size_t(sel)].kind != RowKind::Heading && rows[size_t(sel)].kind != RowKind::Note) return sel;
     }
     return sel;
 }
@@ -317,24 +353,27 @@ void Activate(const Tab& t, const CRow& r, int step) {
 
 // the two rows of tabs: the devices, then on foot, driving and on rails; the shown ones lit. Returns a clicked tab,
 // -1 for none. only: one context alone (the pause menu's page)
+float g_tabs_y = kTitleY, g_rows_y = kTitleY + 42;  // where the tabs and the rows start on the page drawn
+constexpr int kControlRows = 11;
+
 int DrawTabs(const PageContext& c, ImDrawList* dl, int tab, bool clickable, int only = -1) {
     int clicked = -1;
     const Tab& t = kTabs[tab];
     auto item = [&](float& x, float y, float size, const char* text, bool lit, int to) {
-        c.say(dl, x, y, size, lit ? c.lit : Dim(c.unlit), text, 0);
-        float w = c.width(size, text);
+        c.title(dl, x, y, size, lit ? c.lit : Dim(c.unlit), text, 0);
+        float w = c.title_width(size, text);
         ImVec2 a = c.guest(x - 3, y - 2), b = c.guest(x + w + 3, y + size + 2);
         if (clickable && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) clicked = to;
         x += w + 18;
     };
     float x = kLabelX;
-    for (int d = 0; d < 2; d++) item(x, kTitleY - 8, 13, kDeviceNames[d], int(t.device) == d, TabOf(only >= 0 ? Context(only) : t.context, Device(d)));
+    for (int d = 0; d < 2; d++) item(x, g_tabs_y, 13, kDeviceNames[d], int(t.device) == d, TabOf(only >= 0 ? Context(only) : t.context, Device(d)));
     if (only < 0) {
         x = kLabelX;
-        for (int k = 0; k < 3; k++) item(x, kTitleY + 8, 11, kContextNames[k], int(t.context) == k, TabOf(Context(k), t.device));
+        for (int k = 0; k < 3; k++) item(x, g_tabs_y + 18, 11, kContextNames[k], int(t.context) == k, TabOf(Context(k), t.device));
     } else {
         x = kLabelX;
-        item(x, kTitleY + 8, 11, kContextNames[only], true, tab);
+        item(x, g_tabs_y + 18, 11, kContextNames[only], true, tab);
     }
     return clicked;
 }
@@ -342,29 +381,37 @@ int DrawTabs(const PageContext& c, ImDrawList* dl, int tab, bool clickable, int 
 // the rows from kTopY, scrolled to keep sel in view; the hovered row (or -1) through hover
 void DrawRows(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& rows, int sel, int scroll, bool keyboard,
               const std::string& sel_value, int* hover, float value_x) {
-    for (int i = scroll; i < int(rows.size()) && i < scroll + kVisibleRows; i++) {
+    constexpr float kStep = 21;
+    for (int i = scroll; i < int(rows.size()) && i < scroll + kControlRows; i++) {
         const CRow& r = rows[size_t(i)];
-        float y = kTopY + 6 + kRowStep * float(i - scroll);
+        float y = g_rows_y + kStep * float(i - scroll);
         if (r.kind == RowKind::Heading) {
-            c.say(dl, kLabelX - 10, y + 3, kTextSize - 3, Dim(c.lit), r.label.c_str(), 0);
+            c.title(dl, kLabelX - 10, y + 5, 11, Dim(c.lit), r.label.c_str(), 0);
+            continue;
+        }
+        if (r.kind == RowKind::Note) {
+            c.say(dl, kLabelX + 8, y - 3, 11, Dim(c.unlit), r.label.c_str(), 0);
             continue;
         }
         bool lit = i == sel;
         std::string value = lit && !sel_value.empty() ? sel_value : r.value;
-        c.say(dl, kLabelX, y, kTextSize - 1, lit ? c.lit : c.unlit, r.label.c_str(), 0);
-        c.say(dl, value_x, y, kTextSize - 1, lit ? c.lit : c.value, value.c_str(), 0);
-        ImVec2 a = c.guest(kLabelX - 12, y - 2), b = c.guest(620, y + kRowStep - 2);
+        c.say(dl, kLabelX, y, kTextSize - 1, lit ? c.lit : c.unlit, Titled(r.label).c_str(), 0);
+        // a long value is drawn smaller to stay inside the screen
+        float size = kTextSize - 1;
+        while (size > 10 && value_x + c.width(size, value.c_str()) > 604) size -= 1;
+        c.say(dl, value_x, y + (kTextSize - 1 - size) * 0.7f, size, lit ? c.lit : c.value, value.c_str(), 0);
+        ImVec2 a = c.guest(kLabelX - 12, y - 2), b = c.guest(620, y + kStep - 2);
         if (hover && ImGui::IsMouseHoveringRect(a, b, false)) *hover = i;
     }
     (void)keyboard;
-    if (scroll > 0) c.say(dl, 320, kTopY - 4, kTextSize - 3, c.unlit, "^", 0.5f);
-    if (scroll + kVisibleRows < int(rows.size())) c.say(dl, 320, kTopY + 6 + kRowStep * kVisibleRows - 4, kTextSize - 3, c.unlit, "v", 0.5f);
+    if (scroll > 0) c.title(dl, 320, g_rows_y - 12, 11, c.unlit, "^", 0.5f);
+    if (scroll + kControlRows < int(rows.size())) c.title(dl, 320, g_rows_y + kStep * kControlRows - 2, 11, c.unlit, "v", 0.5f);
 }
 
 int Clamp(int scroll, int sel, int n) {
     if (sel >= 0 && sel < scroll) scroll = sel;
-    if (sel >= scroll + kVisibleRows) scroll = sel - kVisibleRows + 1;
-    return std::clamp(scroll, 0, std::max(0, n - kVisibleRows));
+    if (sel >= scroll + kControlRows) scroll = sel - kControlRows + 1;
+    return std::clamp(scroll, 0, std::max(0, n - kControlRows));
 }
 
 int g_view_tab = 0, g_view_scroll = 0;
@@ -388,7 +435,7 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
         }
     }
     std::vector<CRow> rows = Rows(tab, false);
-    if (g_sel < 0 || g_sel >= int(rows.size()) || rows[size_t(g_sel)].kind == RowKind::Heading) g_sel = 0;
+    if (g_sel < 0 || g_sel >= int(rows.size()) || rows[size_t(g_sel)].kind == RowKind::Heading || rows[size_t(g_sel)].kind == RowKind::Note) g_sel = 0;
     bool settling = ImGui::GetFrameCount() - g_ended_frame < 3;
     if (!g_capturing && !settling) {
         for (PageNav n : nav) {
@@ -416,6 +463,7 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
     if (g_sel >= int(rows.size())) g_sel = 0;
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
+    g_tabs_y = 112, g_rows_y = 156;  // clear of the title's bar
     int clicked = DrawTabs(c, dl, g_tab, !g_capturing);
     if (clicked >= 0 && clicked != g_tab) g_tab = clicked, g_sel = 0, g_scroll = 0;
     g_scroll = Clamp(g_scroll, g_sel, int(rows.size()));
@@ -436,7 +484,7 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
     if (hover >= 0) {
         const CRow& r = rows[size_t(hover)];
         if (moved) g_sel = hover;
-        float y = kTopY + 6 + kRowStep * float(hover - g_scroll);
+        float y = g_rows_y + 21 * float(hover - g_scroll);
         if (r.kind == RowKind::Action && shown.device == Device::KeyboardMouse && moved) {
             ImVec2 mid = c.guest(kValueX + 60, y);
             g_slot = m.x < mid.x ? 0 : 1;
@@ -474,8 +522,9 @@ bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, con
     const Tab& t = kTabs[g_view_tab];
     std::vector<CRow> rows = Rows(t, true);
     while (!rows.empty() && rows.back().kind != RowKind::Action) rows.pop_back();  // only the controls
-    g_view_scroll = std::clamp(g_view_scroll, 0, std::max(0, int(rows.size()) - kVisibleRows));
+    g_view_scroll = std::clamp(g_view_scroll, 0, std::max(0, int(rows.size()) - kControlRows));
     ImDrawList* dl = ImGui::GetForegroundDrawList();
+    g_tabs_y = 80, g_rows_y = 128;
     int clicked = DrawTabs(c, dl, g_view_tab, true, int(context));
     if (clicked >= 0) g_view_tab = clicked, g_view_scroll = 0;
     if (ImGui::GetIO().MouseWheel != 0) g_view_scroll = std::max(0, g_view_scroll - int(ImGui::GetIO().MouseWheel));
@@ -483,20 +532,41 @@ bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, con
     return true;
 }
 
-// a still list of a context's controls for the device in use, from y (the game's pre-mission Controller Setup)
+// a table of a context's controls for the device in use, over the game's pre-mission Controller Setup: two halves
+// side by side, each an ACTION and a CONTROL column, a row a control
 void ControlsList(const PageContext& c, controls::Context context, float y, int max_rows) {
     const Tab& t = kTabs[TabOf(context, controls::ActiveDevice())];
     std::vector<CRow> rows = Rows(t, true);
     while (!rows.empty() && rows.back().kind != RowKind::Action) rows.pop_back();
+    rows.erase(std::remove_if(rows.begin(), rows.end(), [](const CRow& r) { return r.kind != RowKind::Action; }), rows.end());
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-    // two columns when they do not fit in one
-    int per = int(rows.size()) > max_rows ? (int(rows.size()) + 1) / 2 : int(rows.size());
-    float step = std::min(20.0f, 300.0f / float(std::max(per, 1)));
+    std::string caption = std::string(kContextNames[int(context)]) + "   -   " + kDeviceNames[int(t.device)];
+    c.title(dl, 320, y, 12, c.lit, caption.c_str(), 0.5f);
+    int per = std::max(1, std::min(max_rows, (int(rows.size()) + 1) / 2));
+    if (int(rows.size()) <= max_rows / 2) per = int(rows.size());
+    constexpr float kRow = 17, kHalf = 272, kGap = 16, kText = 14;
+    int halves = (int(rows.size()) + per - 1) / per;
+    float x0 = 320 - (kHalf * float(halves) + kGap * float(halves - 1)) / 2;
+    float top = y + 24;
+    ImU32 rule = Dim(c.unlit);
+    for (int h = 0; h < halves; h++) {
+        float x = x0 + float(h) * (kHalf + kGap);
+        c.title(dl, x + 6, top, 10, Dim(c.lit), "ACTION", 0);
+        c.title(dl, x + kHalf - 6, top, 10, Dim(c.lit), "CONTROL", 1);
+        dl->AddLine(c.guest(x, top + 14), c.guest(x + kHalf, top + 14), rule, std::max(1.0f, c.scale()));
+    }
     for (int i = 0; i < int(rows.size()); i++) {
-        int col = i / per, k = i % per;
-        float x = col ? 330 : 60, yy = y + step * float(k);
-        c.say(dl, x, yy, 12, c.unlit, rows[size_t(i)].label.c_str(), 0);
-        c.say(dl, x + 270, yy, 12, c.lit, rows[size_t(i)].value.c_str(), 1);
+        int h = i / per, k = i % per;
+        float x = x0 + float(h) * (kHalf + kGap), yy = top + 18 + kRow * float(k);
+        if (k % 2 == 0) dl->AddRectFilled(c.guest(x, yy - 1), c.guest(x + kHalf, yy + kRow - 1), IM_COL32(255, 255, 255, 14));
+        std::string label = Titled(rows[size_t(i)].label), value = rows[size_t(i)].value;
+        // the two share the row: the value keeps its size where it can, the label gives way first
+        float vs = kText, ls = kText;
+        while (vs > 10 && c.width(vs, value.c_str()) > kHalf * 0.55f) vs -= 1;
+        float room = kHalf - 18 - c.width(vs, value.c_str());
+        while (ls > 10 && c.width(ls, label.c_str()) > room) ls -= 1;
+        c.say(dl, x + 6, yy + (kText - ls) * 0.7f, ls, c.unlit, label.c_str(), 0);
+        c.say(dl, x + kHalf - 6, yy + (kText - vs) * 0.7f, vs, c.lit, value.c_str(), 1);
     }
 }
 

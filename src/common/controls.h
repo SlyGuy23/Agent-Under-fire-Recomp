@@ -44,9 +44,13 @@ enum class Action : uint8_t {
     DpadUp, DpadDown, DpadLeft, DpadRight,
     LSUp, LSDown, LSLeft, LSRight,
     RSUp, RSDown, RSLeft, RSRight,
+    // not a console input: on foot, A (reload) with a weapon in hand and B (use it) with a gadget; never a physical
+    // input of the remap table
+    Reload,
     None,
 };
 inline constexpr int kActions = int(Action::None);
+inline constexpr int kPhysical = int(Action::Reload);  // the inputs a controller has
 inline constexpr int kKeySlots = 2;  // keyboard and mouse bindings per action
 
 // keys are Windows virtual key codes (left and right Shift, Ctrl and Alt apart: 0xA0 to 0xA5), mouse buttons and
@@ -79,6 +83,7 @@ struct Options {
     StickOptions left, right;  // the controller's sticks; sticks::g_modern off leaves them as they are
     bool crouch_toggle = false;  // on foot: a press crouches, the next stands (else held)
     bool aim_toggle = false;     // on foot: a press brings up the manual aim, the next puts it away
+    bool smart_fire = true;      // on foot, the controller: FIRE with a gadget raised uses it (the keyboard always does)
 };
 
 // driving.xbe: whether this run is a driving mission or an on-rails one
@@ -166,6 +171,7 @@ void WheelEvent(Key wheel, int notches);
 void MouseMotion(int dx, int dy);
 void FocusLost();
 void ResetAll();  // defaults everywhere, nothing held, controller active
+void EnableKeyboard();  // the headless harness: a keyboard as a window would give
 }  // namespace testing
 
 }  // namespace controls

@@ -20,12 +20,15 @@
 #include "gpu/state.h"
 #include "gpu/texture.h"
 #include "image_symbols.h"
+#include "kernel/kernel.h"
+#include "kernel/memory.h"
 
 namespace menus {
 
 namespace {
 
 constexpr bool kMenus = std::string_view(IMAGE_XBE) == "bond_eng.xbe";
+constexpr bool kDrivingImage = std::string_view(IMAGE_XBE) == "driving.xbe";
 
 int64_t NowMs() {
     using namespace std::chrono;
@@ -114,6 +117,9 @@ void Hide(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count) {
         At(v, stride, i, l.pos)[1] = y;
     }
 }
+
+enum class Page { None, Quit, PcSettings, Controls, PauseControls };
+std::atomic<Page> g_page{Page::None};
 
 bool TextureSize(const gpu::State& s, uint32_t w, uint32_t h) {
     gpu::TextureDesc d;
@@ -323,9 +329,9 @@ std::vector<uint8_t> ItalicText(std::string_view text, const uint8_t* tmpl, uint
         corners[i] = {std::fabs(p[0] - first.x1) < std::fabs(p[0] - first.x0), std::fabs(p[1] - first.y1) < std::fabs(p[1] - first.y0)};
     }
     for (char ch : text) {
-        const MenuGlyph* g = FindMenuGlyph(ch);
+        const MenuGlyph* g = FindGlyph(kTitleFont, ch);
         if (!g) {
-            x += kMenuSpace;
+            x += kTitleFont.space;
             continue;
         }
         size_t at = out.size();
@@ -356,15 +362,100 @@ std::atomic<uint64_t> g_setup_seen{0};
 uint64_t g_setup_frame = ~0ull;  // the frame whose title was drawn: its pictures that follow go
 controls::Context (*g_mission_query)() = nullptr;
 
+// the options screen's title (OPTIONS, italic, at 90,78) while a page is up: it reads as the page; the game's line
+// is kept here (its vertices, before they are collapsed) for AfterDraw to lay the page's name out from
+std::vector<uint8_t> g_title_line;
+Box g_title_box;
+bool OptionsTitle(const gpu::State& s, const Box& b) {
+    Page p = g_page.load();
+    return (p == Page::Controls || p == Page::PcSettings) && Recent(g_options_seen.load()) && TextureSize(s, 256, 128) &&
+           Near(b.x0, 90.5f, 2) && Near(b.y0, 78.5f, 2);
+}
+
 bool SetupTitle(const gpu::State& s, const Box& b, uint32_t count) {
     return count == 96 && TextureSize(s, 256, 128) && Near(b.x0, 90.5f, 2) && Near(b.y0, 78.5f, 2);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// driving.xbe's pause menu (driving and on-rails missions): the same MISSION page, but each letter its own draw of a
+// 256x256 sheet (a triangle fan of 4: float4 positions in stream 0, a colour in stream 1, coordinates in stream 2),
+// in 640x480 space: Continue, Restart and Quit Mission with tops 178, 204 and 230 (shadows, 2 below and right of
+// the letters), bottoms of the letters on the line at 195, 221 and 247; the >> marker a 10x13 quad at x 88 of
+// another 256x256 sheet, at 178 + 25.5 a row. Controls goes under Quit Mission, drawn by the pages (Ui) in the
+// italic lettering; the game's own rows and marker are moved and recoloured here.
+
+constexpr float kDriveBase = 195, kDriveStep = 26, kDriveMarkerTop = 178, kDriveMarkerStep = 25.5f;
+std::atomic<uint64_t> g_drive_seen{0};
+std::atomic<int> g_drive_lit{-1};
+std::atomic<uint32_t> g_drive_lit_color{0xFFFFFFFF}, g_drive_unlit_color{0xFF5A9BE5};
+std::atomic<float> g_drive_x{109};  // the rows' left edge (the letters, not the shadows)
+
+// the stream i vertices of the draw whose stream 0 vertices are v
+uint8_t* StreamOf(const gpu::State& s, const uint8_t* v, int i) {
+    const auto& s0 = s.streams[0];
+    const auto& si = s.streams[size_t(i)];
+    if (!s0.vb || !s0.stride || !si.vb || !si.stride) return nullptr;
+    uint32_t base0 = mem::VirtualFromPhysical(kernel::R32(s0.vb + 4));
+    const uint8_t* h0 = static_cast<const uint8_t*>(kernel::HostPtr(base0));
+    if (v < h0) return nullptr;
+    size_t start = size_t(v - h0) / s0.stride;
+    if (start > 0x10000) return nullptr;
+    uint32_t base = mem::VirtualFromPhysical(kernel::R32(si.vb + 4)) + uint32_t(start) * si.stride;
+    return static_cast<uint8_t*>(kernel::HostPtr(base));
+}
+
+uint32_t Channels(uint32_t c) { return ((c >> 16) & 0xFF) + ((c >> 8) & 0xFF) + (c & 0xFF); }
+
+void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
+    constexpr uint32_t kFan = 6;
+    if (prim != kFan || count != 4 || stride < 16 || !TextureSize(s, 256, 256) || !Paused()) return;
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (uint32_t i = 0; i < 4; i++) {
+        const float* p = At(v, stride, i, 0);
+        x0 = std::min(x0, p[0]), x1 = std::max(x1, p[0]), y0 = std::min(y0, p[1]), y1 = std::max(y1, p[1]);
+    }
+    bool page = g_page.load() == Page::PauseControls;
+    auto collapse = [&] {
+        for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[0] = x0, At(v, stride, i, 0)[1] = y0;
+    };
+    // the marker
+    if (Near(x0, 88, 2) && Near(x1 - x0, 10, 1.5f) && Near(y1 - y0, 13, 1.5f)) {
+        if (page) collapse();
+        else if (g_pause_selected.load()) {
+            float dy = kDriveMarkerTop + kDriveMarkerStep * 3 - y0;
+            for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[1] += dy;
+        }
+        return;
+    }
+    if (x0 < 95 || x0 > 300) return;
+    float r = (y1 - kDriveBase + 1) / kDriveStep;
+    int row = int(std::lround(r));
+    if (row < 0 || row > 2 || std::fabs(r - row) > 0.3f) return;
+    uint8_t* col = StreamOf(s, v, 1);
+    if (!col) return;
+    uint32_t c;
+    std::memcpy(&c, col, 4);
+    bool shadow = (c >> 24) < 0x80 || Channels(c) < 60;
+    if (!shadow) {
+        if (row == 2) g_drive_seen.store(Frame() + 1);
+        if (Channels(c) > 600) {
+            g_drive_lit.store(row);
+            g_drive_lit_color.store(c);
+        } else {
+            g_drive_unlit_color.store(c);
+            if (row == 0) g_drive_x.store(x0);
+        }
+        if (g_pause_selected.load() && Channels(c) > 600) {
+            uint32_t u = g_drive_unlit_color.load();
+            for (uint32_t i = 0; i < 4; i++) std::memcpy(col + i * s.streams[1].stride, &u, 4);
+        }
+    }
+    if (page) collapse();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // pages
 
-enum class Page { None, Quit, PcSettings, Controls, PauseControls };
-std::atomic<Page> g_page{Page::None};
 
 enum class Nav { Up, Down, Left, Right, Accept, Back, PrevTab, NextTab };
 std::mutex g_nav_lock;
@@ -467,11 +558,22 @@ void Take(input::Pad& p, int dir) {
 // ---------------------------------------------------------------------------------------------------------------
 
 void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
+    if (kDrivingImage) {
+        DrivingPauseDraw(*static_cast<const gpu::State*>(state), prim, v, stride, count);
+        return;
+    }
     if (!kMenus) return;
     const auto& s = *static_cast<const gpu::State*>(state);
     Layout l = MenuLayout(s, prim, stride, count);
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
+
+    if (OptionsTitle(s, b)) {
+        g_title_line.assign(v, v + 6 * stride);
+        g_title_box = b;
+        Hide(v, stride, l, count);
+        return;
+    }
 
     // the pre-mission Controller Setup: its pictures go
     if (SetupTitle(s, b, count)) {
@@ -563,6 +665,16 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
 
+    // the page's name in place of OPTIONS
+    if (!g_title_line.empty() && OptionsTitle(s, b)) {
+        const char* name = g_page.load() == Page::Controls ? "CONTROLLER SETUP" : "PC SETTINGS";
+        std::vector<uint8_t> text = ItalicText(name, g_title_line.data(), stride, l, g_title_box.x0, g_title_box.y0,
+                                               ColorOf(g_title_line.data(), stride, l));
+        g_title_line.clear();
+        if (!text.empty()) emit(prim, text.data(), uint32_t(text.size() / stride));
+        return;
+    }
+
     // Controls under Quit Mission, shadow and letters each after the game's own
     if (count >= 6 && Paused() && PauseRow(s, b) == kPauseRows - 1 && g_page.load() != Page::PauseControls) {
         auto color = ColorOf(v, stride, l);
@@ -612,7 +724,7 @@ void SetMissionQuery(controls::Context (*query)()) { g_mission_query = query; }
 void PadInner(int port, input::Pad& pad, const Held& h);
 
 void Pad(int port, input::Pad& pad) {
-    if (!kMenus || port != 0) return;
+    if (!(kMenus || kDrivingImage) || port != 0) return;
     Held h = Read(pad);
     PadInner(port, pad, h);
     // what the game was kept from stays kept from it until let go
@@ -645,11 +757,12 @@ void PadInner(int, input::Pad& pad, const Held& h) {
     }
 
     // the pause menu: Controls past Quit Mission
-    bool pause = Recent(g_pause_seen.load()) && Paused();
+    bool pause = (kDrivingImage ? Recent(g_drive_seen.load()) : Recent(g_pause_seen.load())) && Paused();
+    int lit = kDrivingImage ? g_drive_lit.load() : g_pause_lit.load();
     if (!pause) g_pause_selected.store(false);
     if (pause) {
         if (!g_pause_selected.load()) {
-            if (dirs[1] && g_pause_lit.load() == kPauseRows - 1) {
+            if (dirs[1] && lit == kPauseRows - 1) {
                 g_pause_selected.store(true);
                 Take(pad, 1);
             }
@@ -743,6 +856,7 @@ bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*) { return false; }
 
 #include <cstdio>
 #include <cwctype>
+#include <iterator>
 #include <filesystem>
 
 #include <imgui.h>
@@ -761,6 +875,7 @@ namespace {
 
 ImFont* g_font = nullptr;  // the game's lettering (GameFont), else Bahnschrift
 bool g_game_font = false;
+ImFont* g_title_font = nullptr;  // the italic lettering, for titles and tabs (else g_font)
 
 // console coordinates (640x480) to the window's
 ImVec2 Guest(float x, float y) {
@@ -789,8 +904,8 @@ ImU32 Rgb(const std::array<float, 4>& c, float a = 1) {
 }
 
 // text at console coordinates, with the list's shadow a pixel down and right
-void Say(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align = 0) {
-    ImFont* f = g_font ? g_font : ImGui::GetFont();
+void SayIn(ImFont* f, ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align) {
+    if (!f) f = g_font ? g_font : ImGui::GetFont();
     float px = size * GuestScale();
     ImVec2 p = Guest(x, y);
     if (align != 0) p.x -= f->CalcTextSizeA(px, FLT_MAX, 0, text).x * align;
@@ -798,6 +913,19 @@ void Say(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* te
     dl->AddText(f, px, ImVec2(p.x + o, p.y + o), IM_COL32(0, 0, 0, 230), text);
     dl->AddText(f, px, p, col, text);
 }
+
+void Say(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align = 0) {
+    SayIn(g_font, dl, x, y, size, col, text, align);
+}
+void Title(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align) {
+    SayIn(g_title_font, dl, x, y, size, col, text, align);
+}
+float WidthIn(ImFont* f, float size, const char* text) {
+    if (!f) f = g_font ? g_font : ImGui::GetFont();
+    float px = size * GuestScale();
+    return f->CalcTextSizeA(px, FLT_MAX, 0, text).x / GuestScale();
+}
+float TitleWidth(float size, const char* text) { return WidthIn(g_title_font, size, text); }
 
 float Width(float size, const char* text) {
     ImFont* f = g_font ? g_font : ImGui::GetFont();
@@ -811,6 +939,8 @@ PageContext Context() {
     c.guest = Guest;
     c.scale = GuestScale;
     c.say = Say;
+    c.title = Title;
+    c.title_width = TitleWidth;
     c.lit = Rgb(g_lit_color);
     c.unlit = Rgb(g_unlit_color);
     c.value = Rgb(g_unlit_value_color);
@@ -884,7 +1014,7 @@ bool LoadSheet(const std::filesystem::path& path, std::vector<uint8_t>& bgra, UI
     return SUCCEEDED(hr);
 }
 
-std::filesystem::path FindSheet() {
+std::filesystem::path FindSheet(const char* font_key) {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::path root = app::ExeDir() / "textures" / "replacement";
@@ -894,34 +1024,48 @@ std::filesystem::path FindSheet() {
         const fs::path& p = it->path();
         std::wstring name = p.filename().wstring(), ext = p.extension().wstring();
         for (auto& ch : ext) ch = wchar_t(towlower(ch));
-        std::string key = kMenuFontKey;
+        std::string key = font_key;
         if (ext == L".png" && name.find(std::wstring(key.begin(), key.end())) != std::wstring::npos) return p;
     }
     return {};
 }
 
-ImFont* GameFont(ImGuiIO& io) {
-    std::filesystem::path path = FindSheet();
+// one font of the game's lettering on its way into ImGui's atlas: its sheet, and the atlas rectangles of its glyphs
+struct SheetFont {
+    const MenuFont* font = nullptr;
     std::vector<uint8_t> px;
     UINT w = 0, h = 0;
-    if (path.empty() || !LoadSheet(path, px, w, h)) {
-        LOGI("menus: the font sheet %s is not in the texture pack, the pages use Bahnschrift", kMenuFontKey);
-        return nullptr;
-    }
-    float k = float(w) / 256.0f;  // sheet pixels a texel
-    ImFontConfig cfg;
-    cfg.SizePixels = std::round(kMenuLineHeight * k);
-    cfg.GlyphRanges = io.Fonts->GetGlyphRangesDefault();
-    std::snprintf(cfg.Name, sizeof(cfg.Name), "AUF menus");
-    ImFont* font = io.Fonts->AddFontDefault(&cfg);  // the rest of its characters, should any be drawn
+    float k = 1;  // sheet pixels a texel
+    ImFont* im = nullptr;
     std::vector<int> ids;
-    for (const MenuGlyph& g : kMenuGlyphs) {
-        int gw = int(std::lround((g.x1 - g.x0 + 1) * k)), gh = int(std::lround((g.y1 - g.y0 + 1) * k));
-        ids.push_back(io.Fonts->AddCustomRectFontGlyph(font, ImWchar(static_cast<unsigned char>(g.c)), gw, gh,
-                                                       g.advance * k, ImVec2(0, (g.dy + 2) * k)));
+    int space = -1;
+};
+
+bool AddSheetFont(ImGuiIO& io, const MenuFont& mf, const char* name, SheetFont& sf) {
+    sf.font = &mf;
+    std::filesystem::path path = FindSheet(mf.key);
+    if (path.empty() || !LoadSheet(path, sf.px, sf.w, sf.h)) {
+        LOGI("menus: the font sheet %s is not in the texture pack, the pages use Bahnschrift for it", mf.key);
+        return false;
     }
-    int space = io.Fonts->AddCustomRectFontGlyph(font, ImWchar(' '), 1, 1, kMenuSpace * k, ImVec2(0, 0));
-    io.Fonts->Build();
+    float k = sf.k = float(sf.w) / 256.0f;
+    ImFontConfig cfg;
+    cfg.SizePixels = std::round(mf.line_height * k);
+    cfg.GlyphRanges = io.Fonts->GetGlyphRangesDefault();
+    std::snprintf(cfg.Name, sizeof(cfg.Name), "%s", name);
+    sf.im = io.Fonts->AddFontDefault(&cfg);  // the rest of its characters, should any be drawn
+    for (int gi = 0; gi < mf.count; gi++) {
+        const MenuGlyph& g = mf.glyphs[gi];
+        int gw = int(std::lround((g.x1 - g.x0 + 1) * k)), gh = int(std::lround((g.y1 - g.y0 + 1) * k));
+        sf.ids.push_back(io.Fonts->AddCustomRectFontGlyph(sf.im, ImWchar(static_cast<unsigned char>(g.c)), gw, gh,
+                                                          g.advance * k, ImVec2(0, (g.dy + 2) * k)));
+    }
+    sf.space = io.Fonts->AddCustomRectFontGlyph(sf.im, ImWchar(' '), 1, 1, mf.space * k, ImVec2(0, 0));
+    return true;
+}
+
+// after the atlas is built: the glyphs' pixels from the sheet, white with the sheet's coverage
+void FillSheetFont(ImGuiIO& io, const SheetFont& sf) {
     unsigned char* atlas = nullptr;
     int aw = 0, ah = 0;
     io.Fonts->GetTexDataAsRGBA32(&atlas, &aw, &ah);
@@ -931,20 +1075,19 @@ ImFont* GameFont(ImGuiIO& io) {
                 uint8_t a = 0;
                 if (g) {
                     // the sheet's pixels under the glyph's rectangle, stretched over the quad as the game does
-                    float sx = (g->x0 + float(x) / r->Width * (g->x1 - g->x0)) * k;
-                    float sy = (g->y0 + float(y) / r->Height * (g->y1 - g->y0)) * k;
-                    int ix = std::clamp(int(sx), 0, int(w) - 1), iy = std::clamp(int(sy), 0, int(h) - 1);
-                    a = px[(size_t(iy) * w + ix) * 4 + 3];
+                    float sx = (g->x0 + float(x) / r->Width * (g->x1 - g->x0)) * sf.k;
+                    float sy = (g->y0 + float(y) / r->Height * (g->y1 - g->y0)) * sf.k;
+                    int ix = std::clamp(int(sx), 0, int(sf.w) - 1), iy = std::clamp(int(sy), 0, int(sf.h) - 1);
+                    a = sf.px[(size_t(iy) * sf.w + ix) * 4 + 3];
                 }
                 unsigned char* d = atlas + (size_t(r->Y + y) * aw + r->X + x) * 4;
                 d[0] = d[1] = d[2] = 255;
                 d[3] = a;
             }
     };
-    for (size_t i = 0; i < ids.size(); i++) put(io.Fonts->GetCustomRectByIndex(ids[i]), &kMenuGlyphs[i]);
-    put(io.Fonts->GetCustomRectByIndex(space), nullptr);
-    LOGI("menus: the pages use the game's lettering (%ux%u sheet)", w, h);
-    return font;
+    for (size_t i = 0; i < sf.ids.size(); i++) put(io.Fonts->GetCustomRectByIndex(sf.ids[i]), &sf.font->glyphs[i]);
+    put(io.Fonts->GetCustomRectByIndex(sf.space), nullptr);
+    LOGI("menus: the pages use the game's lettering %s (%ux%u sheet)", sf.font->key, sf.w, sf.h);
 }
 
 void Window(void*) {
@@ -962,13 +1105,22 @@ void Window(void*) {
         g_font = io.Fonts->AddFontFromFileTTF(utf8, 48.0f, &cfg);
         if (g_font) break;
     }
-    if (kMenus) {
-        if (ImFont* f = GameFont(io)) g_font = f, g_game_font = true;
+    if (kMenus || kDrivingImage) {
+        // the body in the options list's lettering, titles in the italic one
+        static SheetFont body, title;  // kept until the atlas has their pixels
+        bool have_body = AddSheetFont(io, kBodyFont, "AUF list", body);
+        bool have_title = AddSheetFont(io, kTitleFont, "AUF titles", title);
+        if (have_body || have_title) {
+            io.Fonts->Build();
+            if (have_body) FillSheetFont(io, body), g_font = body.im, g_game_font = true;
+            if (have_title) FillSheetFont(io, title), g_title_font = title.im;
+            body.px.clear(), title.px.clear();
+        }
     }
 }
 
 bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
-    if (!kMenus || g_page.load() == Page::None) return false;
+    if (!(kMenus || kDrivingImage) || g_page.load() == Page::None) return false;
     if (PageMessage(msg, wp)) {
         *result = 0;
         return true;
@@ -993,8 +1145,29 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
     return true;
 }
 
+// driving.xbe's pause menu: Controls under Quit Mission, in the italic lettering at the game's size and colours
+void DrivingPauseRow() {
+    if (!Recent(g_drive_seen.load()) || !Paused()) return;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    auto rgb = [](uint32_t c) { return IM_COL32((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, 255); };
+    uint32_t c = g_pause_selected.load() ? g_drive_lit_color.load() : g_drive_unlit_color.load();
+    float x = g_drive_x.load(), y = kDriveBase - 2 + kDriveStep * 3 - 18;
+    ImFont* f = g_title_font ? g_title_font : g_font;
+    float px = 18 * GuestScale();
+    ImVec2 p = Guest(x, y), sh = Guest(x + 2, y + 2);
+    dl->AddText(f, px, sh, IM_COL32(0, 0, 0, 160), "Controls");
+    dl->AddText(f, px, p, rgb(c), "Controls");
+}
+
 void Ui() {
-    if (!kMenus) return;
+    if (kDrivingImage) {
+        if (g_page.load() == Page::None) {
+            DrivingPauseRow();
+            return;
+        }
+    } else if (!kMenus) {
+        return;
+    }
     Page page = g_page.load();
     if (page == Page::None) {
         if (Recent(g_setup_seen.load())) {
@@ -1020,7 +1193,7 @@ void Ui() {
         dl->AddRectFilled(Guest(40, 66), Guest(600, 420), IM_COL32(6, 12, 34, 238));
         std::vector<PageNav> pn;
         for (Nav n : nav) pn.push_back(PageNav(int(n)));
-        if (!ControlsViewPage(Context(), pn, controls::Context::OnFoot, opened)) g_page.store(Page::None);
+        if (!ControlsViewPage(Context(), pn, controls::CurrentContext(), opened)) g_page.store(Page::None);
         return;
     }
     std::vector<PageNav> pn;

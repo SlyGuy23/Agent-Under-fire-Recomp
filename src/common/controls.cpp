@@ -57,36 +57,37 @@ using A = Action;
 // picture names them.
 constexpr const char* kLabels[kContexts][kActions] = {
     // on foot (bond_eng.xbe), as the game's own Controller Setup picture names them
-    {"ACTION / RELOAD / OPEN", "USE GADGET", "CROUCH", "JUMP", "ALT. FIRE", "CYCLE WEAPON", "PAUSE", "CENTER VIEW",
+    {"ACTION / OPEN", "USE GADGET", "CROUCH", "JUMP", "ALT. FIRE", "CYCLE WEAPON", "PAUSE", "CENTER VIEW",
      "MANUAL AIM", "FIRE", "CROUCH (STICK CLICK)", "MANUAL AIM (STICK CLICK)",
      "NEXT WEAPON", "PREVIOUS WEAPON", "PREVIOUS GADGET", "NEXT GADGET",
      "MOVE FORWARD", "MOVE BACK", "LOOK LEFT", "LOOK RIGHT",
-     "LOOK UP", "LOOK DOWN", "STRAFE LEFT", "STRAFE RIGHT"},
+     "LOOK UP", "LOOK DOWN", "STRAFE LEFT", "STRAFE RIGHT", "RELOAD"},
     // driving (driving.xbe, from the missions' own control files, drivecfg.def); NOT USED: nothing in that mode
     {"FIRE PRIMARY", "HANDBRAKE", "FIRE WEAPON", "CHANGE CAMERA", "PREVIOUS WEAPON", "NEXT WEAPON", "PAUSE", "NOT USED",
      "BRAKE / REVERSE", "ACCELERATE", "NOT USED", "FIRE WEAPON (STICK CLICK)",
      "NOT USED", "NOT USED", "STEER LEFT (D-PAD)", "STEER RIGHT (D-PAD)",
      "NOT USED", "NOT USED", "STEER LEFT", "STEER RIGHT",
-     "NOT USED", "LOOK BACK", "NOT USED", "NOT USED"},
+     "NOT USED", "LOOK BACK", "NOT USED", "NOT USED", "NOT USED"},
     // on rails (driving.xbe's gunner runs, povcfg0.def): the car drives itself
     {"RELOAD", "NOT USED", "NOT USED", "TURN TO THE OTHER SIDE", "NOT USED", "NEXT WEAPON", "PAUSE", "CENTER VIEW",
      "AIM / ZOOM", "FIRE", "NOT USED", "AIM / ZOOM (STICK CLICK)",
      "NEXT WEAPON (D-PAD)", "PREVIOUS WEAPON", "RESUME AUTO-DRIVE", "NOT USED",
      "AIM UP", "AIM DOWN", "AIM LEFT", "AIM RIGHT",
-     "AIM UP / ZOOM (RIGHT STICK)", "AIM DOWN / ZOOM (RIGHT STICK)", "AIM LEFT (RIGHT STICK)", "AIM RIGHT (RIGHT STICK)"},
+     "ZOOM IN", "ZOOM OUT", "NOT USED", "NOT USED",
+     "NOT USED"},
 };
 
 // the order a menu lists the actions in; every action once
 constexpr A kMenuOrder[kContexts][kActions] = {
-    {A::RT, A::LT, A::Y, A::A, A::X, A::B, A::White, A::Black,
+    {A::RT, A::LT, A::Y, A::Reload, A::A, A::X, A::B, A::White, A::Black,
      A::LSUp, A::LSDown, A::RSLeft, A::RSRight, A::LSLeft, A::LSRight, A::RSUp, A::RSDown,
      A::DpadUp, A::DpadDown, A::DpadLeft, A::DpadRight, A::LSClick, A::RSClick, A::Back, A::Start},
     {A::RT, A::LT, A::LSLeft, A::LSRight, A::B, A::A, A::X, A::RSClick, A::White, A::Black, A::Y, A::RSDown,
      A::DpadLeft, A::DpadRight, A::Start,
-     A::Back, A::LSClick, A::DpadUp, A::DpadDown, A::LSUp, A::LSDown, A::RSUp, A::RSLeft, A::RSRight},
+     A::Back, A::LSClick, A::DpadUp, A::DpadDown, A::LSUp, A::LSDown, A::RSUp, A::RSLeft, A::RSRight, A::Reload},
     {A::RT, A::LT, A::RSClick, A::LSUp, A::LSDown, A::LSLeft, A::LSRight, A::RSUp, A::RSDown, A::RSLeft, A::RSRight,
      A::A, A::Y, A::White, A::DpadUp, A::DpadDown, A::DpadLeft, A::Back, A::Start,
-     A::B, A::X, A::Black, A::LSClick, A::DpadRight},
+     A::B, A::X, A::Black, A::LSClick, A::DpadRight, A::Reload},
 };
 
 // The controller's default layout, physical input to console input, where it is not the same input: on foot the
@@ -98,6 +99,15 @@ struct DefaultPad {
 constexpr DefaultPad kOnFootPad[] = {
     {A::LSLeft, A::RSLeft}, {A::LSRight, A::RSRight},  // strafe
     {A::RSLeft, A::LSLeft}, {A::RSRight, A::LSRight},  // turn
+    {A::X, A::Reload},                                 // reload, and the gadget's use while one is out
+    {A::B, A::X},                                      // crouch
+};
+
+// On rails the game aims with both sticks and zooms with the right one's Y as well: the right stick aims (as the
+// game's left one, which does not zoom) and the left stick's Y zooms (as the game's right one)
+constexpr DefaultPad kOnRailsPad[] = {
+    {A::RSUp, A::LSUp}, {A::RSDown, A::LSDown}, {A::RSLeft, A::LSLeft}, {A::RSRight, A::LSRight},
+    {A::LSUp, A::RSUp}, {A::LSDown, A::RSDown}, {A::LSLeft, A::None}, {A::LSRight, A::None},
 };
 
 // Windows virtual key codes the defaults use
@@ -119,7 +129,8 @@ constexpr DefaultKeys kOnFootKeys[] = {
     {A::RT, {kMouseLeft}},                  // fire (or use the gadget raised, SetFireRedirect)
     {A::LT, {kMouseRight}},                 // manual aim
     {A::Y, {kSpace}},                       // jump
-    {A::A, {'E', 'R'}},                     // action, open, reload
+    {A::A, {'E'}},                          // action, open
+    {A::Reload, {'R'}},                     // reload
     {A::X, {'C', kLCtrl}},                  // crouch
     {A::B, {'G', kMouse4}},                 // use gadget
     {A::White, {'Q'}},                      // cycle weapon
@@ -152,6 +163,8 @@ constexpr DefaultKeys kDrivingKeys[] = {
 constexpr DefaultKeys kOnRailsKeys[] = {
     {A::RT, {kMouseLeft}},           // fire
     {A::LT, {kMouseRight}},          // aim, zoom
+    {A::RSUp, {'W', kUp}},           // zoom in and out (the mouse aims)
+    {A::RSDown, {'S', kDown}},
     {A::A, {'R'}},                   // reload
     {A::Y, {kSpace}},                // the other side
     {A::White, {kWheelUp, 'E'}},     // next weapon
@@ -191,13 +204,13 @@ constexpr MenuKey kMenuKeys[] = {
 constexpr const char* kTokens[kActions] = {
     "A", "B", "X", "Y", "BLACK", "WHITE", "START", "BACK", "LT", "RT", "LS_CLICK", "RS_CLICK",
     "DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT",
-    "LS_UP", "LS_DOWN", "LS_LEFT", "LS_RIGHT", "RS_UP", "RS_DOWN", "RS_LEFT", "RS_RIGHT"};
+    "LS_UP", "LS_DOWN", "LS_LEFT", "LS_RIGHT", "RS_UP", "RS_DOWN", "RS_LEFT", "RS_RIGHT", "RELOAD"};
 
 constexpr const char* kInputNames[kActions] = {
     "A", "B", "X", "Y", "BLACK", "WHITE", "START", "BACK", "LT", "RT", "LEFT STICK CLICK", "RIGHT STICK CLICK",
     "D-PAD UP", "D-PAD DOWN", "D-PAD LEFT", "D-PAD RIGHT",
     "LEFT STICK UP", "LEFT STICK DOWN", "LEFT STICK LEFT", "LEFT STICK RIGHT",
-    "RIGHT STICK UP", "RIGHT STICK DOWN", "RIGHT STICK LEFT", "RIGHT STICK RIGHT"};
+    "RIGHT STICK UP", "RIGHT STICK DOWN", "RIGHT STICK LEFT", "RIGHT STICK RIGHT", "RELOAD"};
 
 // the settings file's names (the harness has no settings file)
 [[maybe_unused]] constexpr const char* kContextTokens[kContexts] = {"on_foot", "driving", "on_rails"};
@@ -290,7 +303,7 @@ struct Toggle {
 };
 Toggle g_crouch, g_aim;
 GameState g_last_state = GameState::Menu;
-constexpr int kLayout = 2;  // settings written before 2 had the game's stick layout as the on-foot default
+constexpr int kLayout = 3;  // 3: reload on its own, X with the gadget, B crouching  // settings written before 2 had the game's stick layout as the on-foot default
 
 int64_t Now() {
     if (g_clock) return g_clock();
@@ -314,6 +327,8 @@ void DefaultBindings(Context c, Device d) {
         for (int i = 0; i < kActions; i++) s.remap[i] = A(i);
         if (c == Context::OnFoot)
             for (const DefaultPad& p : kOnFootPad) s.remap[int(p.physical)] = p.gives;
+        if (c == Context::OnRails)
+            for (const DefaultPad& p : kOnRailsPad) s.remap[int(p.physical)] = p.gives;
         return;
     }
     for (auto& k : s.keys) std::fill(std::begin(k), std::end(k), kNoKey);
@@ -400,8 +415,8 @@ A SetKey(Context c, A a, int slot, Key k) {
 
 A Source(Context c, A a) {
     const ContextState& s = g_state[int(c)];
-    if (s.remap[int(a)] == a) return a;  // the usual case first: the input that gives itself
-    for (int i = 0; i < kActions; i++)
+    if (int(a) < kPhysical && s.remap[int(a)] == a) return a;  // the usual case first: the input that gives itself
+    for (int i = 0; i < kPhysical; i++)
         if (s.remap[i] == a) return A(i);
     return A::None;
 }
@@ -516,7 +531,7 @@ input::Pad Build(const Inputs& out, bool compensate, bool connected) {
 
 Inputs Remap(const Inputs& in, const ContextState& s) {
     Inputs out;
-    for (int i = 0; i < kActions; i++) {
+    for (int i = 0; i < kPhysical; i++) {
         A t = s.remap[i];
         if (t != A::None) out.v[int(t)] = std::max(out.v[int(t)], in.v[i]);
     }
@@ -553,8 +568,15 @@ void ApplyToggle(Toggle& t, float& v) {
 
 // what play adds on top of the bindings: the toggles on foot, and FIRE keys using a raised gadget
 void PlayExtras(Inputs& out, const Options& o, bool keyboard) {
+    float reload = out.v[int(A::Reload)];
+    out.v[int(A::Reload)] = 0;
     if (Ctx() != Context::OnFoot) return;
-    if (keyboard && g_fire_redirect) {
+    if (reload > 0) {
+        // the item in hand decides: a gadget is used (B), a weapon reloaded (A)
+        A to = g_fire_redirect && g_fire_redirect() == A::B ? A::B : A::A;
+        out.v[int(to)] = std::max(out.v[int(to)], reload);
+    }
+    if ((keyboard || o.smart_fire) && g_fire_redirect) {
         A to = g_fire_redirect();
         if (to != A::None && to != A::RT) {
             out.v[int(to)] = std::max(out.v[int(to)], out.v[int(A::RT)]);
@@ -671,7 +693,7 @@ bool CaptureController(int port, const Inputs& in) {
         return false;
     }
     int hit = -1;
-    for (int i = 0; i < kActions && hit < 0; i++)
+    for (int i = 0; i < kPhysical && hit < 0; i++)
         if (in.v[i] >= kCapturePress && c.prev[p][i] < kCapturePress) hit = i;
     std::copy(std::begin(in.v), std::end(in.v), c.prev[p]);
     if (hit < 0) return false;
@@ -771,10 +793,10 @@ void SetFireRedirect(Action (*query)()) {
 
 const char* ActionToken(Action a) { return int(a) < kActions ? kTokens[int(a)] : "NONE"; }
 const char* ActionInputName(Action a) { return int(a) < kActions ? kInputNames[int(a)] : ""; }
-const char* ActionLabel(Context c, Action a) { return int(a) < kActions ? kLabels[int(c) & 1][int(a)] : ""; }
+const char* ActionLabel(Context c, Action a) { return int(a) < kActions ? kLabels[std::min(int(c), kContexts - 1)][int(a)] : ""; }
 
 std::vector<Action> Actions(Context c, Device) {
-    const A* order = kMenuOrder[int(c) & 1];
+    const A* order = kMenuOrder[std::min(int(c), kContexts - 1)];
     return std::vector<Action>(order, order + kActions);
 }
 
@@ -801,17 +823,19 @@ Action ControllerTarget(Context c, Action physical) {
 
 void SetControllerBinding(Context c, Action a, Action physical) {
     std::lock_guard lock(g_lock);
-    if (int(a) < kActions && int(physical) < kActions) SetController(c, a, physical);
+    if (int(a) < kActions && int(physical) < kPhysical) SetController(c, a, physical);
 }
 
 void ClearControllerInput(Context c, Action physical) {
     std::lock_guard lock(g_lock);
-    if (int(physical) < kActions) g_state[int(c)].remap[int(physical)] = A::None;
+    if (int(physical) < kPhysical) g_state[int(c)].remap[int(physical)] = A::None;
 }
 
 std::string BindingName(Context c, Device d, Action a, int slot) {
     if (d == Device::KeyboardMouse) return KeyName(KeyBinding(c, a, slot));
     A s = ControllerSource(c, a);
+    // on foot with nothing on USE GADGET, reload's input uses a gadget that is out
+    if (s == A::None && a == A::B && c == Context::OnFoot) s = ControllerSource(c, A::Reload);
     return s == A::None ? "" : kInputNames[int(s)];
 }
 
@@ -1011,6 +1035,7 @@ void Load(const void* table) {
         stick("right_stick", o.right);
         o.crouch_toggle = (*x)["crouch_toggle"].value_or(o.crouch_toggle);
         o.aim_toggle = (*x)["aim_toggle"].value_or(o.aim_toggle);
+        o.smart_fire = (*x)["smart_fire"].value_or(o.smart_fire);
         Clamp(o);
         // keys: an action left out keeps its default, an empty list is unbound, "" an empty slot
         if (const toml::table* kb = (*x)["keyboard"].as_table()) {
@@ -1031,7 +1056,7 @@ void Load(const void* table) {
         // controller: physical input = console input it gives, or NONE
         // the modern stick layout came in with layout 2: older on-foot controller bindings give way to it
         const toml::table* pad = (*x)["controller"].as_table();
-        if (layout < 2 && c == int(Context::OnFoot)) pad = nullptr;
+        if (layout < 3 && (c == int(Context::OnFoot) || c == int(Context::OnRails))) pad = nullptr;
         if (pad) {
             for (auto&& [name, node] : *pad) {
                 A physical = ActionFromToken(name.str());
@@ -1066,7 +1091,8 @@ void Save(void* table) {
                       {"right_stick_deadzone", int64_t(o.right.deadzone)},
                       {"right_stick_outer_deadzone", int64_t(o.right.outer_deadzone)},
                       {"crouch_toggle", o.crouch_toggle},
-                      {"aim_toggle", o.aim_toggle}};
+                      {"aim_toggle", o.aim_toggle},
+                      {"smart_fire", o.smart_fire}};
         toml::table kb, pad;
         for (int i = 0; i < kActions; i++) {
             // each slot in its place, "" for an empty one before a bound one
@@ -1120,6 +1146,11 @@ void MouseMotion(int dx, int dy) {
 void FocusLost() {
     std::lock_guard lock(g_lock);
     OnFocusLost();
+}
+
+void EnableKeyboard() {
+    std::lock_guard lock(g_lock);
+    g_keyboard = true;
 }
 
 void ResetAll() {
