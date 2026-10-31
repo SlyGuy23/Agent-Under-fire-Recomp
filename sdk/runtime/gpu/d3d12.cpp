@@ -3444,6 +3444,10 @@ void D3D12Backend::BlitFrame(Target& t) {
     float uv[4] = {0, 0, 1, 1};
     D3D12_VIEWPORT vp{(w - vw) / 2, (h - vh) / 2, vw, vh, 0, 1};
     D3D12_RECT scissor{0, 0, LONG(bb_w_), LONG(bb_h_)};
+    app::g_frame_rect[0] = vp.TopLeftX;
+    app::g_frame_rect[1] = vp.TopLeftY;
+    app::g_frame_rect[2] = vw;
+    app::g_frame_rect[3] = vh;
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &scissor);
     binds_ = {};

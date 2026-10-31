@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -48,6 +49,10 @@ bool Widescreen();
 inline bool g_menus_4x3 = true;
 // small figures drawn from 128x128 linear A8R8G8B8 textures are upscaled smooth with an outline (gpu::SmoothFigure)
 inline bool g_smooth_figures = false;
+// frames the game has swapped (D3DDevice_Swap), for hooks that look at a whole frame's draws
+inline std::atomic<uint64_t> g_swaps{0};
+// where the console's frame was last shown in the window, in window pixels: x, y, width, height (set by the renderer)
+inline float g_frame_rect[4] = {0, 0, 0, 0};
 
 std::filesystem::path ExeDir();
 // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc
@@ -106,6 +111,11 @@ struct GameInfo {
     // an unindexed draw before it is recorded (state is the gpu::State it draws with): the game may adjust its vertices,
     // count of them stride apart in guest memory, which the title writes again for its next frame anyway
     void (*draw)(const void* state, uint32_t prim, uint8_t* vertices, uint32_t stride, uint32_t count);
+    // after that draw is recorded: emit draws more vertices (count of them, stride apart, laid out as the draw's) with
+    // the same state, for pieces the game adds to the title's picture (a menu entry of its own)
+    using Emit = void (*)(uint32_t prim, const void* vertices, uint32_t count);
+    void (*after_draw)(const void* state, uint32_t prim, const uint8_t* vertices, uint32_t stride, uint32_t count,
+                       Emit emit);
 };
 extern const GameInfo kGame;
 

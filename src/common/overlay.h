@@ -2,6 +2,8 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace input {
 struct Pad;
@@ -22,5 +24,14 @@ void Toggle();
 void Draw(double fps);  // GameInfo::ui
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);  // GameInfo::message
 void Pad(int port, input::Pad& pad);  // GameInfo::pad: the chord, and no input to the game while open
+
+// the panel's settings as rows, for the game's own PC Settings page (menus.cpp); empty without a window
+struct SettingRow {
+    std::string section, label, value;
+    bool enabled;
+};
+std::vector<SettingRow> SettingRows();
+void StepSetting(int index, int step);  // index into SettingRows, step -1 or 1
+void ResetSettings();                   // the panel's Defaults
 
 }  // namespace overlay

@@ -16,6 +16,7 @@
 #endif
 
 #include "app/app.h"
+#include "common/menus.h"
 #include "common/overlay.h"
 #include "common/sticks.h"
 #include "image_symbols.h"
@@ -144,6 +145,7 @@ Quad g_last_quad;
 void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
     static const bool kMenus = std::string_view(IMAGE_XBE) == "bond_eng.xbe";
     if (!kMenus) return;
+    menus::Draw(state, prim, v, stride, count);
     const auto& s = *static_cast<const gpu::State*>(state);
     constexpr uint32_t kTriangleList = 5, kFloat4 = 0x42, kFloat2 = 0x22;
     static constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -234,10 +236,11 @@ const app::GameInfo app::kGame = {
     .save = nullptr,
     .init = Init,
     .loaded = Loaded,
-    .window = nullptr,
+    .window = menus::Window,
     .message = overlay::Message,
     .ui = overlay::Draw,
     .pad = overlay::Pad,
     .rumble = nullptr,
     .draw = Draw,
+    .after_draw = menus::AfterDraw,
 };

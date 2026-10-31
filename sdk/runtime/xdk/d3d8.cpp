@@ -660,6 +660,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
+    app::g_swaps.fetch_add(1, std::memory_order_relaxed);
     app::Pace();
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
@@ -1215,6 +1216,25 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
 
 // drawing
 
+namespace {
+uint32_t UpVertices(const void* src, uint32_t bytes);
+uint32_t g_emit_stride = 0;
+// GameInfo::after_draw's emit: more vertices of the draw's layout, from a ring like DrawVerticesUP's
+void EmitDraw(uint32_t prim, const void* vertices, uint32_t count) {
+    if (!g_backend || !count || !g_emit_stride) return;
+    auto stream = g_state.streams[0];
+    g_state.streams[0] = {UpVertices(vertices, count * g_emit_stride), g_emit_stride};
+    g_backend->Draw(g_state, prim, 0, count, nullptr);
+    g_state.streams[0] = stream;
+}
+void AfterDraw(uint32_t prim, const uint8_t* vertices, uint32_t stride, uint32_t count) {
+    if (!app::kGame.after_draw || !vertices) return;
+    g_emit_stride = stride;
+    app::kGame.after_draw(&g_state, prim, vertices, stride, count, EmitDraw);
+    g_emit_stride = 0;
+}
+}  // namespace
+
 HLE_STDCALL(D3DDevice_DrawVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));  // a visibility test begun since the last draw counts this one
@@ -1225,6 +1245,11 @@ HLE_STDCALL(D3DDevice_DrawVertices, 3) {
         app::kGame.draw(&g_state, a[0], static_cast<uint8_t*>(HostPtr(data)), stride, a[2]);
     }
     if (g_backend) g_backend->Draw(g_state, a[0], a[1], a[2], nullptr);
+    if (app::kGame.after_draw && g_state.streams[0].vb && g_state.streams[0].stride) {
+        uint32_t stride = g_state.streams[0].stride;
+        uint32_t data = mem::VirtualFromPhysical(R32(g_state.streams[0].vb + 4)) + a[1] * stride;
+        AfterDraw(a[0], static_cast<const uint8_t*>(HostPtr(data)), stride, a[2]);
+    }
     return 0;
 }
 
@@ -1273,6 +1298,7 @@ void DrawUp(uint32_t prim, uint32_t count, const void* vertices, uint32_t stride
     g_state.streams[0] = {UpVertices(vertices, count * stride), stride};
     g_backend->Draw(g_state, prim, 0, count, nullptr);
     g_state.streams[0] = stream;
+    AfterDraw(prim, static_cast<const uint8_t*>(vertices), stride, count);
 }
 
 // bytes per vertex of the bound format: stream 0 of the FVF or of the shader's declaration

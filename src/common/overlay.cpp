@@ -3,6 +3,7 @@
 #include "common/overlay.h"
 
 #include <algorithm>
+#include <cstring>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -12,6 +13,7 @@
 
 #include "app/app.h"
 #include "audio/audio.h"
+#include "common/menus.h"
 #include "common/sticks.h"
 #include "core/input.h"
 
@@ -42,6 +44,7 @@ void Toggle() {
 
 void Pad(int port, input::Pad& pad) {
     sticks::Apply(pad);
+    if (!Open()) menus::Pad(port, pad);
     constexpr uint16_t kChord = 0x40 | 0x80;  // left and right thumb clicks
     if (port == 0) {
         bool held = (pad.buttons & kChord) == kChord;
@@ -63,6 +66,9 @@ void Pad(int port, input::Pad& pad) {
 namespace overlay {
 void Draw(double) { g_frames++; }
 bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*) { return false; }
+std::vector<SettingRow> SettingRows() { return {}; }
+void StepSetting(int, int) {}
+void ResetSettings() {}
 }  // namespace overlay
 #else
 
@@ -217,87 +223,141 @@ void Changed(bool display) {
     app::Save();
 }
 
+// one setting: shown by the F10 panel and the PC Settings page alike
+struct Entry {
+    const char* section;
+    const char* label;
+    std::string (*value)();
+    void (*step)(int);  // -1 or 1
+    bool (*enabled)();
+};
+
+std::string Percent(uint32_t v) {
+    char text[16];
+    std::snprintf(text, sizeof(text), "%u%%", v);
+    return text;
+}
+
+int ModeIndex() {
+    const Settings& s = app::Get();
+    const std::vector<Mode>& modes = Modes();
+    int i = 0;
+    for (size_t k = 0; k < modes.size(); k++)
+        if (modes[k].w == s.width && modes[k].h == s.height) i = int(k);
+    return i;
+}
+
+const Entry kEntries[] = {
+    {"DISPLAY", "DISPLAY MODE",
+     [] { return std::string(kModeNames[std::min<uint32_t>(uint32_t(app::Get().display_mode), 2)]); },
+     [](int st) {
+         Settings& s = app::Get();
+         s.display_mode = DisplayMode(Step(int(s.display_mode), st, 3));
+         Changed(true);
+     },
+     [] { return true; }},
+    {"DISPLAY", "RESOLUTION",
+     [] {
+         const Mode& m = Modes()[size_t(ModeIndex())];
+         char text[48];
+         if (m.w) std::snprintf(text, sizeof(text), "%u x %u", m.w, m.h);
+         else std::snprintf(text, sizeof(text), "DESKTOP");
+         return std::string(text);
+     },
+     [](int st) {
+         Settings& s = app::Get();
+         const std::vector<Mode>& modes = Modes();
+         const Mode& m = modes[size_t(Step(ModeIndex(), st, int(modes.size())))];
+         s.width = m.w;
+         s.height = m.h;
+         Changed(true);
+     },
+     // borderless always covers the monitor at its desktop mode
+     [] { return app::Get().display_mode != DisplayMode::Borderless; }},
+    {"DISPLAY", "RENDER RESOLUTION",
+     [] { return Percent(kRenderPercents[Nearest(kRenderPercents, app::Get().render_percent)]); },
+     [](int st) {
+         StepTable(kRenderPercents, app::Get().render_percent, st);
+         Changed(false);
+     },
+     [] { return true; }},
+    {"DISPLAY", "VERTICAL SYNC", [] { return std::string(OnOff(app::Get().vsync)); },
+     [](int) {
+         app::Get().vsync = !app::Get().vsync;
+         Changed(false);
+     },
+     [] { return true; }},
+    {"DISPLAY", "MAX FRAME RATE",
+     [] {
+         uint32_t cap = kFpsCaps[Nearest(kFpsCaps, app::Get().fps_cap)];
+         char text[24];
+         if (cap == app::kFpsCapRefresh) std::snprintf(text, sizeof(text), "MONITOR REFRESH");
+         else if (cap == 0) std::snprintf(text, sizeof(text), "UNLIMITED");
+         else std::snprintf(text, sizeof(text), "%u", cap);
+         return std::string(text);
+     },
+     [](int st) {
+         StepTable(kFpsCaps, app::Get().fps_cap, st);
+         Changed(false);
+     },
+     [] { return true; }},
+    {"DISPLAY", "FPS COUNTER", [] { return std::string(OnOff(g_fps_counter)); },
+     [](int) {
+         g_fps_counter = !g_fps_counter;
+         Changed(false);
+     },
+     [] { return true; }},
+    {"GRAPHICS", "MENUS IN 4:3", [] { return std::string(OnOff(app::g_menus_4x3)); },
+     [](int) {
+         app::g_menus_4x3 = !app::g_menus_4x3;
+         Changed(false);
+     },
+     [] { return true; }},
+    {"GRAPHICS", "ANISOTROPIC FILTERING", [] { return std::string(kAnisoNames[Nearest(kAniso, app::Get().aniso)]); },
+     [](int st) {
+         StepTable(kAniso, app::Get().aniso, st);
+         Changed(false);
+     },
+     [] { return true; }},
+    {"GENERAL", "SKIP INTROS", [] { return std::string(OnOff(g_skip_intros)); },
+     [](int) {
+         g_skip_intros = !g_skip_intros;
+         Changed(false);
+     },
+     [] { return true; }},
+    {"GENERAL", "MASTER VOLUME", [] { return Percent(g_master_volume); },
+     [](int st) {
+         g_master_volume = uint32_t(std::clamp(int(g_master_volume) + st * 5, 0, 100));
+         ApplyVolume();
+         Changed(false);
+     },
+     [] { return true; }},
+    {"TEXTURES", "TEXTURE REPLACEMENT", [] { return std::string(OnOff(app::Get().custom_textures)); },
+     [](int) {
+         app::Get().custom_textures = !app::Get().custom_textures;
+         Changed(false);
+     },
+     [] { return true; }},
+    {"TEXTURES", "TEXTURE DUMPING", [] { return std::string(OnOff(app::Get().dump_textures)); },
+     [](int) {
+         app::Get().dump_textures = !app::Get().dump_textures;
+         Changed(false);
+     },
+     [] { return true; }},
+    {"TEXTURES", "DUMP FORMAT", [] { return std::string(kDumpNames[std::min<uint32_t>(app::Get().texture_dump_format, 1)]); },
+     [](int st) {
+         Settings& s = app::Get();
+         s.texture_dump_format = uint32_t(Step(int(s.texture_dump_format), st, 2));
+         Changed(false);
+     },
+     [] { return app::Get().dump_textures; }},
+};
+
 void Rows() {
-    Settings& s = app::Get();
-    Section("DISPLAY");
-    if (int st = OptionRow("DISPLAY MODE", kModeNames[std::min<uint32_t>(uint32_t(s.display_mode), 2)])) {
-        s.display_mode = DisplayMode(Step(int(s.display_mode), st, 3));
-        Changed(true);
-    }
-    {
-        const std::vector<Mode>& modes = Modes();
-        int i = 0;
-        for (size_t k = 0; k < modes.size(); k++)
-            if (modes[k].w == s.width && modes[k].h == s.height) i = int(k);
-        char text[48];
-        if (modes[size_t(i)].w) std::snprintf(text, sizeof(text), "%u x %u", modes[size_t(i)].w, modes[size_t(i)].h);
-        else std::snprintf(text, sizeof(text), "DESKTOP");
-        // borderless always covers the monitor at its desktop mode
-        if (int st = OptionRow("RESOLUTION", text, s.display_mode != DisplayMode::Borderless)) {
-            const Mode& m = modes[size_t(Step(i, st, int(modes.size())))];
-            s.width = m.w;
-            s.height = m.h;
-            Changed(true);
-        }
-    }
-    {
-        char text[16];
-        std::snprintf(text, sizeof(text), "%u%%", kRenderPercents[Nearest(kRenderPercents, s.render_percent)]);
-        if (int st = OptionRow("RENDER RESOLUTION", text)) {
-            StepTable(kRenderPercents, s.render_percent, st);
-            Changed(false);
-        }
-    }
-    if (FlipRow("VERTICAL SYNC", s.vsync)) Changed(false);
-    {
-        char text[24];
-        uint32_t cap = kFpsCaps[Nearest(kFpsCaps, s.fps_cap)];
-        if (cap == app::kFpsCapRefresh) std::snprintf(text, sizeof(text), "MONITOR REFRESH");
-        else if (cap == 0) std::snprintf(text, sizeof(text), "UNLIMITED");
-        else std::snprintf(text, sizeof(text), "%u", cap);
-        if (int st = OptionRow("MAX FRAME RATE", text)) {
-            StepTable(kFpsCaps, s.fps_cap, st);
-            Changed(false);
-        }
-    }
-    if (FlipRow("FPS COUNTER", g_fps_counter)) Changed(false);
-
-    Section("GRAPHICS");
-    if (FlipRow("MENUS IN 4:3", app::g_menus_4x3)) Changed(false);
-    if (int st = OptionRow("ANISOTROPIC FILTERING", kAnisoNames[Nearest(kAniso, s.aniso)])) {
-        StepTable(kAniso, s.aniso, st);
-        Changed(false);
-    }
-
-    Section("GENERAL");
-    if (FlipRow("SKIP INTROS", g_skip_intros)) Changed(false);
-    {
-        char text[16];
-        std::snprintf(text, sizeof(text), "%u%%", g_master_volume);
-        if (int st = OptionRow("MASTER VOLUME", text)) {
-            g_master_volume = uint32_t(std::clamp(int(g_master_volume) + st * 5, 0, 100));
-            ApplyVolume();
-            Changed(false);
-        }
-    }
-
-    Section("CONTROLS");
-    if (FlipRow("MODERN STICK RESPONSE", sticks::g_modern)) Changed(false);
-    {
-        char text[16];
-        std::snprintf(text, sizeof(text), "%u%%", sticks::g_deadzone);
-        if (int st = OptionRow("STICK DEADZONE", text, sticks::g_modern)) {
-            sticks::g_deadzone = uint32_t(std::clamp(int(sticks::g_deadzone) + st * 5, 0, 30));
-            Changed(false);
-        }
-    }
-
-    Section("TEXTURES");
-    if (FlipRow("TEXTURE REPLACEMENT", s.custom_textures)) Changed(false);
-    if (FlipRow("TEXTURE DUMPING", s.dump_textures)) Changed(false);
-    if (int st = OptionRow("DUMP FORMAT", kDumpNames[std::min<uint32_t>(s.texture_dump_format, 1)], s.dump_textures)) {
-        s.texture_dump_format = uint32_t(Step(int(s.texture_dump_format), st, 2));
-        Changed(false);
+    const char* section = nullptr;
+    for (const Entry& e : kEntries) {
+        if (!section || std::strcmp(section, e.section) != 0) Section(section = e.section);
+        if (int st = OptionRow(e.label, e.value(), e.enabled())) e.step(st);
     }
 }
 
@@ -312,10 +372,25 @@ void Defaults() {
     app::g_menus_4x3 = true;
     g_master_volume = 100;
     ApplyVolume();
-    sticks::g_modern = true;
-    sticks::g_deadzone = 10;
     Changed(display);
 }
+
+}  // namespace
+
+std::vector<SettingRow> SettingRows() {
+    std::vector<SettingRow> rows;
+    for (const Entry& e : kEntries) rows.push_back({e.section, e.label, e.value(), e.enabled()});
+    return rows;
+}
+
+void StepSetting(int index, int step) {
+    if (index < 0 || index >= int(std::size(kEntries)) || !step || !kEntries[index].enabled()) return;
+    kEntries[index].step(step);
+}
+
+void ResetSettings() { Defaults(); }
+
+namespace {
 
 void Panel() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -380,10 +455,12 @@ void Draw(double fps) {
     } else {
         io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     }
+    if (!Open()) menus::Ui();
     if (g_fps_counter) FpsCounter(fps);
 }
 
-bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
+bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
+    if (!Open() && menus::Message(hwnd, msg, wp, lp, result)) return true;
     if (msg == WM_KEYDOWN && wp == VK_F10) {
         Toggle();
         *result = 0;
