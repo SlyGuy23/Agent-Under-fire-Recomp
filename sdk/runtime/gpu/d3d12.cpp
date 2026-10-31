@@ -2691,7 +2691,7 @@ void QuadPieceBounds(const State& s, const Assembled& a, bool fixed, DrawTexture
     } else {
         for (int r = 1; r < 16; r++) {
             if (!(a.regs >> r & 1)) continue;
-            DXGI_FORMAT f = a.elements[size_t(r)].format;
+            uint32_t f = a.elements[size_t(r)].format;
             if (f != DXGI_FORMAT_R32G32_FLOAT && f != DXGI_FORMAT_R32G32B32_FLOAT && f != DXGI_FORMAT_R32G32B32A32_FLOAT)
                 continue;
             if (reg >= 0) return;  // more than one: which stage 0 reads is not known
