@@ -127,6 +127,33 @@ void Loaded() {
 
 // the controls first: they see every key, and take only one being bound (see controls.h); then the settings panel
 // and the menus
+// Mouse look on foot, straight into the game's view angles (bond_eng.xbe keeps them like Quake III's client: float
+// degrees it packs into each tick's command, the movement code clamping pitch at about 85 degrees). Written when the
+// game polls the pad, just before it builds the frame's command, and only while a level is being played.
+void MouseLook(int port) {
+    static const bool kOnFoot = std::string_view(IMAGE_XBE) == "bond_eng.xbe";
+    if (!kOnFoot || port != 0) return;
+    float yaw = 0, pitch = 0;
+    bool direct = controls::TakeMouseLook(yaw, pitch);
+    constexpr uint32_t kPitch = 0x2A8124, kYaw = 0x2A8128;              // the local player's view: + is down, + is left
+    constexpr uint32_t kYawScale = 0x2A8144, kPitchScale = 0x2A8148;    // the game's look scale: aiming, zoom, 0 when it may not
+    constexpr uint32_t kPlayerState = 0x2A88B8, kPaused = 0x3B2428, kCommandsOff = 0x3B2418;
+    constexpr uint32_t kFlags = 0x0C, kFrozen = 0x40;
+    if (!direct || (yaw == 0 && pitch == 0)) return;
+    uint32_t ps = kernel::R32(kPlayerState);
+    if (!ps || kernel::R32(kPaused) || kernel::R32(kCommandsOff)) return;
+    auto f = [](uint32_t a) { return static_cast<float*>(kernel::HostPtr(a)); };
+    float ys = *f(kYawScale), pscale = *f(kPitchScale);
+    if (!(ys > 0) || (kernel::R32(ps + kFlags) & kFrozen)) return;
+    *f(kYaw) -= yaw * ys;
+    *f(kPitch) -= pitch * (pscale > 0 ? pscale : ys);
+}
+
+void GamePad(int port, input::Pad& pad) {
+    overlay::Pad(port, pad);
+    MouseLook(port);
+}
+
 bool WindowMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
     return controls::Message(hwnd, msg, wp, lp, result) || overlay::Message(hwnd, msg, wp, lp, result);
 }
@@ -251,7 +278,7 @@ const app::GameInfo app::kGame = {
     .window = WindowUp,
     .message = WindowMessage,
     .ui = overlay::Draw,
-    .pad = overlay::Pad,
+    .pad = GamePad,
     .rumble = nullptr,
     .draw = Draw,
     .after_draw = menus::AfterDraw,
