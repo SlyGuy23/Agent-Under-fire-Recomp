@@ -58,6 +58,7 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4x4 wvb[3];
     float4x4 wvnb[3];
     float4x4 pm;
+    float4 uvrect[4];
 };
 )";
 
@@ -388,6 +389,7 @@ std::string TexUv(const TexInfo& t, int i, const std::string& uv) {
     std::string n = "(" + uv + ")";
     if (t.rect) n += F(" / texsize[%d].xy", i);
     n += F(" + texsize[%d].zw", i);
+    if (t.flags & kTexRect) n = F("clamp(%s, uvrect[%d].xy, uvrect[%d].zw)", n.c_str(), i, i);
     if (!(t.flags & kTexTarget)) return n;
     std::string step = "ddx(" + n + ") + ddy(" + n + ")";
     return n + F(" + rtshift[%d] * (", i) + step + ")";

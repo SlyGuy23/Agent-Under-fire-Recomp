@@ -11,8 +11,8 @@ constexpr int kS = int(kFigureScale);
 constexpr int kMargin = 3;              // source texels kept round the figure: the filter's reach and the outline's
 constexpr float kEdgeLo = 0.2f, kEdgeHi = 0.6f;  // upscaled coverage mapped to 0 and 1, smoothstepped between
 constexpr int kOutline = 3;             // outline radius, in upscaled texels
-constexpr float kOutlineAlpha = 0.9f;
-constexpr float kOutlineBgr[3] = {1.0f, 0.85f, 0.66f};  // a light blue
+constexpr float kOutlineAlpha = 0.45f;
+constexpr float kOutlineBgr[3] = {0.90f, 0.65f, 0.55f};  // the pause screen frame's periwinkle
 
 void CatmullRom(float t, float w[4]) {
     float t2 = t * t, t3 = t2 * t;

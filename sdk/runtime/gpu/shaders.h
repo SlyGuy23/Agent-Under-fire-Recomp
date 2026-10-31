@@ -19,6 +19,7 @@ struct TexInfo {
 enum : uint8_t {
     kTexWide = 4,    // an upscaled target shrunk by the pass: each tap averaged over console texels
     kTexTarget = 8,  // a render target, read where the console's pixel offset puts it (DrawConstants::rtshift)
+    kTexRect = 16,   // a quad's piece of an atlas: reads kept inside it (DrawConstants::uvrect)
 };
 
 struct PixelKey {
@@ -114,6 +115,7 @@ struct DrawConstants {
     float wvb[3][16];
     float wvnb[3][16];
     float pm[16];
+    float uvrect[4][4];  // per kTexRect stage: least and greatest uv read, half a texel inside the quad's piece
 };
 
 }  // namespace gpu

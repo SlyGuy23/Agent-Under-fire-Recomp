@@ -346,6 +346,7 @@ struct Tex {
     const Tex* swap = nullptr;  // the texture pack's image drawn in its place
     uint64_t pack_key = 0;      // its pack image is still loading
     uint32_t pack_gen = 0;      // texturedumper::Generation the key was taken at, 0 after new bytes
+    uint64_t dump_key = 0;      // the name the pack and the dumps know its bytes by, for captures
 };
 
 struct PsoKey {
@@ -407,6 +408,8 @@ struct DrawTextures {
     bool rt[4] = {};            // stage samples a render target
     float k[4] = {1, 1, 1, 1};  // Extension::Sample's k
     float wide[4] = {};         // host texels per console texel of a target read into a smaller one, 0 otherwise
+    float uvrect[4][4] = {};    // kTexRect stages' bounds
+    uint64_t key[4] = {};       // texture pack keys, for captures
 };
 
 // what the last draw set on the command list, so the next one sets only what differs; anything else that sets them
@@ -1895,6 +1898,7 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
         d.height == kFigureSize && d.pitch >= kFigureSize * 4)
         SwapFigure(tx, d, static_cast<const uint8_t*>(kernel::HostPtr(d.data)), fresh);
     const Tex& drawn = tx.swap ? *tx.swap : tx;
+    stages.key[stage] = tx.dump_key;
     FillTextureView(drawn, d, stages.sv[stage]);
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
     if (ext_) ext_->Sampled(d, nullptr, tx.flags, info);
@@ -1932,6 +1936,7 @@ void D3D12Backend::LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo&
     tx.pack_gen = texturedumper::Generation();
     tx.swap = nullptr;
     uint64_t key = texturedumper::Key(d, fi, p, colours);
+    tx.dump_key = key;
     texturedumper::Dump(key, d, p, colours);
     // dumping alone keys the bytes too: the pack image is not drawn then
     tx.pack_key = texturedumper::Replacing() ? key : 0;
@@ -2313,6 +2318,7 @@ void D3D12Backend::FillTextureConstants(const State& s, const DrawShaders& sh, c
         c.bump[i][3] = Bits(t[kTssBumpEnvMat11]);
         c.bumpl[i][0] = Bits(t[kTssBumpEnvLScale]);
         c.bumpl[i][1] = Bits(t[kTssBumpEnvLOffset]);
+        if (stages.info[i].flags & kTexRect) std::copy(stages.uvrect[i], stages.uvrect[i] + 4, c.uvrect[i]);
     }
 }
 
@@ -2535,6 +2541,7 @@ void D3D12Backend::CaptureTextures(const State& s, const DrawTextures& stages) {
         bool tg = targets_.count(SizedTargetKey(d.data, Format(d.format).depth, d.width, d.height));
         fprintf(cap_, " | t%d %08X fmt %X %ux%u%s%s", i, d.data, d.format, d.width, d.height, tg ? " target" : "",
                 res ? "" : " unbound");
+        if (stages.key[i]) fprintf(cap_, " key %016llx", static_cast<unsigned long long>(stages.key[i]));
         if (res && !tg && stages.info[i].kind == kTex2D && cap_seen_.insert(d.data).second) {
             cap_tex_.push_back({res, stages.sv[i].Format, d.data, d.width, d.height});
         }
@@ -2664,6 +2671,58 @@ bool AnyStageWraps(const State& s) {
         if (t[kTssAddressU] == kTaddressWrap || t[kTssAddressV] == kTaddressWrap) return true;
     }
     return false;
+}
+
+// A quad drawing a piece of an atlas (HUD panels in tiles, menu tiles, lettering): the console's pixel centres read it
+// from its first texel's centre to its last's, so its neighbours never show. Upscaled, the outermost host pixels read
+// up to half a console texel past the piece and blend the neighbouring art in, a line along every tile's edge. Stage
+// 0's reads are kept half a texel (of the texture drawn, the pack's when it has one) inside the piece the quad's
+// coordinates span. Its coordinates: the fixed function's as given, or a program's only float input past the position.
+void QuadPieceBounds(const State& s, const Assembled& a, bool fixed, DrawTextures& st) {
+    constexpr uint32_t kQuadVertices = 6;
+    if (!a.vertex_count || a.vertex_count > kQuadVertices || !st.res[0]) return;
+    const TexInfo& info = st.info[0];
+    if (info.kind != kTex2D || info.rect || (info.flags & (kTexTarget | kTexWide))) return;
+    int reg = -1;
+    if (fixed) {
+        if (!FixedTexcoordsAsGiven(s)) return;
+        reg = 9 + int(s.tss[0][kTssTexCoordIndex] & 3);
+        if (!(a.regs >> reg & 1)) return;
+    } else {
+        for (int r = 1; r < 16; r++) {
+            if (!(a.regs >> r & 1)) continue;
+            DXGI_FORMAT f = a.elements[size_t(r)].format;
+            if (f != DXGI_FORMAT_R32G32_FLOAT && f != DXGI_FORMAT_R32G32B32_FLOAT && f != DXGI_FORMAT_R32G32B32A32_FLOAT)
+                continue;
+            if (reg >= 0) return;  // more than one: which stage 0 reads is not known
+            reg = r;
+        }
+        if (reg < 0) return;
+    }
+    const VertexElement& e = a.elements[size_t(reg)];
+    const VertexBuffer& vb = a.buffers[e.buffer];
+    if (!vb.src || !vb.stride || uint64_t(a.vertex_count - 1) * vb.stride + e.offset + 8 > vb.bytes) return;
+    float lo[2] = {2, 2}, hi[2] = {-1, -1};
+    for (uint32_t v = 0; v < a.vertex_count; v++) {
+        float uv[2];
+        std::memcpy(uv, vb.src + size_t(v) * vb.stride + e.offset, sizeof(uv));
+        for (int k = 0; k < 2; k++) {
+            if (!(uv[k] >= -1e-4f && uv[k] <= 1.0001f)) return;
+            lo[k] = std::min(lo[k], uv[k]);
+            hi[k] = std::max(hi[k], uv[k]);
+        }
+    }
+    // the whole texture: clamping or wrapping already decides its edges
+    if (lo[0] <= 1e-4f && lo[1] <= 1e-4f && hi[0] >= 0.9999f && hi[1] >= 0.9999f) return;
+    D3D12_RESOURCE_DESC rd = st.res[0]->GetDesc();
+    float half[2] = {0.5f / float(rd.Width), 0.5f / float(rd.Height)};
+    for (int k = 0; k < 2; k++) {
+        float a0 = lo[k] + half[k], a1 = hi[k] - half[k];
+        if (a0 > a1) a0 = a1 = (lo[k] + hi[k]) * 0.5f;
+        st.uvrect[0][k] = a0;
+        st.uvrect[0][k + 2] = a1;
+    }
+    st.info[0].flags |= kTexRect;
 }
 
 // the first slot of the stages' four views, made only when this frame has not made the same set yet
@@ -2910,6 +2969,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     // stage textures, then the pixel shader made for them
     DrawTextures stages;
     if (!BindStageTexturesAndTargets(s, stages)) return;
+    QuadPieceBounds(s, a, !sh.prog, stages);
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
     sh.pkey = Hash(&pk, sizeof(pk));
