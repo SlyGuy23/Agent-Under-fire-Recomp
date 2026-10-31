@@ -388,11 +388,15 @@ bool SetupTitle(const gpu::State& s, const Box& b, uint32_t count) {
 
 constexpr float kDriveBase = 195, kDriveStep = 26, kDriveMarkerTop = 178, kDriveMarkerStep = 25.5f;
 std::atomic<uint64_t> g_drive_seen{0};
+std::atomic<uint64_t> g_drive_marker_seen{0};  // the >> marker: only the MISSION page has it
+// the MISSION page, not another page whose words happen to fall on its rows' lines (the briefing)
+bool DriveMissionPage() { return Recent(g_drive_seen.load()) && Recent(g_drive_marker_seen.load()); }
 std::atomic<int> g_drive_lit{-1};
 std::atomic<uint32_t> g_drive_lit_color{0xFFFFFFFF}, g_drive_unlit_color{0xFF5A9BE5};
 std::atomic<float> g_drive_x{109};  // the rows' left edge (the letters, not the shadows)
 
 bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1);
+void LabelQuad(float x0, float y0, float x1, float y1);
 
 // the stream i vertices of the draw whose stream 0 vertices are v
 uint8_t* StreamOf(const gpu::State& s, const uint8_t* v, int i) {
@@ -434,9 +438,12 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
             return;
         }
     }
-    if (!TextureSize(s, 256, 256) || !Paused()) return;
+    if (!TextureSize(s, 256, 256)) return;
+    if (y1 - y0 < 40 && x1 - x0 < 40) LabelQuad(x0, y0, x1, y1);  // a letter (a prompt's words, perhaps)
+    if (!Paused()) return;
     // the marker
     if (Near(x0, 88, 2) && Near(x1 - x0, 10, 1.5f) && Near(y1 - y0, 13, 1.5f)) {
+        g_drive_marker_seen.store(Frame() + 1);
         if (page) collapse();
         else if (g_pause_selected.load()) {
             float dy = kDriveMarkerTop + kDriveMarkerStep * 3 - y0;
@@ -567,6 +574,34 @@ bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, flo
         g_prompts_seen.store(f + 1);
         return Keyboard();
     }
+    return false;
+}
+
+// driving.xbe: the letters drawn, so a prompt with no words beside it (the pause menu's lone B) can go
+struct LabelRect {
+    float x0, y0, x1, y1;
+};
+std::vector<LabelRect> g_labels_building, g_labels_shown;
+uint64_t g_labels_frame = ~0ull;
+
+void LabelQuad(float x0, float y0, float x1, float y1) {
+    std::lock_guard l(g_prompt_lock);
+    uint64_t f = Frame();
+    if (f != g_labels_frame) {
+        g_labels_shown.swap(g_labels_building);
+        g_labels_building.clear();
+        g_labels_frame = f;
+    }
+    if (g_labels_building.size() < 4096) g_labels_building.push_back({x0, y0, x1, y1});
+}
+
+// words start just right of the prompt, on its line
+bool Labelled(const PromptRect& p) {
+    std::lock_guard l(g_prompt_lock);
+    const auto& list = g_labels_shown.empty() ? g_labels_building : g_labels_shown;
+    float cy = (p.y0 + p.y1) / 2;
+    for (const LabelRect& r : list)
+        if (r.x0 >= p.x1 - 4 && r.x0 <= p.x1 + 48 && r.y0 < cy && r.y1 > cy) return true;
     return false;
 }
 
@@ -889,7 +924,7 @@ void PadInner(int, input::Pad& pad, const Held& h) {
     }
 
     // the pause menu: Controls past Quit Mission
-    bool pause = (kDrivingImage ? Recent(g_drive_seen.load()) : Recent(g_pause_seen.load())) && Paused();
+    bool pause = (kDrivingImage ? DriveMissionPage() : Recent(g_pause_seen.load())) && Paused();
     int lit = kDrivingImage ? g_drive_lit.load() : g_pause_lit.load();
     if (!pause) g_pause_selected.store(false);
     if (pause) {
@@ -1047,9 +1082,7 @@ void SayIn(ImFont* f, ImDrawList* dl, float x, float y, float size, ImU32 col, c
     float px = size * GuestScale();
     ImVec2 p = Guest(x, y);
     if (align != 0) p.x -= f->CalcTextSizeA(px, FLT_MAX, 0, text).x * align;
-    // the game's shadow: a console pixel down and right, soft enough not to read as an outline at high resolutions
-    float o = std::max(1.0f, GuestScale() * 0.7f);
-    dl->AddText(f, px, ImVec2(p.x + o, p.y + o), IM_COL32(0, 0, 0, 150), text);
+    // no shadow copy: at PC resolutions its offset edge reads as a line along every letter
     dl->AddText(f, px, p, col, text);
 }
 
@@ -1270,6 +1303,7 @@ std::vector<uint8_t> GlyphMask(const SheetShapes& sh, const MenuGlyph& g) {
             bool keep = own(l);
             for (int dy = -1; dy <= 1 && !keep; dy++)
                 for (int dx = -1; dx <= 1 && !keep; dx++) {
+                    if (dx != 0 && dy != 0) continue;
                     int qx = sx + dx, qy = sy + dy;
                     if (qx >= 0 && qy >= 0 && qx < sh.w && qy < sh.h) keep = own(sh.label[size_t(qy) * sh.w + qx]);
                 }
@@ -1298,6 +1332,8 @@ void FillSheetFont(ImGuiIO& io, const SheetFont& sf) {
                     int ix = std::clamp(int(tx * sf.k), 0, int(sf.w) - 1), iy = std::clamp(int(ty * sf.k), 0, int(sf.h) - 1);
                     int mx = std::clamp(int(tx) - g->x0 + 1, 0, mw - 1), my = std::clamp(int(ty) - g->y0 + 1, 0, g->y1 - g->y0 + 1);
                     if (mask[size_t(my) * mw + mx]) a = sf.px[(size_t(iy) * sf.w + ix) * 4 + 3];
+                    // the upscaled sheet's faint haze (its blur of neighbouring letters) goes, the edges stay smooth
+                    a = uint8_t(std::clamp((int(a) - 56) * 255 / (255 - 56), 0, 255));
                 }
                 unsigned char* d = atlas + (size_t(r->Y + y) * aw + r->X + x) * 4;
                 d[0] = d[1] = d[2] = 255;
@@ -1410,10 +1446,11 @@ void DrawPrompts() {
     for (const PromptRect& p : ShownPrompts()) {
         const KeyPicture& k = g_keys[int(p.prompt)];
         if (!k.ready) continue;
+        if (kDrivingImage && !Labelled(p)) continue;  // a button the game gives no words: no key either
         float cx = (p.x0 + p.x1) / 2, cy = (p.y0 + p.y1) / 2;
         // as tall as the button, or narrower where a wide key would reach the words beside it
-        float h = (p.y1 - p.y0) * 0.72f, w = h * k.aspect;
-        float most = (p.x1 - p.x0) * 1.15f;
+        float h = (p.y1 - p.y0) * 0.56f, w = h * k.aspect;
+        float most = (p.x1 - p.x0) * 0.95f;
         if (w > most) w = most, h = w / k.aspect;
         dl->AddImage(tex, Guest(cx - w / 2, cy - h / 2), Guest(cx + w / 2, cy + h / 2), k.uv0, k.uv1);
     }
@@ -1480,7 +1517,7 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
 
 // driving.xbe's pause menu: Controls under Quit Mission, in the italic lettering at the game's size and colours
 void DrivingPauseRow() {
-    if (!Recent(g_drive_seen.load()) || !Paused()) return;
+    if (!DriveMissionPage() || !Paused()) return;
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     auto rgb = [](uint32_t c) { return IM_COL32((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, 255); };
     uint32_t c = g_pause_selected.load() ? g_drive_lit_color.load() : g_drive_unlit_color.load();

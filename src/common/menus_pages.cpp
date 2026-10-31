@@ -444,20 +444,19 @@ GridHit DrawGrid(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& 
     int per = std::max(1, (n + 1) / 2);
     float x0 = 320 - (kGridHalf * 2 + kGridGap) / 2;
     dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kGridHalf * 2 + kGridGap + 6, top + 20 + kGridRow * float(per)),
-                      IM_COL32(4, 8, 24, 190), 4 * c.scale());
+                      IM_COL32(4, 8, 24, 225), 4 * c.scale());
     for (int h = 0; h < 2; h++) {
         float x = x0 + float(h) * (kGridHalf + kGridGap);
         c.title(dl, x + 6, top, 11, Dim(c.lit), "Action", 0);
         c.title(dl, x + kGridHalf - 6, top, 11, Dim(c.lit), "Control", 1);
-        dl->AddLine(c.guest(x, top + 14), c.guest(x + kGridHalf, top + 14), Dim(c.unlit), std::max(1.0f, c.scale()));
     }
     ImVec2 m = ImGui::GetIO().MousePos;
     for (int i = 0; i < n; i++) {
         int h = i / per, k = i % per;
         float x = x0 + float(h) * (kGridHalf + kGridGap), y = top + 18 + kGridRow * float(k);
         bool lit = i == sel;
-        ImU32 shade = lit ? IM_COL32(120, 170, 255, 70) : k % 2 == 0 ? IM_COL32(120, 150, 230, 34) : IM_COL32(120, 150, 230, 14);
-        dl->AddRectFilled(c.guest(x, y - 1), c.guest(x + kGridHalf, y + kGridRow - 1), shade);
+        if (lit) dl->AddRectFilled(c.guest(x, y - 1), c.guest(x + kGridHalf, y + kGridRow - 1), IM_COL32(120, 170, 255, 60),
+                                  3 * c.scale());
         const CRow& r = rows[size_t(i)];
         std::string label = Titled(r.label), value;
         if (lit && !waiting.empty()) value = waiting;
@@ -640,21 +639,17 @@ void DrawTable(const PageContext& c, ImDrawList* dl, controls::Context context, 
     constexpr float kRow = 17, kHalf = 262, kGap = 12, kText = 14;  // inside the pause page's panel (40 to 600)
     int halves = (int(rows.size()) + per - 1) / per;
     float x0 = 320 - (kHalf * float(halves) + kGap * float(halves - 1)) / 2;
-    ImU32 rule = Dim(c.unlit);
     float height = 18 + kRow * float(per) + 2;
     dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kHalf * float(halves) + kGap * float(halves - 1) + 6, top + height),
-                      IM_COL32(4, 8, 24, 190), 4 * c.scale());
+                      IM_COL32(4, 8, 24, 225), 4 * c.scale());
     for (int h = 0; h < halves; h++) {
         float x = x0 + float(h) * (kHalf + kGap);
         c.title(dl, x + 6, top, 10, Dim(c.lit), "ACTION", 0);
         c.title(dl, x + kHalf - 6, top, 10, Dim(c.lit), "CONTROL", 1);
-        dl->AddLine(c.guest(x, top + 14), c.guest(x + kHalf, top + 14), rule, std::max(1.0f, c.scale()));
     }
     for (int i = 0; i < int(rows.size()); i++) {
         int h = i / per, k = i % per;
         float x = x0 + float(h) * (kHalf + kGap), yy = top + 18 + kRow * float(k);
-        dl->AddRectFilled(c.guest(x, yy - 1), c.guest(x + kHalf, yy + kRow - 1),
-                          k % 2 == 0 ? IM_COL32(120, 150, 230, 34) : IM_COL32(120, 150, 230, 14));
         std::string label = Titled(rows[size_t(i)].label), value = rows[size_t(i)].value;
         // the two share the row: the value keeps its size where it can, the label gives way first
         float vs = kText, ls = kText;
