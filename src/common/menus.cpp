@@ -393,6 +393,9 @@ std::atomic<uint64_t> g_drive_marker_seen{0};  // the >> marker: only the MISSIO
 bool DriveMissionPage() { return Recent(g_drive_seen.load()) && Recent(g_drive_marker_seen.load()); }
 std::atomic<int> g_drive_lit{-1};
 std::atomic<uint32_t> g_drive_lit_color{0xFFFFFFFF}, g_drive_unlit_color{0xFF5A9BE5};
+// the rows' letters shade from their top vertices' colour to their bottom ones' (alpha too): unlit and lit
+std::atomic<uint32_t> g_drive_unlit_top{0xFF5A9BE5}, g_drive_unlit_bottom{0xFF5A9BE5};
+std::atomic<uint32_t> g_drive_lit_top{0xFFFFFFFF}, g_drive_lit_bottom{0xFFFFFFFF};
 std::atomic<float> g_drive_x{109};  // the rows' left edge (the letters, not the shadows)
 
 bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1);
@@ -462,7 +465,14 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
             }
         }
     }
-    if (y1 - y0 < 40 && x1 - x0 < 40) LabelQuad(x0, y0, x1, y1);  // a letter (a prompt's words, perhaps)
+    // a visible letter (a prompt's words, perhaps): not a shadow, not see-through
+    if (y1 - y0 < 40 && x1 - x0 < 40) {
+        if (const uint8_t* lc = StreamOf(s, v, 1)) {
+            uint32_t c;
+            std::memcpy(&c, lc, 4);
+            if ((c >> 24) >= 0x80 && Channels(c) >= 60) LabelQuad(x0, y0, x1, y1);
+        }
+    }
     if (!Paused()) return;
     // the marker
     if (Near(x0, 88, 2) && Near(x1 - x0, 10, 1.5f) && Near(y1 - y0, 13, 1.5f)) {
@@ -485,11 +495,22 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
     bool shadow = (c >> 24) < 0x80 || Channels(c) < 60;
     if (!shadow) {
         if (row == 2) g_drive_seen.store(Frame() + 1);
+        // each vertex's colour, by its height
+        uint32_t top = c, bottom = c;
+        for (uint32_t i = 0; i < 4; i++) {
+            uint32_t ci;
+            std::memcpy(&ci, col + i * s.streams[1].stride, 4);
+            float y = At(v, stride, i, 0)[1];
+            if (y < (y0 + y1) / 2) top = ci;
+            else bottom = ci;
+        }
         if (Channels(c) > 600) {
             g_drive_lit.store(row);
             g_drive_lit_color.store(c);
+            g_drive_lit_top.store(top), g_drive_lit_bottom.store(bottom);
         } else {
             g_drive_unlit_color.store(c);
+            g_drive_unlit_top.store(top), g_drive_unlit_bottom.store(bottom);
         }
         // the rows' left edge: the leftmost letter of the frame's rows
         static uint64_t frame = ~0ull;
@@ -501,8 +522,11 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
         }
         left = std::min(left, x0);
         if (g_pause_selected.load() && Channels(c) > 600) {
-            uint32_t u = g_drive_unlit_color.load();
-            for (uint32_t i = 0; i < 4; i++) std::memcpy(col + i * s.streams[1].stride, &u, 4);
+            uint32_t ut = g_drive_unlit_top.load(), ub = g_drive_unlit_bottom.load();
+            for (uint32_t i = 0; i < 4; i++) {
+                uint32_t u = At(v, stride, i, 0)[1] < (y0 + y1) / 2 ? ut : ub;
+                std::memcpy(col + i * s.streams[1].stride, &u, 4);
+            }
         }
     }
     if (page) collapse();
@@ -624,7 +648,7 @@ bool Labelled(const PromptRect& p) {
     const auto& list = g_labels_shown.empty() ? g_labels_building : g_labels_shown;
     float cy = (p.y0 + p.y1) / 2;
     for (const LabelRect& r : list)
-        if (r.x0 >= p.x1 - 4 && r.x0 <= p.x1 + 48 && r.y0 < cy && r.y1 > cy) return true;
+        if (r.x0 >= p.x1 - 2 && r.x0 <= p.x1 + 30 && r.y0 < cy && r.y1 > cy && r.y1 - r.y0 > 4) return true;
     return false;
 }
 
@@ -1558,14 +1582,27 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
 void DrivingPauseRow() {
     if (!DriveMissionPage() || !Paused()) return;
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    auto rgb = [](uint32_t c) { return IM_COL32((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, 255); };
-    uint32_t c = g_pause_selected.load() ? g_drive_lit_color.load() : g_drive_unlit_color.load();
-    float x = g_drive_x.load(), y = kDriveBase - 2 + kDriveStep * 3 - 18;
+    // D3DCOLOR (ARGB) to ImGui's ABGR, alpha kept: the rows are see-through
+    auto im = [](uint32_t c) { return IM_COL32((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24); };
+    bool lit = g_pause_selected.load();
+    ImU32 top = im(lit ? g_drive_lit_top.load() : g_drive_unlit_top.load());
+    ImU32 bottom = im(lit ? g_drive_lit_bottom.load() : g_drive_unlit_bottom.load());
+    float x = g_drive_x.load() + 4, y = kDriveBase - 2 + kDriveStep * 3 - 18;
     ImFont* f = g_title_font ? g_title_font : g_font;
     float px = 18 * GuestScale();
-    ImVec2 p = Guest(x, y), sh = Guest(x + 2, y + 2);
-    dl->AddText(f, px, sh, IM_COL32(0, 0, 0, 160), "Controls");
-    dl->AddText(f, px, p, rgb(c), "Controls");
+    ImVec2 p = Guest(x, y), sh = Guest(x + 0.6f, y + 0.6f);
+    // the game's shadow as it is now drawn (tucked under the letters, fainter)
+    dl->AddText(f, px, sh, IM_COL32(0, 0, 0, 90), "Controls");
+    int first = dl->VtxBuffer.Size;
+    dl->AddText(f, px, p, top, "Controls");
+    // the game's shading, top to bottom over the line
+    for (int i = first; i < dl->VtxBuffer.Size; i++) {
+        ImDrawVert& vx = dl->VtxBuffer[i];
+        float t = std::clamp((vx.pos.y - p.y) / px, 0.0f, 1.0f);
+        ImVec4 a = ImGui::ColorConvertU32ToFloat4(top), b = ImGui::ColorConvertU32ToFloat4(bottom);
+        vx.col = ImGui::ColorConvertFloat4ToU32(ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t,
+                                                       a.w + (b.w - a.w) * t));
+    }
 }
 
 void Ui() {
