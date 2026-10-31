@@ -447,14 +447,15 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
         if (key == 0x03fc5f1b2a199c51ull || key == 0x3a69e5569f788462ull || key == 0xf3b5a8f28d4357d7ull) {
             uint32_t c;
             std::memcpy(&c, col, 4);
-            if (Channels(c) < 60) {
+            // moved once only (a quad the game draws again keeps the mark: blue 1, green 2)
+            if (Channels(c) < 60 && (c & 0xFFFFu) != 0x0201u) {
                 constexpr float kPull = 1.4f;
                 for (uint32_t i = 0; i < 4; i++) {
                     At(v, stride, i, 0)[0] -= kPull, At(v, stride, i, 0)[1] -= kPull;
                     uint8_t* ci = col + i * s.streams[1].stride;
                     uint32_t ca;
                     std::memcpy(&ca, ci, 4);
-                    ca = (ca & 0x00FFFFFFu) | (uint32_t(((ca >> 24) * 3) / 5) << 24);
+                    ca = (ca & 0x00FF0000u) | 0x0201u | (uint32_t(((ca >> 24) * 3) / 5) << 24);
                     std::memcpy(ci, &ca, 4);
                 }
                 x0 -= kPull, x1 -= kPull, y0 -= kPull, y1 -= kPull;
@@ -751,12 +752,16 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
 
     // the lettering's black shadow copy, a console pixel down and right: at PC resolutions that is a hard dark edge
     // along every letter (a line under and beside the text). It moves most of the way under the letters, fainter.
-    if (count % 6 == 0 && TextureSize(s, 256, 128) && IsShadow(ColorOf(v, stride, l))) {
+    // A line the game keeps (and draws again every frame) is moved once: its red is set to a mark that says so.
+    constexpr float kMoved = 1.0f / 512;
+    if (count % 6 == 0 && TextureSize(s, 256, 128) && IsShadow(ColorOf(v, stride, l)) && ColorOf(v, stride, l)[0] != kMoved) {
         constexpr float kPull = 0.65f, kFade = 0.6f;
         for (uint32_t i = 0; i < count; i++) {
             float* p = At(v, stride, i, l.pos);
             p[0] -= kPull, p[1] -= kPull;
-            At(v, stride, i, l.color)[3] *= kFade;
+            float* c = At(v, stride, i, l.color);
+            c[0] = kMoved;
+            c[3] *= kFade;
         }
         b = BoxOf(v, stride, l, 0, count);
     }

@@ -44,29 +44,24 @@ X86_FUNC(sub_001389F0) {
     X86_MEM32(kInterval) = keep;
 }
 
-// Walking up a slope or stair, PM_StepSlideMove's step down clips the velocity to the ground (the horizontal uphill part
-// is cut, vz gained) and PM_GroundTrace (0xC6FBE) then zeroes vz: the uphill part loses a fixed fraction every frame
-// while acceleration gives it back per second, so above the Xbox's 30 fps the player turns sideways on stairs (27 deg
-// at 60 fps, 41 at 144 where he walks off the side). Scale that loss to what one 30 fps frame would lose.
+// Walking up a slope or stair, PM_StepSlideMove's step down clips the velocity to the ground: the horizontal part
+// along the slope's rise is cut (vz gained) and PM_GroundTrace (0xC6FBE) then zeroes vz, so every frame the walk
+// loses some of its uphill part and keeps all of its sideways part: the player turned along the stairs, away from
+// where he looks (15 deg at the Xbox's 30 fps, 27 at 60, 41 at 144). On walkable ground the horizontal velocity is
+// kept as it was, so the player goes up the way he faces; walls and flat ground are left to the game.
 X86_EXTERN_FUNC(__imp__sub_000C5340);
 X86_FUNC(sub_000C5340) {
-    constexpr float kT = 1.0f / 30;                     // the original frame time
     uint32_t pm = X86_MEM32(0x3B30B8u), ps = pm ? X86_MEM32(pm) : 0;
     float v0[3] = {};
     if (ps) for (int i = 0; i < 3; i++) v0[i] = X86_MEMF32(ps + 0x24 + 4 * i);
     __imp__sub_000C5340(ctx, base);
     if (!ps || !X86_MEM32(0x335468u)) return;           // pml.walking
-    float dt = X86_MEMF32(0x335460u);                   // pml.frametime
-    if (!(dt > 0 && dt < kT)) return;
     float d[3];
     for (int i = 0; i < 3; i++) d[i] = X86_MEMF32(ps + 0x24 + 4 * i) - v0[i];
     float dl = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), dh = std::hypot(d[0], d[1]);
     if (!(d[2] > 0 && d[2] >= 0.7f * dl && dh > 1e-4f)) return;  // only a clip on walkable ground
-    float along = -(v0[0] * d[0] + v0[1] * d[1]) / dh;  // velocity along the cut
-    float k = along > dh ? dh / along : 1.0f;            // fraction cut this frame
-    float s = k < 1 ? (1 - std::pow(1 - k, dt / kT)) / k : dt / kT;
-    X86_MEMF32(ps + 0x24) = v0[0] + d[0] * s;
-    X86_MEMF32(ps + 0x28) = v0[1] + d[1] * s;           // vz is zeroed by the ground trace anyway
+    X86_MEMF32(ps + 0x24) = v0[0];
+    X86_MEMF32(ps + 0x28) = v0[1];                      // vz is zeroed by the ground trace anyway
 }
 
 // The game's auto-aim (0xB8BB0, the player's target search each think) bends the aim and the shots onto an enemy
