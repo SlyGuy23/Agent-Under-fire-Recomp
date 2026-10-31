@@ -642,8 +642,15 @@ void Say(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* te
     dl->AddText(f, px, p, col, text);
 }
 
+float Width(float size, const char* text) {
+    ImFont* f = g_font ? g_font : ImGui::GetFont();
+    float px = size * GuestScale();
+    return f->CalcTextSizeA(px, FLT_MAX, 0, text).x / GuestScale();
+}
+
 PageContext Context() {
     PageContext c;
+    c.width = Width;
     c.guest = Guest;
     c.scale = GuestScale;
     c.say = Say;
@@ -742,7 +749,9 @@ void Ui() {
     Page page = g_page.load();
     if (page == Page::None) return;
     std::vector<Nav> nav = TakeNav();
-    ImGui::GetIO().MouseDrawCursor = false;
+    ImGuiIO& io = ImGui::GetIO();
+    io.MouseDrawCursor = false;
+    io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;  // the pages take the mouse
     if (page == Page::Quit) {
         QuitPage(nav);
         return;

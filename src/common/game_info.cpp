@@ -16,6 +16,7 @@
 #endif
 
 #include "app/app.h"
+#include "common/controls.h"
 #include "common/menus.h"
 #include "common/overlay.h"
 #include "common/sticks.h"
@@ -123,6 +124,17 @@ void Loaded() {
     }).detach();
 }
 
+
+// the controls first: they see every key, and take only one being bound (see controls.h); then the settings panel
+// and the menus
+bool WindowMessage(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result) {
+    return controls::Message(hwnd, msg, wp, lp, result) || overlay::Message(hwnd, msg, wp, lp, result);
+}
+
+void WindowUp(void* hwnd) {
+    menus::Window(hwnd);
+    controls::Window(hwnd);
+}
 
 // Two of the front end's 2D pictures, put right as they are drawn (bond_eng.xbe's menus: two triangles of float4
 // screen positions and float4 or float2 texture coordinates under an identity projection).
@@ -232,12 +244,12 @@ const app::GameInfo app::kGame = {
                 {"master_volume", nullptr, &overlay::g_master_volume}, {"modern_sticks", &sticks::g_modern, nullptr},
                 {"stick_deadzone", nullptr, &sticks::g_deadzone},
                 {"menus_4x3", &app::g_menus_4x3, nullptr}},
-    .load = nullptr,
-    .save = nullptr,
+    .load = controls::Load,
+    .save = controls::Save,
     .init = Init,
     .loaded = Loaded,
-    .window = menus::Window,
-    .message = overlay::Message,
+    .window = WindowUp,
+    .message = WindowMessage,
     .ui = overlay::Draw,
     .pad = overlay::Pad,
     .rumble = nullptr,

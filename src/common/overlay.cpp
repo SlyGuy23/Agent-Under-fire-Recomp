@@ -13,8 +13,8 @@
 
 #include "app/app.h"
 #include "audio/audio.h"
+#include "common/controls.h"
 #include "common/menus.h"
-#include "common/sticks.h"
 #include "core/input.h"
 
 namespace overlay {
@@ -43,13 +43,14 @@ void Toggle() {
 }
 
 void Pad(int port, input::Pad& pad) {
-    sticks::Apply(pad);
+    constexpr uint16_t kChord = 0x40 | 0x80;  // left and right thumb clicks, on the controller as it is
+    bool chord = port == 0 && (pad.buttons & kChord) == kChord;
+    // in place of sticks::Apply: remapping, the sticks, the keyboard and mouse (a neutral pad while this panel is open)
+    controls::Pad(port, pad);
     if (!Open()) menus::Pad(port, pad);
-    constexpr uint16_t kChord = 0x40 | 0x80;  // left and right thumb clicks
     if (port == 0) {
-        bool held = (pad.buttons & kChord) == kChord;
-        if (held && !g_chord_held) Toggle();
-        g_chord_held = held;
+        if (chord && !g_chord_held) Toggle();
+        g_chord_held = chord;
     }
     bool settling = NowMs() - g_closed_at.load(std::memory_order_relaxed) < 300;
     if (Open() || settling || g_chord_held) {
