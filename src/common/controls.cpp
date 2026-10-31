@@ -158,10 +158,10 @@ constexpr DefaultKeys kDrivingKeys[] = {
     {A::B, {kSpace}},                // handbrake
     {A::A, {kMouseLeft}},            // fire primary
     {A::X, {kMouseRight, 'F'}},      // fire weapon
-    {A::White, {kWheelUp, 'E'}},     // next weapon
-    {A::Black, {kWheelDown, 'Q'}},   // previous weapon
-    {A::Y, {'C'}},                   // change camera
-    {A::RSDown, {kMouseMiddle, 'R'}},  // look back
+    {A::White, {'E', kWheelDown}},   // next weapon
+    {A::Black, {'Q', kWheelUp}},     // previous weapon
+    {A::Y, {'R'}},                   // change camera
+    {A::RSDown, {'C', kMouseMiddle}},  // look back
     {A::Start, {kEscape}},
 };
 

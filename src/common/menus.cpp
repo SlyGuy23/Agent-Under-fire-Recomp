@@ -1260,13 +1260,13 @@ std::vector<uint8_t> GlyphMask(const SheetShapes& sh, const MenuGlyph& g) {
             if (sx < 0 || sy < 0 || sx >= sh.w || sy >= sh.h) continue;
             int l = sh.label[size_t(sy) * sh.w + sx];
             if (l && !own(l)) continue;
-            bool near = own(l);
-            for (int dy = -1; dy <= 1 && !near; dy++)
-                for (int dx = -1; dx <= 1 && !near; dx++) {
+            bool keep = own(l);
+            for (int dy = -1; dy <= 1 && !keep; dy++)
+                for (int dx = -1; dx <= 1 && !keep; dx++) {
                     int qx = sx + dx, qy = sy + dy;
-                    if (qx >= 0 && qy >= 0 && qx < sh.w && qy < sh.h) near = own(sh.label[size_t(qy) * sh.w + qx]);
+                    if (qx >= 0 && qy >= 0 && qx < sh.w && qy < sh.h) keep = own(sh.label[size_t(qy) * sh.w + qx]);
                 }
-            m[size_t(y) * w + x] = near;
+            m[size_t(y) * w + x] = keep;
         }
     return m;
 }

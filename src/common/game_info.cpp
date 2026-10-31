@@ -233,6 +233,11 @@ void ReloadExpiry() {
     }
 }
 
+// the controller does not shake while the keyboard and mouse play
+void GameRumble(int, uint16_t& left, uint16_t& right) {
+    if (controls::ActiveDevice() == controls::Device::KeyboardMouse) left = right = 0;
+}
+
 void GamePad(int port, input::Pad& pad) {
     if (port == 0 && std::string_view(IMAGE_XBE) == "bond_eng.xbe") ReloadExpiry();
     overlay::Pad(port, pad);
@@ -364,7 +369,7 @@ const app::GameInfo app::kGame = {
     .message = WindowMessage,
     .ui = overlay::Draw,
     .pad = GamePad,
-    .rumble = nullptr,
+    .rumble = GameRumble,
     .draw = Draw,
     .after_draw = menus::AfterDraw,
 };
