@@ -34,6 +34,8 @@ inline constexpr int kContexts = 3;
 // fixed set of menu keys (arrows or WASD, Enter, Escape...), so they always work the same.
 enum class GameState : uint8_t { Menu, Paused, Playing };
 void SetGameStateQuery(GameState (*query)());
+// on foot: true while a cutscene plays, when Enter, Space and the left mouse button skip it (send A)
+void SetCutsceneQuery(bool (*query)());
 GameState CurrentGameState();
 
 enum class Device : uint8_t { Controller, KeyboardMouse };

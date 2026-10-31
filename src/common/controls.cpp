@@ -792,6 +792,9 @@ Context CurrentContext() {
 
 Device ActiveDevice() { return g_device.load(); }
 
+bool (*g_cutscene)() = nullptr;
+void SetCutsceneQuery(bool (*query)()) { g_cutscene = query; }
+
 void SetGameStateQuery(GameState (*query)()) {
     std::lock_guard lock(g_lock);
     g_state_query = query;
@@ -1028,6 +1031,9 @@ void Pad(int port, input::Pad& pad) {
     if (port == 0 && g_keyboard && g_device == Device::KeyboardMouse) {
         Inputs out = KeyboardInputs(s, now);
         PlayExtras(out, s.options, true);
+        // the game skips a cutscene on A alone (its raw A bit): Enter, Space and left click do it too
+        if (g_cutscene && g_cutscene() && (KeyHeld(kEnter, now) || KeyHeld(kSpace, now) || KeyHeld(kMouseLeft, now)))
+            out.v[int(A::A)] = 1;
         pad = Build(out, kThisImage, true);
         return;
     }

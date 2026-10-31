@@ -61,6 +61,7 @@ bool GuestPointer(uint32_t va) { return (va >= 0x10000 && va < 0x7F00000) || (va
 controls::GameState DrivingState();
 controls::Action FireRedirect();
 void ReloadRequest();
+bool Cutscene();
 controls::Context PickedMission();
 
 void Init() {
@@ -69,6 +70,7 @@ void Init() {
         controls::SetGameStateQuery(OnFootState);
         controls::SetFireRedirect(FireRedirect);
         controls::SetReloadRequest(ReloadRequest);
+        controls::SetCutsceneQuery(Cutscene);
         menus::SetMissionQuery(PickedMission);
     }
     if (std::string_view(IMAGE_XBE) == "driving.xbe") controls::SetGameStateQuery(DrivingState);
@@ -236,6 +238,12 @@ void ReloadExpiry() {
 // the controller does not shake while the keyboard and mouse play
 void GameRumble(int, uint16_t& left, uint16_t& right) {
     if (controls::ActiveDevice() == controls::Device::KeyboardMouse) left = right = 0;
+}
+
+// a cutscene playing on foot: a level loaded, not paused, the game's cinematic flag ([0x329480 + 0x180], what both
+// of its skip paths read)
+bool Cutscene() {
+    return kernel::R32(0x2A88B8) != 0 && kernel::R32(0x3B2428) == 0 && kernel::R32(0x329600) != 0;
 }
 
 void GamePad(int port, input::Pad& pad) {
