@@ -40,7 +40,9 @@ int64_t NowMs() {
 // a screen counts as up while its rows were drawn in this frame or the one before (frames counted by the game's swaps)
 uint64_t Frame() { return app::g_swaps.load(std::memory_order_relaxed); }
 // seen holds the frame number plus one, 0 never
-bool Recent(uint64_t seen) { return seen && Frame() + 1 >= seen && Frame() + 1 - seen <= 1; }
+// seen this frame or one of the last few: when the game draws a frame less often than it presents (loading, quitting
+// a mission) what the pages add would otherwise blink on and off with it
+bool Recent(uint64_t seen) { return seen && Frame() + 1 >= seen && Frame() + 1 - seen <= 3; }
 
 // ---------------------------------------------------------------------------------------------------------------
 // the draws: bond_eng.xbe's menus are lists of float4 positions under an identity projection, two triangles a quad
@@ -177,11 +179,32 @@ struct Glyph {
 };
 std::mutex g_glyph_lock;
 std::array<Glyph, 128> g_glyphs;
+// The list's letters are learnt per font sheet (its pack key): the options list is drawn from more than one sheet in
+// the course of the game, and one sheet's letters laid out with another's coordinates came out as other letters.
+struct GlyphSet {
+    std::array<Glyph, 128> glyphs{};
+    std::array<std::array<bool, 2>, 6> corners{};
+    bool corners_known = false;
+};
+std::unordered_map<uint64_t, GlyphSet> g_glyph_sets;
+uint64_t g_glyph_key = 0;
 // for each of a letter's six vertices: right, bottom
 std::array<std::array<bool, 2>, 6> g_corners{};
 bool g_corners_known = false;
 
+// with g_glyph_lock held: the letters of the sheet with this key in g_glyphs
+void UseGlyphs(uint64_t key) {
+    if (key == g_glyph_key) return;
+    GlyphSet& cur = g_glyph_sets[g_glyph_key];
+    cur.glyphs = g_glyphs, cur.corners = g_corners, cur.corners_known = g_corners_known;
+    GlyphSet& next = g_glyph_sets[key];
+    g_glyphs = next.glyphs, g_corners = next.corners, g_corners_known = next.corners_known;
+    g_glyph_key = key;
+}
+uint64_t StageKey(const gpu::State& s);
+
 std::atomic<uint64_t> g_options_seen{0};
+std::atomic<uint64_t> g_options_title_seen{0};  // the frame the OPTIONS title (7 italic letters at 90,78) was drawn in
 std::atomic<int> g_options_selected{-1};
 std::atomic<bool> g_pc_selected{false};
 std::atomic<int> g_pc_game_row{-1};  // the game's selection under PC Settings: Controller Setup or Invert Pitch
@@ -206,9 +229,10 @@ bool IsShadow(const std::array<float, 4>& c) { return c[0] < 0.02f && c[1] < 0.0
 float Brightness(const std::array<float, 4>& c) { return c[0] + c[1] + c[2]; }
 
 // the letters of a known label, learnt from the game's own line
-void Learn(const uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, std::string_view text) {
+void Learn(uint64_t key, const uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, std::string_view text) {
     if (count != text.size() * 6) return;
     std::lock_guard lock(g_glyph_lock);
+    UseGlyphs(key);
     Box first = BoxOf(v, stride, l, 0, 6);
     if (!g_corners_known) {
         for (uint32_t i = 0; i < 6; i++) {
@@ -266,9 +290,10 @@ void FillFromSheet() {
 }
 
 // text in the list's lettering, laid out from a line of the game's (template: its first letter's six vertices)
-std::vector<uint8_t> Text(std::string_view text, const uint8_t* tmpl, uint32_t stride, const Layout& l, float x, float y,
+std::vector<uint8_t> Text(uint64_t key, std::string_view text, const uint8_t* tmpl, uint32_t stride, const Layout& l, float x, float y,
                           const std::array<float, 4>& color) {
     std::lock_guard lock(g_glyph_lock);
+    UseGlyphs(key);
     std::vector<uint8_t> out;
     if (!g_corners_known) return out;
     FillFromSheet();
@@ -643,13 +668,16 @@ void LabelQuad(float x0, float y0, float x1, float y1) {
     if (g_labels_building.size() < 4096) g_labels_building.push_back({x0, y0, x1, y1});
 }
 
-// words start just right of the prompt, on its line
-bool Labelled(const PromptRect& p) {
+// words start just right of the prompt, on its line: true, and their middle line in *mid
+bool Labelled(const PromptRect& p, float* mid = nullptr) {
     std::lock_guard l(g_prompt_lock);
     const auto& list = g_labels_shown.empty() ? g_labels_building : g_labels_shown;
     float cy = (p.y0 + p.y1) / 2;
     for (const LabelRect& r : list)
-        if (r.x0 >= p.x1 - 2 && r.x0 <= p.x1 + 30 && r.y0 < cy && r.y1 > cy && r.y1 - r.y0 > 4) return true;
+        if (r.x0 >= p.x1 - 2 && r.x0 <= p.x1 + 30 && r.y0 < cy && r.y1 > cy && r.y1 - r.y0 > 4) {
+            if (mid) *mid = (r.y0 + r.y1) / 2;
+            return true;
+        }
     return false;
 }
 
@@ -802,6 +830,9 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
         return;
     }
 
+    if (count == 42 && b.x0 > 87 && b.x0 < 94 && b.y0 > 73 && b.y0 < 81 && TextureSize(s, 256, 128) &&
+        StageKey(s) == 0x254f6da069f11c3full)
+        g_options_title_seen.store(Frame() + 1);
     if (OptionsTitle(s, b)) {
         g_title_line.assign(v, v + 6 * stride);
         g_title_box = b;
@@ -872,8 +903,11 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     if (row < 0) return;
     auto color = ColorOf(v, stride, l);
     bool shadow = IsShadow(color);
+    // only under the OPTIONS title: other screens draw lines of the same lettering where the list's rows are (the
+    // letters learnt from them were wrong ones, and PC Settings came out as other letters)
+    if (g_options_title_seen.load() != Frame() + 1) return;
     if (!value && !shadow) {
-        Learn(v, stride, l, count, kLabels[row]);
+        Learn(StageKey(s), v, stride, l, count, kLabels[row]);
         if (row == kControllerRow && count == std::strlen(kLabels[row]) * 6) g_options_seen.store(Frame() + 1);
         if (Brightness(color) > Brightness(g_unlit_color) + 0.3f) {
             g_options_selected.store(row);
@@ -949,7 +983,7 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
     auto color = ColorOf(v, stride, l);
     if (!IsShadow(color)) color = g_pc_selected.load() ? g_lit_color : g_unlit_color;
     Box first = BoxOf(v, stride, l, 0, 6);
-    std::vector<uint8_t> text = Text(kPcSettings, v, stride, l, first.x0, first.y0 + kInsert, color);
+    std::vector<uint8_t> text = Text(StageKey(s), kPcSettings, v, stride, l, first.x0, first.y0 + kInsert, color);
     if (!text.empty()) emit(prim, text.data(), uint32_t(text.size() / stride));
 }
 
@@ -1465,7 +1499,7 @@ bool LoadPicture(const std::filesystem::path& path, std::vector<uint8_t>& bgra, 
     return SUCCEEDED(hr);
 }
 
-constexpr int kKeyHeight = 96;  // atlas pixels a key picture is tall
+constexpr int kKeyHeight = 44;  // atlas pixels a key picture is tall (a little soft, like the game's own pictures)
 
 void AddKeyPictures(ImGuiIO& io) {
     for (KeyPicture& k : g_keys) {
@@ -1515,12 +1549,26 @@ void DrawPrompts() {
     for (const PromptRect& p : ShownPrompts()) {
         const KeyPicture& k = g_keys[int(p.prompt)];
         if (!k.ready) continue;
-        if (kDrivingImage && !Labelled(p)) continue;  // a button the game gives no words: no key either
         float cx = (p.x0 + p.x1) / 2, cy = (p.y0 + p.y1) / 2;
-        // as tall as the button, or narrower where a wide key would reach the words beside it
-        float h = (p.y1 - p.y0) * 0.56f, w = h * k.aspect;
-        float most = (p.x1 - p.x0) * 0.95f;
-        if (w > most) w = most, h = w / k.aspect;
+        // a button the game gives no words: no key either; else the key on the words' middle line
+        if (kDrivingImage) {
+            float mid = cy;
+            if (!Labelled(p, &mid)) continue;
+            cy = mid;
+        }
+        bool arrows = p.prompt == Prompt::UpDown || p.prompt == Prompt::LeftRight;
+        float h, w;
+        if (arrows) {
+            h = (p.y1 - p.y0) * 0.7f, w = h * k.aspect;
+            float most = (p.x1 - p.x0) * 1.3f;
+            if (w > most) w = most, h = w / k.aspect;
+        } else {
+            // ENTER and BACKSPACE: as wide as the button, its right end at the button's, close to the words
+            h = (p.y1 - p.y0) * 0.56f, w = h * k.aspect;
+            float most = (p.x1 - p.x0) * 0.95f;
+            if (w > most) w = most, h = w / k.aspect;
+            cx = p.x1 - w / 2 + (p.x1 - p.x0) * 0.08f;
+        }
         dl->AddImage(tex, Guest(cx - w / 2, cy - h / 2), Guest(cx + w / 2, cy + h / 2), k.uv0, k.uv1);
     }
 }
@@ -1591,8 +1639,15 @@ void DrivingPauseRow() {
     // D3DCOLOR (ARGB) to ImGui's ABGR, alpha kept: the rows are see-through
     auto im = [](uint32_t c) { return IM_COL32((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24); };
     bool lit = g_pause_selected.load();
-    ImU32 top = im(lit ? g_drive_lit_top.load() : g_drive_unlit_top.load());
-    ImU32 bottom = im(lit ? g_drive_lit_bottom.load() : g_drive_unlit_bottom.load());
+    // the game's unlit rows read greyer than their vertex colour (their shadow and the panel under them): the same
+    // greying here, measured from the game's rows, so Controls matches Restart and Quit Mission
+    auto grey = [](uint32_t c) {
+        float r = float((c >> 16) & 0xFF), g = float((c >> 8) & 0xFF), b = float(c & 0xFF), m = (r + g + b) / 3;
+        auto f = [&](float v) { return uint32_t(std::clamp((v * 0.55f + m * 0.45f) * 0.96f, 0.0f, 255.0f)); };
+        return (c & 0xFF000000u) | f(r) << 16 | f(g) << 8 | f(b);
+    };
+    ImU32 top = im(lit ? g_drive_lit_top.load() : grey(g_drive_unlit_top.load()));
+    ImU32 bottom = im(lit ? g_drive_lit_bottom.load() : grey(g_drive_unlit_bottom.load()));
     float x = g_drive_x.load() + 4, y = kDriveBase - 2 + kDriveStep * 3 - 18;
     ImFont* f = g_title_font ? g_title_font : g_font;
     float px = 18 * GuestScale();
