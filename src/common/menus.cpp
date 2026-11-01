@@ -144,6 +144,8 @@ constexpr float kNewTop = 117, kNewStep = 49;
 std::atomic<uint64_t> g_main_seen{0};
 std::atomic<int> g_main_selected{-1};  // the game's lit bar
 std::atomic<bool> g_quit_selected{false};
+std::atomic<bool> g_escape_close{false};  // ESCAPE on the pause menu's Controls page: the pause menu shuts
+std::atomic<int> g_quit_game_row{-1};  // the game's selection under QUIT GAME: Options, or Start Mission when come to by wrapping
 
 // band of a bar quad, -1 when not one
 int BarBand(const gpu::State& s, const Box& b) {
@@ -469,6 +471,23 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
         }
     }
     if (!TextureSize(s, 256, 256)) return;
+    // the HUD's sheet (the aperture, the weapon bar's tiles): each picture's edge half a texel in, so the upscaled
+    // sheet's filtering does not take in the picture beside it (a line along the aperture) or the transparent texels
+    // round a tile (a seam between the bar's tiles). Done the same way however often the game draws the quad.
+    if (uint8_t* tc = StreamOf(s, v, 2); tc && s.streams[2].stride >= 8 && StageKey(s) == 0x3651421b66b89c6aull) {
+        float* t[4];
+        for (uint32_t i = 0; i < 4; i++) t[i] = reinterpret_cast<float*>(tc + i * s.streams[2].stride);
+        for (int c = 0; c < 2; c++) {
+            float lo = 1e9f, hi = -1e9f;
+            for (auto* q : t) lo = std::min(lo, q[c] * 256), hi = std::max(hi, q[c] * 256);
+            if (hi - lo < 4) continue;
+            float base_lo = std::floor(lo + 0.25f), base_hi = std::ceil(hi - 0.25f);
+            for (auto* q : t) {
+                float x = q[c] * 256;
+                q[c] = (x - lo < hi - x ? base_lo + 0.5f : base_hi - 0.5f) / 256;
+            }
+        }
+    }
     // the lettering's black shadow copy (2 down and right): most of the way under the letters, fainter, so it no
     // longer reads as a line along them at PC resolutions
     if (uint8_t* col = StreamOf(s, v, 1); col && s.streams[1].stride >= 4) {
@@ -542,7 +561,9 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
         static uint64_t frame = ~0ull;
         static float left = 1e9f;
         if (frame != Frame()) {
-            if (left < 1e8f) g_drive_x.store(left);
+            // only from the MISSION page (the marker drawn that frame or this one): the briefing's and objectives'
+            // words on the same lines start further left
+            if (left < 1e8f && g_drive_marker_seen.load() >= frame + 1) g_drive_x.store(left);
             frame = Frame();
             left = 1e9f;
         }
@@ -714,7 +735,7 @@ void Open(Page p) {
 
 // the pad's menu buttons, held
 struct Held {
-    bool up, down, left, right, a, b, lt, rt;
+    bool up, down, left, right, a, b, lt, rt, start;
 };
 
 Held Read(const input::Pad& p) {
@@ -729,6 +750,7 @@ Held Read(const input::Pad& p) {
     h.b = p.analog[1] > kPressed || (p.buttons & 0x20);  // and BACK goes back
     h.lt = p.analog[6] > kPressed || p.analog[5] > kPressed;
     h.rt = p.analog[7] > kPressed || p.analog[4] > kPressed;
+    h.start = p.buttons & 0x10;
     return h;
 }
 
@@ -824,6 +846,13 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
         b = BoxOf(v, stride, l, 0, count);
     }
 
+    // the words beside a prompt: the key goes on their middle line (DrawPrompts)
+    if (glyphs && count <= 6 * 40 && !IsShadow(ColorOf(v, stride, l)))
+        for (uint32_t q = 0; q < count; q += 6) {
+            Box g = BoxOf(v, stride, l, q, 6);
+            LabelQuad(g.x0, g.y0, g.x1, g.y1);
+        }
+
     // a button prompt: the keyboard's key in its place while the keyboard and mouse play
     if (count == 6 && PromptQuad(s, b.x0, b.y0, b.x1, b.y1, b.u0, b.v0, b.u1, b.v1)) {
         Hide(v, stride, l, count);
@@ -886,7 +915,7 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
             if (band < kMainItems) g_main_selected.store(item);
             g_main_seen.store(Frame() + 1);
             MoveY(v, stride, l, count, kNewTop + kNewStep * float(item) - kMainTops[item]);
-            if (item == kMainItems - 1 && band < kMainItems && g_quit_selected.load()) SetBand(v, stride, l, count, band, band + kMainItems);
+            if (item == g_quit_game_row.load() && band < kMainItems && g_quit_selected.load()) SetBand(v, stride, l, count, band, band + kMainItems);
             return;
         }
         // an options slider (the button sheet's bar, right of the values)
@@ -1011,7 +1040,19 @@ void PadInner(int, input::Pad& pad, const Held& h) {
     std::array<bool, 4> dirs = g_edges.Directions(h);
     bool a = h.a && !g_edges.last.a, back = h.b && !g_edges.last.b;
     bool lt = h.lt && !g_edges.last.lt, rt = h.rt && !g_edges.last.rt;
+    bool start = h.start && !g_edges.last.start;
     g_edges.last = h;
+
+    // START (ESCAPE on the keyboard) only opens and shuts the pause menu: from the Controls page it shuts the lot
+    bool esc = g_escape_close.exchange(false);
+    if (g_page.load() == Page::PauseControls && (start || esc)) {
+        g_page.store(Page::None);
+        g_pause_selected.store(false);
+        input::Pad out = Neutral(pad);
+        out.buttons |= 0x10;
+        pad = out;
+        return;
+    }
 
     if (g_page.load() != Page::None) {
         if (dirs[0]) Push(Nav::Up);
@@ -1039,7 +1080,7 @@ void PadInner(int, input::Pad& pad, const Held& h) {
         } else {
             input::Pad out = Neutral(pad);
             if (dirs[0]) g_pause_selected.store(false);
-            else if (a) Open(Page::PauseControls);
+            else if (a && !start) Open(Page::PauseControls);
             out.analog[1] = pad.analog[1];      // B and START still close the pause menu
             out.buttons |= pad.buttons & 0x10;
             pad = out;
@@ -1051,15 +1092,32 @@ void PadInner(int, input::Pad& pad, const Held& h) {
     bool main = Recent(g_main_seen.load());
     if (!main) g_quit_selected.store(false);
     if (main) {
+        int item = g_main_selected.load();
         if (!g_quit_selected.load()) {
-            if (dirs[1] && g_main_selected.load() == kMainItems - 1) {
+            if (dirs[1] && item == kMainItems - 1) {
                 g_quit_selected.store(true);
+                g_quit_game_row.store(item);
                 Take(pad, 1);
+            } else if (dirs[0] && item == 0) {
+                // up from START MISSION wraps to QUIT GAME at the bottom
+                g_quit_selected.store(true);
+                g_quit_game_row.store(0);
+                Take(pad, 0);
             }
         } else {
-            if (dirs[0]) g_quit_selected.store(false);
-            if (a) Open(Page::Quit);
-            pad = Neutral(pad);
+            // the game wraps itself, so a press away is handed on only when it lands where it should
+            int under = g_quit_game_row.load();
+            input::Pad out = Neutral(pad);
+            if (dirs[0]) {
+                g_quit_selected.store(false);
+                if (under == 0) out.buttons |= 1;               // Start Mission wraps up to Options
+            } else if (dirs[1]) {
+                g_quit_selected.store(false);
+                if (under == kMainItems - 1) out.buttons |= 2;  // Options wraps down to Start Mission
+            } else if (a) {
+                Open(Page::Quit);
+            }
+            pad = out;
         }
         return;
     }
@@ -1432,14 +1490,21 @@ void FillSheetFont(ImGuiIO& io, const SheetFont& sf) {
                 uint8_t a = 0;
                 bool border = x == 0 || y == 0 || x == r->Width - 1 || y == r->Height - 1;
                 if (g && !border) {
-                    // the sheet's pixels under the glyph's rectangle, stretched over the quad as the game does
-                    float tx = g->x0 + float(x - 1) / (r->Width - 2) * (g->x1 - g->x0);
-                    float ty = g->y0 + float(y - 1) / (r->Height - 2) * (g->y1 - g->y0);
-                    int ix = std::clamp(int(tx * sf.k), 0, int(sf.w) - 1), iy = std::clamp(int(ty * sf.k), 0, int(sf.h) - 1);
-                    int mx = std::clamp(int(tx) - g->x0 + 1, 0, mw - 1), my = std::clamp(int(ty) - g->y0 + 1, 0, g->y1 - g->y0 + 1);
-                    if (mask[size_t(my) * mw + mx]) a = sf.px[(size_t(iy) * sf.w + ix) * 4 + 3];
+                    // the sheet's pixels under the glyph's rectangle, one for one (a resampling here made the edges
+                    // jagged)
+                    int ix = std::clamp(int(std::lround(g->x0 * sf.k)) + x - 1, 0, int(sf.w) - 1);
+                    int iy = std::clamp(int(std::lround(g->y0 * sf.k)) + y - 1, 0, int(sf.h) - 1);
+                    // the mask between its texels' centres, so its edge is a slope and not steps
+                    int mh = g->y1 - g->y0 + 2;
+                    float fx = std::clamp((ix + 0.5f) / sf.k - 0.5f - float(g->x0 - 1), 0.0f, float(mw - 1));
+                    float fy = std::clamp((iy + 0.5f) / sf.k - 0.5f - float(g->y0 - 1), 0.0f, float(mh - 1));
+                    int jx = int(fx), jy = int(fy), jx1 = std::min(jx + 1, mw - 1), jy1 = std::min(jy + 1, mh - 1);
+                    float ax = fx - jx, ay = fy - jy;
+                    auto m = [&](int mx, int my) { return mask[size_t(my) * mw + mx] ? 1.0f : 0.0f; };
+                    float mv = (m(jx, jy) * (1 - ax) + m(jx1, jy) * ax) * (1 - ay) + (m(jx, jy1) * (1 - ax) + m(jx1, jy1) * ax) * ay;
+                    float cov = sf.px[(size_t(iy) * sf.w + ix) * 4 + 3] * std::min(1.0f, mv * 1.5f);
                     // the upscaled sheet's faint haze (its blur of neighbouring letters) goes, the edges stay smooth
-                    a = uint8_t(std::clamp((int(a) - 56) * 255 / (255 - 56), 0, 255));
+                    a = uint8_t(std::clamp((cov - 20.0f) * 255.0f / 235.0f, 0.0f, 255.0f));
                 }
                 unsigned char* d = atlas + (size_t(r->Y + y) * aw + r->X + x) * 4;
                 d[0] = d[1] = d[2] = 255;
@@ -1560,29 +1625,30 @@ void DrawPrompts() {
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImTextureID tex = ImGui::GetIO().Fonts->TexID;
     for (const PromptRect& p : ShownPrompts()) {
-        const KeyPicture& k = g_keys[int(p.prompt)];
-        if (!k.ready) continue;
+        const KeyPicture& key = g_keys[int(p.prompt)];
+        if (!key.ready) continue;
         float cx = (p.x0 + p.x1) / 2, cy = (p.y0 + p.y1) / 2;
         // a button the game gives no words: no key either; else the key on the words' middle line
-        if (kDrivingImage) {
-            float mid = cy;
-            if (!Labelled(p, &mid)) continue;
-            cy = mid;
-        }
+        float mid = cy;
+        bool labelled = Labelled(p, &mid);
+        if (kDrivingImage && !labelled) continue;
+        if (labelled) cy = mid;
+        // the main menus' pictures are bigger than the pause menus': their keys a little smaller to match
+        float k = kDrivingImage || Paused() ? 1.0f : 0.88f;
         bool arrows = p.prompt == Prompt::UpDown || p.prompt == Prompt::LeftRight;
         float h, w;
         if (arrows) {
-            h = (p.y1 - p.y0) * 0.7f, w = h * k.aspect;
-            float most = (p.x1 - p.x0) * 1.3f;
-            if (w > most) w = most, h = w / k.aspect;
+            h = (p.y1 - p.y0) * 0.7f * k, w = h * key.aspect;
+            float most = (p.x1 - p.x0) * 1.3f * k;
+            if (w > most) w = most, h = w / key.aspect;
         } else {
             // ENTER and BACKSPACE: as wide as the button, its right end at the button's, close to the words
-            h = (p.y1 - p.y0) * 0.56f, w = h * k.aspect;
-            float most = (p.x1 - p.x0) * 0.95f;
-            if (w > most) w = most, h = w / k.aspect;
+            h = (p.y1 - p.y0) * 0.56f * k, w = h * key.aspect;
+            float most = (p.x1 - p.x0) * 0.95f * k;
+            if (w > most) w = most, h = w / key.aspect;
             cx = p.x1 - w / 2 + (p.x1 - p.x0) * 0.08f;
         }
-        dl->AddImage(tex, Guest(cx - w / 2, cy - h / 2), Guest(cx + w / 2, cy + h / 2), k.uv0, k.uv1);
+        dl->AddImage(tex, Guest(cx - w / 2, cy - h / 2), Guest(cx + w / 2, cy + h / 2), key.uv0, key.uv1);
     }
 }
 
@@ -1634,6 +1700,12 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
         case VK_RETURN:
         case VK_SPACE: Push(Nav::Accept); break;
         case VK_ESCAPE:
+            if (g_page.load() == Page::PauseControls) {
+                g_escape_close.store(true);
+                break;
+            }
+            Push(Nav::Back);
+            break;
         case VK_BACK: Push(Nav::Back); break;
         case VK_PRIOR:
         case 'Q': Push(Nav::PrevTab); break;
@@ -1648,6 +1720,8 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
 // driving.xbe's pause menu: Controls under Quit Mission, in the italic lettering at the game's size and colours
 void DrivingPauseRow() {
     if (!DriveMissionPage() || !Paused()) return;
+    // gone the frame the page changes (DriveMissionPage holds a few frames for the pad's sake)
+    if (Frame() + 1 - g_drive_marker_seen.load() > 1 || Frame() + 1 - g_drive_seen.load() > 1) return;
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     // D3DCOLOR (ARGB) to ImGui's ABGR, alpha kept: the rows are see-through
     auto im = [](uint32_t c) { return IM_COL32((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24); };
