@@ -15,6 +15,9 @@ struct Pad;
 namespace app {
 
 enum class DisplayMode : uint32_t { Fullscreen, Borderless, Windowed };
+// anti_aliasing: FXAA smooths the edges of the finished picture; supersampling draws it with twice or four times the
+// pixels (on top of render_percent) and shrinks it to the window
+enum class AntiAliasing : uint32_t { Off, Fxaa, Ssaa2x, Ssaa4x };
 inline constexpr uint32_t kFpsCapRefresh = 1;  // fps_cap: the monitor's refresh rate
 
 struct Settings {
@@ -24,6 +27,7 @@ struct Settings {
     uint32_t fps_cap = 60;           // 0 unlimited, kFpsCapRefresh the monitor's refresh rate
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
+    AntiAliasing anti_aliasing = AntiAliasing::Off;
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
@@ -58,6 +62,9 @@ inline std::atomic<uint32_t> g_pack_folders{0};
 inline std::atomic<uint64_t> g_swaps{0};
 // where the console's frame was last shown in the window, in window pixels: x, y, width, height (set by the renderer)
 inline float g_frame_rect[4] = {0, 0, 0, 0};
+// the size in pixels the renderer last drew the console's frame at, before it was scaled to the window (set by the
+// renderer, 0 before its first frame)
+inline uint32_t g_render_size[2] = {0, 0};
 
 std::filesystem::path ExeDir();
 // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc

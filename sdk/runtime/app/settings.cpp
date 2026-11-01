@@ -23,6 +23,7 @@ namespace app {
 namespace {
 
 const char* kModes[] = {"fullscreen", "borderless", "windowed"};
+const char* kAntiAliasing[] = {"off", "fxaa", "ssaa_2x", "ssaa_4x"};
 
 std::filesystem::path File() { return ExeDir() / kGame.settings; }
 
@@ -50,6 +51,9 @@ void Load() {
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
+    std::string aa = t["anti_aliasing"].value_or(std::string(kAntiAliasing[uint32_t(s.anti_aliasing)]));
+    for (uint32_t i = 0; i < 4; i++)
+        if (aa == kAntiAliasing[i]) s.anti_aliasing = AntiAliasing(i);
     s.custom_textures = t["custom_textures"].value_or(s.custom_textures);
     s.dump_textures = t["dump_textures"].value_or(s.dump_textures);
     s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
@@ -72,6 +76,7 @@ toml::table Table() {
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
                   {"anisotropic_filtering", int64_t(s.aniso)},
+                  {"anti_aliasing", kAntiAliasing[std::min<uint32_t>(uint32_t(s.anti_aliasing), 3)]},
                   {"custom_textures", s.custom_textures},
                   {"dump_textures", s.dump_textures},
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
@@ -153,7 +158,15 @@ Mode CachedOutput() {
 }
 
 float RenderScale(uint32_t guest_height) {
-    float h = CachedOutput().height * (Get().render_percent / 100.0f);
+    const Settings& s = Get();
+    // supersampling: twice the pixels is the square root of two more on each axis, four times twice as many
+    float ss = 1.0f;
+    if (s.anti_aliasing == AntiAliasing::Ssaa2x) ss = 1.41421356f;
+    if (s.anti_aliasing == AntiAliasing::Ssaa4x) ss = 2.0f;
+    // at most four times a 4K screen's height: a 4:3 picture stays inside D3D12's 16384 texel limit, and its targets
+    // inside a few GB
+    constexpr float kMaxHeight = 8640.0f;
+    float h = std::min(CachedOutput().height * (s.render_percent / 100.0f) * ss, kMaxHeight);
     return guest_height ? std::max(h / guest_height, 0.1f) : 1.0f;
 }
 

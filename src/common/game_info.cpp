@@ -22,6 +22,7 @@
 #include "common/overlay.h"
 #include "common/sticks.h"
 #include "image_symbols.h"
+#include "core/input.h"
 #include "core/log.h"
 #include "kernel/kernel.h"
 #include "gpu/state.h"
@@ -64,9 +65,37 @@ void ReloadRequest();
 bool Cutscene();
 controls::Context PickedMission();
 
+// default.xbe plays the intro films before the game itself starts: A on a controller, Enter or a left click goes
+// straight on to the game, as the Skip Intros setting does. A press already held when the films start does not count,
+// and the keys only while this window has the focus.
+void SkipIntrosOnPress() {
+#ifdef _WIN32
+    std::thread([] {
+        bool armed = false;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            DWORD pid = 0;
+            HWND fg = GetForegroundWindow();
+            if (fg) GetWindowThreadProcessId(fg, &pid);
+            bool focus = pid == GetCurrentProcessId();
+            bool held = (input::HeldOnAnyController() & 0x1000) != 0;  // XINPUT_GAMEPAD_A
+            if (focus) held = held || (GetAsyncKeyState(VK_RETURN) & 0x8000) || (GetAsyncKeyState(VK_LBUTTON) & 0x8000);
+            if (!held) {
+                armed = true;
+            } else if (armed) {
+                LOGR("Intros skipped");
+                kernel::Relaunch(kGameExe);
+                return;
+            }
+        }
+    }).detach();
+#endif
+}
+
 void Init() {
     overlay::ApplyVolume();
-    app::g_pack_folder_off = overlay::PackFolderOff;  // the HD Character Textures setting
+    app::g_pack_folder_off = overlay::PackFolderOff;  // the old HD Character Textures setting, now always on
+    overlay::g_hd_characters = true;
     if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
         controls::SetGameStateQuery(OnFootState);
         controls::SetFireRedirect(FireRedirect);
@@ -82,6 +111,7 @@ void Init() {
     bool relaunched = false;
 #endif
     if (launcher && overlay::g_skip_intros && !relaunched) kernel::Relaunch(kGameExe);
+    if (launcher && !relaunched) SkipIntrosOnPress();
     if (std::string_view(IMAGE_XBE) == "driving.xbe") KeepDrivingLaunch(relaunched);
 }
 

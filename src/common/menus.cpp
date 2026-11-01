@@ -617,6 +617,14 @@ std::atomic<uint64_t> g_prompts_seen{0};
 
 bool Keyboard() { return controls::ActiveDevice() == controls::Device::KeyboardMouse; }
 
+// the title screen's "Press START" line as the game last drew it: its box, its first letter's height, its colour
+struct PressLine {
+    float x0, y0, x1, y1, first_h;
+    std::array<float, 4> color;
+};
+PressLine g_press{};
+std::atomic<uint64_t> g_press_seen{0};
+
 // the pack key of the texture on stage 0, kept per texture and its bytes' place (hashed once)
 uint64_t StageKey(const gpu::State& s) {
     uint32_t header = s.textures[0];
@@ -856,6 +864,20 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     // a button prompt: the keyboard's key in its place while the keyboard and mouse play
     if (count == 6 && PromptQuad(s, b.x0, b.y0, b.x1, b.y1, b.u0, b.v0, b.u1, b.v1)) {
         Hide(v, stride, l, count);
+        return;
+    }
+
+    // the title screen's "Press START" (one line of 11 letter quads in the list's lettering, centred under the logo):
+    // while the keyboard and mouse play it gives way to "Press ENTER", which the pages draw (Ui)
+    if (count == 66 && Near((b.x0 + b.x1) / 2, 320, 40) && b.y0 > 280 && b.y1 < 360 && TextureSize(s, 256, 128) &&
+        !Recent(g_main_seen.load()) && StageKey(s) == 0x2829182bc4c846c2ull) {
+        Box first = BoxOf(v, stride, l, 0, 6);
+        {
+            std::lock_guard lock(g_prompt_lock);
+            g_press = {b.x0, b.y0, b.x1, b.y1, first.y1 - first.y0, ColorOf(v, stride, l)};
+        }
+        g_press_seen.store(Frame() + 1);
+        if (Keyboard()) Hide(v, stride, l, count);
         return;
     }
 
@@ -1753,7 +1775,31 @@ void DrivingPauseRow() {
     }
 }
 
+// "Press ENTER" where the title screen's "Press START" was, in the same lettering, size and colour
+void PressEnter() {
+    if (!Keyboard() || !Recent(g_press_seen.load()) || !g_font) return;
+    PressLine p;
+    {
+        std::lock_guard lock(g_prompt_lock);
+        p = g_press;
+    }
+    const MenuGlyph* cap = FindGlyph(kBodyFont, 'P');
+    if (!cap || p.first_h <= 0) return;
+    // console pixels a texel of the sheet: the line's P against the sheet's
+    float k = p.first_h / float(cap->y1 - cap->y0 + 1);
+    float size = kBodyFont.line_height * k * GuestScale();
+    const char* text = "Press ENTER";
+    ImVec2 extent = g_font->CalcTextSizeA(size, FLT_MAX, 0, text);
+    // the font's cell puts a capital's top (dy + 2) texels below the text's top (AddSheetFont)
+    ImVec2 at = Guest((p.x0 + p.x1) / 2, p.y0 - float(cap->dy + 2) * k);
+    at.x -= extent.x / 2;
+    ImU32 col = IM_COL32(int(std::clamp(p.color[0], 0.0f, 1.0f) * 255), int(std::clamp(p.color[1], 0.0f, 1.0f) * 255),
+                         int(std::clamp(p.color[2], 0.0f, 1.0f) * 255), int(std::clamp(p.color[3], 0.0f, 1.0f) * 255));
+    ImGui::GetBackgroundDrawList()->AddText(g_font, size, at, col, text);
+}
+
 void Ui() {
+    if (kMenus) PressEnter();
     if (kMenus || kDrivingImage) DrawPrompts();
     if (kDrivingImage) {
         if (g_page.load() == Page::None) {

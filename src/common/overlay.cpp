@@ -225,6 +225,7 @@ constexpr uint32_t kRenderPercents[] = {50, 75, 100, 125, 150, 200};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, app::kFpsCapRefresh, 0};
 constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
+const char* const kAntiAliasingNames[] = {"OFF", "FXAA", "2x SSAA", "4x SSAA"};
 const char* const kModeNames[] = {"FULLSCREEN", "BORDERLESS", "WINDOWED"};
 const char* const kDumpNames[] = {"PNG", "DDS"};
 
@@ -285,7 +286,17 @@ const Entry kEntries[] = {
      // borderless always covers the monitor at its desktop mode
      [] { return app::Get().display_mode != DisplayMode::Borderless; }},
     {"DISPLAY", "RENDER RESOLUTION",
-     [] { return Percent(kRenderPercents[Nearest(kRenderPercents, app::Get().render_percent)]); },
+     [] {
+         // with the size the frame is drawn at, which follows from the next frame; the front end's menus are 640 x 480
+         // art at any size, so the difference shows in the missions
+         std::string text = Percent(kRenderPercents[Nearest(kRenderPercents, app::Get().render_percent)]);
+         if (app::g_render_size[0]) {
+             char size[32];
+             std::snprintf(size, sizeof(size), " (%ux%u)", app::g_render_size[0], app::g_render_size[1]);
+             text += size;
+         }
+         return text;
+     },
      [](int st) {
          StepTable(kRenderPercents, app::Get().render_percent, st);
          Changed(false);
@@ -329,6 +340,14 @@ const Entry kEntries[] = {
          Changed(false);
      },
      [] { return true; }},
+    {"GRAPHICS", "ANTI-ALIASING",
+     [] { return std::string(kAntiAliasingNames[std::min<uint32_t>(uint32_t(app::Get().anti_aliasing), 3)]); },
+     [](int st) {
+         Settings& s = app::Get();
+         s.anti_aliasing = app::AntiAliasing(Step(int(s.anti_aliasing), st, 4));
+         Changed(false);
+     },
+     [] { return true; }},
     {"GENERAL", "SKIP INTROS", [] { return std::string(OnOff(g_skip_intros)); },
      [](int) {
          g_skip_intros = !g_skip_intros;
@@ -342,19 +361,17 @@ const Entry kEntries[] = {
          Changed(false);
      },
      [] { return true; }},
-    {"TEXTURES", "TEXTURE REPLACEMENT", [] { return std::string(OnOff(app::Get().custom_textures)); },
+    // every upscaled texture in the pack, the characters' too (their folder is no longer a setting of its own)
+    {"TEXTURES", "UPSCALED TEXTURE REPLACEMENT", [] { return std::string(OnOff(app::Get().custom_textures)); },
      [](int) {
          app::Get().custom_textures = !app::Get().custom_textures;
+         if (!g_hd_characters) {
+             g_hd_characters = true;
+             app::g_pack_folders++;  // the pack is listed again at the next frame
+         }
          Changed(false);
      },
      [] { return true; }},
-    {"TEXTURES", "HD CHARACTER TEXTURES", [] { return std::string(OnOff(g_hd_characters)); },
-     [](int) {
-         g_hd_characters = !g_hd_characters;
-         app::g_pack_folders++;  // the pack is listed again at the next frame
-         Changed(false);
-     },
-     [] { return app::Get().custom_textures; }},
     {"TEXTURES", "TEXTURE DUMPING", [] { return std::string(OnOff(app::Get().dump_textures)); },
      [](int) {
          app::Get().dump_textures = !app::Get().dump_textures;

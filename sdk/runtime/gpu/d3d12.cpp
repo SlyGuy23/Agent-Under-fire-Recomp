@@ -55,6 +55,8 @@ constexpr uint64_t kUploadReserve = 8ull << 20;
 constexpr uint32_t kSrvCount = 3 * 32768;
 constexpr uint32_t kSamplerCount = 2048;
 constexpr uint32_t kRtvCount = 1024;
+// RTV heap slots past the targets' pool: the swap chain's buffers, then the anti-aliasing pass's target
+constexpr uint32_t kAaRtv = kRtvCount + kFrames;
 constexpr uint32_t kDsvCount = 256;
 constexpr DXGI_FORMAT kBgra = DXGI_FORMAT_B8G8R8A8_UNORM;
 constexpr uint32_t kQueries = 8192;  // occlusion queries in flight, several frames of counted draws
@@ -168,6 +170,96 @@ float4 vs(uint id : SV_VertexID) : SV_Position {
     return float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
 }
 float4 psmain() : SV_Target { return colour; }
+)";
+
+// FXAA on the finished frame, as Timothy Lottes describes it: a pixel on an edge in luma is blended across the edge,
+// the more the nearer it lies to the end of the edge, searched for along it; texel is 1 / the frame's size
+const char* kFxaaHlsl = R"(
+cbuffer P : register(b1) { float4 texel; float4 unused; };
+Texture2D img : register(t0);
+SamplerState ls : register(s0);
+struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    o.uv = float2((id << 1) & 2, id & 2);
+    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+static const float3 kLuma = float3(0.299, 0.587, 0.114);
+static const float kSteps[10] = {1, 1, 1, 1, 1.5, 2, 2, 2, 4, 8};
+float Luma(float2 uv) { return dot(img.SampleLevel(ls, uv, 0).rgb, kLuma); }
+float4 fxaa(O i) : SV_Target {
+    float2 uv = i.uv;
+    float2 r = texel.xy;
+    float4 centre = img.SampleLevel(ls, uv, 0);
+    float lM = dot(centre.rgb, kLuma);
+    float lN = Luma(uv + float2(0, -r.y));
+    float lS = Luma(uv + float2(0, r.y));
+    float lW = Luma(uv + float2(-r.x, 0));
+    float lE = Luma(uv + float2(r.x, 0));
+    float lMin = min(lM, min(min(lN, lS), min(lW, lE)));
+    float lMax = max(lM, max(max(lN, lS), max(lW, lE)));
+    float range = lMax - lMin;
+    if (range < max(0.0312, lMax * 0.125)) return centre;
+    float lNW = Luma(uv + float2(-r.x, -r.y));
+    float lNE = Luma(uv + float2(r.x, -r.y));
+    float lSW = Luma(uv + float2(-r.x, r.y));
+    float lSE = Luma(uv + float2(r.x, r.y));
+    // a horizontal edge changes down the columns, a vertical one along the rows
+    float edgeH = abs(lNW + lSW - 2 * lW) + 2 * abs(lN + lS - 2 * lM) + abs(lNE + lSE - 2 * lE);
+    float edgeV = abs(lNW + lNE - 2 * lN) + 2 * abs(lW + lE - 2 * lM) + abs(lSW + lSE - 2 * lS);
+    bool horz = edgeH >= edgeV;
+    // the side of the pixel the edge is on: the steeper step
+    float l1 = horz ? lN : lW;
+    float l2 = horz ? lS : lE;
+    float g1 = abs(l1 - lM);
+    float g2 = abs(l2 - lM);
+    float stepLen = horz ? r.y : r.x;
+    float lLocal = 0.5 * (l2 + lM);
+    float grad = g2;
+    if (g1 >= g2) {
+        stepLen = -stepLen;
+        lLocal = 0.5 * (l1 + lM);
+        grad = g1;
+    }
+    // along the edge, halfway between the pixel's row and the next, both ways until the luma leaves the edge's
+    float2 e = uv;
+    if (horz) e.y += stepLen * 0.5;
+    else e.x += stepLen * 0.5;
+    float2 dir = horz ? float2(r.x, 0) : float2(0, r.y);
+    float threshold = grad * 0.25;
+    float2 uvN = e - dir;
+    float2 uvP = e + dir;
+    float endN = Luma(uvN) - lLocal;
+    float endP = Luma(uvP) - lLocal;
+    bool doneN = abs(endN) >= threshold;
+    bool doneP = abs(endP) >= threshold;
+    [loop] for (int k = 0; k < 10 && !(doneN && doneP); k++) {
+        if (!doneN) {
+            uvN -= dir * kSteps[k];
+            endN = Luma(uvN) - lLocal;
+            doneN = abs(endN) >= threshold;
+        }
+        if (!doneP) {
+            uvP += dir * kSteps[k];
+            endP = Luma(uvP) - lLocal;
+            doneP = abs(endP) >= threshold;
+        }
+    }
+    float distN = horz ? uv.x - uvN.x : uv.y - uvN.y;
+    float distP = horz ? uvP.x - uv.x : uvP.y - uv.y;
+    float endLuma = distN < distP ? endN : endP;
+    // blended only from the end where the edge's luma goes the other way from the pixel's
+    float offset = ((endLuma < 0) != (lM < lLocal)) ? 0.5 - min(distN, distP) / (distN + distP) : 0;
+    // and at least as much as the pixel stands out from its 3 x 3 neighbours, for edges shorter than a pixel
+    float average = (2 * (lN + lS + lW + lE) + lNW + lNE + lSW + lSE) / 12;
+    float sub = smoothstep(0, 1, saturate(abs(average - lM) / range));
+    offset = max(offset, sub * sub * 0.75);
+    float2 f = uv;
+    if (horz) f.y += offset * stepLen;
+    else f.x += offset * stepLen;
+    return float4(img.SampleLevel(ls, f, 0).rgb, centre.a);
+}
 )";
 
 float Bits(uint32_t v) {
@@ -623,12 +715,14 @@ private:
     void ResizeSwap();
     void UploadGammaRamp();
     void DrawFrame(Target* t, uint32_t bi);
-    void BlitFrame(Target& t);
+    ID3D12Resource* Antialias(Target& t, bool flat);
+    void BlitFrame(Target& t, ID3D12Resource* aa);
     void RenderUi();
     void ReleaseOldTextures();
     void ResetFrame();
     void CountFps();
     void ApplySettings();
+    void RescaleTargets();
     ComPtr<ID3D12Resource> Shrink(ID3D12Resource* src, D3D12_RESOURCE_STATES& st, DXGI_FORMAT fmt, uint32_t w,
                                   uint32_t h, const ShrinkOptions& o = {});
     bool ReadBack(ID3D12Resource* res, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
@@ -736,6 +830,7 @@ private:
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> psos_;
     std::unordered_map<uint64_t, uint32_t> samplers_;
     uint32_t smp_used_ = 0;
+    uint32_t aniso_ = 0;  // app::Settings::aniso the samplers in samplers_ were made with
     std::unordered_map<uint64_t, Target> targets_;
     std::unordered_map<uint32_t, uint64_t> target_used_;  // target address to the frame it was last used
     std::array<UsedTarget, 4> recent_used_{};
@@ -766,6 +861,9 @@ private:
     uint8_t ramp_[768] = {};
     bool ramp_dirty_ = false;
     bool gamma_ = false;
+    // app::AntiAliasing::Fxaa: the frame smoothed, at its size, viewed at kAaRtv
+    ComPtr<ID3D12Resource> aa_;
+    D3D12_RESOURCE_STATES aa_state_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
     Target* bound_rt_ = nullptr;
     Target* bound_ds_ = nullptr;
     Target* draw_rt_ = nullptr;  // the draw's targets, the bound ones go when a texture's copy is drawn
@@ -915,7 +1013,7 @@ void D3D12Backend::CreateBackBufferViews() {
 void D3D12Backend::CreateHeaps() {
     srv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kSrvCount, true, srv_heap_);
     smp_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCount, true, smp_heap_);
-    rtv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kRtvCount + kFrames, false, rtv_heap_);
+    rtv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kAaRtv + 1, false, rtv_heap_);
     dsv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCount, false, dsv_heap_);
     CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true, ui_heap_);
     for (uint32_t i = kRtvCount; i-- > 0;) free_rtv_.push_back(i);
@@ -974,6 +1072,7 @@ void D3D12Backend::CreateGammaLut() {
 
 void D3D12Backend::LoadSettings() {
     scale_ = app::RenderScale(guest_h_);
+    aniso_ = app::Get().aniso;
     texturedumper::Update();
     ext_ = g_extension.get();
     if (ext_) {
@@ -3424,11 +3523,46 @@ void D3D12Backend::UploadGammaRamp() {
     cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
 }
 
-void D3D12Backend::BlitFrame(Target& t) {
+// a frame with fewer 3D draws than this was drawn in 2D alone (a 2D frame may hold a stray 3D draw or two)
+constexpr uint32_t k3dDraws = 3;
+
+// app::AntiAliasing::Fxaa: the frame smoothed into aa_, to be shown in its place; null shows the frame itself (the
+// setting off, a frame drawn in 2D alone, whose 640 x 480 art FXAA would only blur, or the pass could not be made)
+ID3D12Resource* D3D12Backend::Antialias(Target& t, bool flat) {
+    if (app::Get().anti_aliasing != app::AntiAliasing::Fxaa || flat || t.depth || t.fmt != kBgra) return nullptr;
+    if (!EnsurePassPipeline(kFxaaHlsl, "fxaa", kBgra, -1)) return nullptr;
+    D3D12_CPU_DESCRIPTOR_HANDLE rh = Cpu(rtv_heap_.Get(), kAaRtv, rtv_inc_);
+    if (aa_) {
+        D3D12_RESOURCE_DESC d = aa_->GetDesc();
+        if (d.Width != t.w || d.Height != t.h) CurrentFrame().garbage.push_back(std::move(aa_));
+    }
+    if (!aa_) {
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC td = Texture2DDesc(kBgra, t.w, t.h);
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        aa_state_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, aa_state_, nullptr,
+                                                 IID_PPV_ARGS(&aa_)))) {
+            aa_.Reset();
+            return nullptr;
+        }
+        dev_->CreateRenderTargetView(aa_.Get(), nullptr, rh);
+    }
+    Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    Transition(aa_.Get(), aa_state_, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ID3D12Resource* const src[3] = {t.res.Get(), nullptr, nullptr};
+    const DXGI_FORMAT fmt[3] = {t.fmt, kBgra, kBgra};
+    const float p[8] = {1.0f / float(t.w), 1.0f / float(t.h), 0, 0, 0, 0, 0, 0};
+    Pass(kFxaaHlsl, "fxaa", kBgra, rh, t.w, t.h, src, fmt, p, -1);
+    Transition(aa_.Get(), aa_state_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    return aa_.Get();
+}
+
+// aa: Antialias's picture of t, drawn in its place
+void D3D12Backend::BlitFrame(Target& t, ID3D12Resource* aa) {
     // 16:9 when the console reports a widescreen display, else 4:3; with app::g_menus_4x3 a run of frames drawn in 2D
     // alone is shown 4:3 too, switching after a few frames either way so a single frame does not flip the shape
     constexpr int kSwitchFrames = 4;
-    constexpr uint32_t k3dDraws = 3;  // a 2D frame may hold a stray 3D draw or two
     bool flat = frame_3d_draws_ < k3dDraws;
     frame_3d_draws_ = 0;
     run_2d_ = flat ? run_2d_ + 1 : 0;
@@ -3451,8 +3585,17 @@ void D3D12Backend::BlitFrame(Target& t) {
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &scissor);
     binds_ = {};
+    // a frame drawn larger than it is shown (render_percent over 100, supersampling) is averaged over all the texels
+    // each pixel covers, up to 4 x 4 taps: one bilinear tap reads only the four nearest and keeps the jagged edges
+    constexpr uint32_t kMaxTaps = 4;
+    float shrink = std::max(float(t.w) / vw, float(t.h) / vh);
+    uint32_t taps = std::min(uint32_t(std::ceil(std::max(shrink, 1.0f) - kTapsSlack)), kMaxTaps);
+    if (aa) {
+        Blit(aa, kBgra, uv, {.gamma = gamma_, .taps = taps});
+        return;
+    }
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_});
+    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_, .taps = taps});
 }
 
 void D3D12Backend::RenderUi() {
@@ -3468,6 +3611,8 @@ void D3D12Backend::RenderUi() {
 }
 
 void D3D12Backend::DrawFrame(Target* t, uint32_t bi) {
+    // FXAA draws into a target of its own: before the back buffer is bound
+    ID3D12Resource* aa = t ? Antialias(*t, frame_3d_draws_ < k3dDraws) : nullptr;
     D3D12_RESOURCE_STATES bs = D3D12_RESOURCE_STATE_PRESENT;
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_RENDER_TARGET);
     D3D12_CPU_DESCRIPTOR_HANDLE rh = Cpu(rtv_heap_.Get(), kRtvCount + bi, rtv_inc_);
@@ -3475,7 +3620,7 @@ void D3D12Backend::DrawFrame(Target* t, uint32_t bi) {
     cl_->ClearRenderTargetView(rh, black, 0, nullptr);
     cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
-    if (t) BlitFrame(*t);
+    if (t) BlitFrame(*t, aa);
     RenderUi();
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_PRESENT);
 }
@@ -3569,6 +3714,10 @@ void D3D12Backend::Present(const Surface& front) {
     Target* t = EnsureTarget(front, false);
     if (t && LatchCpuWrite(*t)) UploadTarget(*t, front);
     if (t) Resolve(*t);
+    if (t) {
+        app::g_render_size[0] = t->w;
+        app::g_render_size[1] = t->h;
+    }
     if (ramp_dirty_) UploadGammaRamp();
     Transition(lut_.Get(), lut_state_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
@@ -3598,17 +3747,61 @@ void D3D12Backend::WaitGpuFrame(uint64_t n) {
     if (fence > fence_->GetCompletedValue()) fence_->SetEventOnCompletion(fence, nullptr);
 }
 
+// render_percent and anti_aliasing (app::RenderScale) take effect here, from the next frame
 void D3D12Backend::ApplySettings() {
     if (texturedumper::Update()) ReleasePackTextures();
+    // anisotropic filtering: each draw's samplers are looked up by their description, so a new level makes new ones
+    // from the next draw; the old ones are let go once the GPU is past them, so the heap does not fill up and start
+    // over under draws still in flight
+    uint32_t aniso = app::Get().aniso;
+    if (aniso != aniso_) {
+        Flush();
+        samplers_.clear();
+        smp_used_ = 0;
+        aniso_ = aniso;
+    }
     float want = app::RenderScale(guest_h_);
     bool remake = ext_ && ext_->Settings();
     if (std::fabs(want - scale_) > 1e-4f || remake) {
         Flush();
-        for (auto& [key, tg] : targets_) (tg.depth ? free_dsv_ : free_rtv_).push_back(tg.view);
-        targets_.clear();
         scale_ = want;
-        if (ext_) ext_->Reset(*this);
+        if (ext_) {
+            // the extension's targets are its own: all made again
+            for (auto& [key, tg] : targets_) (tg.depth ? free_dsv_ : free_rtv_).push_back(tg.view);
+            targets_.clear();
+            ext_->Reset(*this);
+        } else {
+            RescaleTargets();
+        }
         bound_rt_ = bound_ds_ = nullptr;
+    }
+}
+
+// each colour target made again at the render scale with its picture drawn into it, so a frame the title keeps
+// showing without drawing it again (a paused game's still) stays up; depth targets go, each frame draws them anew
+void D3D12Backend::RescaleTargets() {
+    for (auto it = targets_.begin(); it != targets_.end();) {
+        Target& t = it->second;
+        ComPtr<ID3D12Resource> old = std::move(t.res);
+        D3D12_RESOURCE_STATES old_state = t.state;
+        uint32_t old_w = t.w;
+        if (t.fb) CurrentFrame().garbage.push_back(std::move(t.fb));
+        t.fb_state = D3D12_RESOURCE_STATE_COPY_DEST;
+        if (t.depth || !CreateTargetResource(t, Surface{})) {
+            CurrentFrame().garbage.push_back(std::move(old));
+            (t.depth ? free_dsv_ : free_rtv_).push_back(t.view);
+            it = targets_.erase(it);
+            continue;
+        }
+        D3D12_CPU_DESCRIPTOR_HANDLE rh = Cpu(rtv_heap_.Get(), t.view, rtv_inc_);
+        dev_->CreateRenderTargetView(t.res.Get(), nullptr, rh);
+        Transition(old.Get(), old_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        SetBlitTarget(rh, t.w, t.h);
+        float uv[4] = {0, 0, 1, 1};
+        uint32_t taps = uint32_t(std::ceil(std::max(float(old_w) / float(t.w), 1.0f) - kTapsSlack));
+        Blit(old.Get(), t.fmt, uv, {.alpha = true, .taps = taps, .rtv = t.fmt});
+        CurrentFrame().garbage.push_back(std::move(old));
+        ++it;
     }
 }
 
