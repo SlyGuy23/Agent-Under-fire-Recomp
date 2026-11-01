@@ -15,6 +15,7 @@
 #include "app/app.h"
 #include "audio/audio.h"
 #include "common/controls.h"
+#include "common/damage_fx.h"
 #include "common/fov.h"
 #include "common/menus.h"
 #include "core/input.h"
@@ -395,6 +396,21 @@ const Entry kEntries[] = {
          Changed(false);
      },
      [] { return app::Get().dump_textures; }},
+    // what being hit on foot does to the screen (src/common/damage_fx.h), applied at once
+    {"ACCESSIBILITY", "DAMAGE EFFECTS", [] { return std::string(damage_fx::Name()); },
+     [](int st) {
+         damage_fx::g_level = uint32_t(Step(int(damage_fx::Current()), st, int(damage_fx::kLevels)));
+         Changed(false);
+     },
+     [] { return true; },
+     "The flash and view kick when you are hit: Reduced halves them, Minimal keeps a quarter, Off removes them"},
+    {"ACCESSIBILITY", "DAMAGE FLASH COLOUR", [] { return std::string(damage_fx::g_flash_black ? "BLACK" : "WHITE"); },
+     [](int) {
+         damage_fx::g_flash_black = !damage_fx::g_flash_black;
+         Changed(false);
+     },
+     [] { return damage_fx::Current() != damage_fx::kOff; },
+     "The flash when you are hit drawn white, as the game does, or dark, at the strength above"},
 };
 
 void Rows() {
@@ -418,6 +434,8 @@ void Defaults() {
     g_hd_characters = true;
     g_master_volume = 100;
     fov::g_offset = 0;
+    damage_fx::g_level = damage_fx::kDefault;
+    damage_fx::g_flash_black = false;
     ApplyVolume();
     Changed(display);
 }

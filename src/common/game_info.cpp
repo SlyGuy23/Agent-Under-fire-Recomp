@@ -20,6 +20,7 @@
 #include "app/app.h"
 #include "common/autosave.h"
 #include "common/controls.h"
+#include "common/damage_fx.h"
 #include "common/fov.h"
 #include "common/game_options.h"
 #include "common/menus.h"
@@ -469,7 +470,9 @@ const app::GameInfo app::kGame = {
                 {"master_volume", nullptr, &overlay::g_master_volume}, {"modern_sticks", &sticks::g_modern, nullptr},
                 {"stick_deadzone", nullptr, &sticks::g_deadzone},
                 {"menus_4x3", &app::g_menus_4x3, nullptr}, {"hd_character_textures", &overlay::g_hd_characters, nullptr},
-                {"autosave", &autosave::g_enabled, nullptr}},
+                {"autosave", &autosave::g_enabled, nullptr},
+                {"damage_effects", nullptr, &damage_fx::g_level},
+                {"damage_flash_black", &damage_fx::g_flash_black, nullptr}},
     .load = LoadSettings,
     .save = SaveSettings,
     .init = Init,

@@ -8,9 +8,11 @@
 // }
 
 #include "common/controls.h"
+#include "common/damage_fx.h"
 #include "common/fov.h"
 #include "cpu/x86_ops.h"
 
+#include <algorithm>
 #include <cmath>
 
 // A (the action button) also reloads in the game: 0xB7390, the "use" function it calls, ends by reloading the weapon
@@ -153,4 +155,72 @@ X86_FUNC(sub_00051320) {
     X86_MEM32(state) = kNormal;
     __imp__sub_00051320(ctx, base);
     X86_MEM32(state) = kTargeted;
+}
+
+// GOLDEN ACCURACY in manual aim. The gold reward (bit 3 of the rewards mask, 0x3BEB0: Gold Rewards on, [0x20732C], and
+// mission 4's reward earned, [0x2A9BBC + 3 * 4]) only reaches the Golden Gun: its "rewardlevel" handler (0xA0720, class
+// SPGoldenGun) zeroes the weapon's bulletspread (+0x4A0/+0x4A4); every other weapon's handler is empty (0x9A530). The
+// player's shot goes from the eye along the aim angles (player+0x758/+0x75C, which manual aim moves with the crosshair,
+// 0xB7FA0) and is scattered by the spread 0x9DB30 works out (the weapon's base, plus what firing adds, up to its
+// maximum) before 0x83D50 traces it. With the reward on and the player in manual aim (player+0x671), the shot of any
+// weapon is fired with no spread: exactly where the crosshair points. Outside manual aim the game's own aim (auto-aim
+// included) and spread are left as they are; the crosshair's size (0x12E0B7 asks the same function) is untouched.
+X86_EXTERN_FUNC(__imp__sub_0009DB30);
+X86_FUNC(sub_0009DB30) {
+    constexpr uint32_t kFireSite = 0xA36F0;  // the return address of the player's fire (0xA36EB)
+    const uint32_t ret = X86_MEM32(ctx.esp), out = X86_MEM32(ctx.esp + 4), weapon = ctx.ecx;
+    __imp__sub_0009DB30(ctx, base);
+    if (ret != kFireSite || !out) return;
+    const uint32_t game = X86_MEM32(0x328664);  // deathmatch cvar: single player only
+    if (game && X86_MEM32(game + 0x20) != 0) return;
+    if (X86_MEM32(0x20732C) == 0 || X86_MEM32(0x2A9BBC + 3 * 4) == 0) return;  // Golden Accuracy not on
+    const uint32_t owner = X86_MEM32(weapon + 0x2CC), entities = X86_MEM32(0x329390);
+    if (!owner || !entities) return;
+    const int32_t players = std::clamp(int32_t(X86_MEM32(0x205408)), 1, 4);
+    bool player = false;
+    for (int32_t n = 0; n < players; n++) player = player || X86_MEM32(entities + uint32_t(n) * 0x2E0 + 0x278) == owner;
+    if (!player || X86_MEM8(owner + 0x671) == 0) return;
+    X86_MEMF32(out) = 0;
+    X86_MEMF32(out + 4) = 0;
+}
+
+// DAMAGE EFFECTS, the flash: the HUD's per-player think (0x534DC) sets its hit flash, HUD+0x30, to 0.4 to 0.9 (more as
+// the health gets lower) whenever the health drops, and its draw (0x539A9) covers the player's view with a rectangle of
+// colour (1, 1, 1, HUD+0x30) through 0x43CA0 (x, y, w, h, colour*), then fades it. That one call is scaled (the colour is
+// the caller's, built for the call) or left out, and drawn in black with DAMAGE FLASH COLOUR. The fade keeps its time.
+X86_EXTERN_FUNC(__imp__sub_00043CA0);
+X86_FUNC(sub_00043CA0) {
+    constexpr uint32_t kHitFlash = 0x53A58;  // the return address of the hit flash's draw (0x53A53)
+    if (X86_MEM32(ctx.esp) != kHitFlash) {
+        __imp__sub_00043CA0(ctx, base);
+        return;
+    }
+    const float scale = damage_fx::Scale();
+    if (scale <= 0) {
+        ctx.esp += 4;  // cdecl: the call's return
+        return;
+    }
+    const uint32_t colour = X86_MEM32(ctx.esp + 0x14);
+    if (colour) {
+        if (damage_fx::g_flash_black)
+            for (int i = 0; i < 3; i++) X86_MEMF32(colour + 4 * i) = 0;
+        X86_MEMF32(colour + 12) *= scale;
+    }
+    __imp__sub_00043CA0(ctx, base);
+}
+
+// DAMAGE EFFECTS, the view kick: 0x27910 (local client n, cdecl), the client's damage feedback, sees the playerState's
+// damage count change (ps+0xDC, from the player's DamageFeedback 0xAF2D0) and starts a kick: the time ([0x3B2280] into
+// +0x6C of the client's view state, 0x2A8490 + n * 0xB0) and how far the view pitches (+0x70) and rolls (+0x74), which
+// 0x280A7 adds to the view angles over the next tenth of a second or so. Those two are scaled when a kick starts. The
+// script's screen shakes (ps+0xF0, explosions and the like) and the landing dip are separate and left as they are.
+X86_EXTERN_FUNC(__imp__sub_00027910);
+X86_FUNC(sub_00027910) {
+    const uint32_t view = 0x2A8490 + X86_MEM32(ctx.esp + 4) * 0xB0;
+    const uint32_t started = X86_MEM32(view + 0x6C);
+    __imp__sub_00027910(ctx, base);
+    const float scale = damage_fx::Scale();
+    if (scale == 1 || X86_MEM32(view + 0x6C) == started) return;
+    X86_MEMF32(view + 0x70) *= scale;
+    X86_MEMF32(view + 0x74) *= scale;
 }
