@@ -375,7 +375,8 @@ bool OptionsTitle(const gpu::State& s, const Box& b) {
 }
 
 bool SetupTitle(const gpu::State& s, const Box& b, uint32_t count) {
-    return count == 96 && TextureSize(s, 256, 128) && Near(b.x0, 90.5f, 2) && Near(b.y0, 78.5f, 2);
+    // the letters' box starts at 90,76 and the shadow's a pixel down and right (less once tucked in): either counts
+    return count == 96 && TextureSize(s, 256, 128) && b.x0 > 87 && b.x0 < 94 && b.y0 > 73 && b.y0 < 81;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -778,7 +779,12 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     // along every letter (a line under and beside the text). It moves most of the way under the letters, fainter.
     // A line the game keeps (and draws again every frame) is moved once: its red is set to a mark that says so.
     constexpr float kMoved = 1.0f / 512;
-    if (count % 6 == 0 && TextureSize(s, 256, 128) && IsShadow(ColorOf(v, stride, l)) && ColorOf(v, stride, l)[0] != kMoved) {
+    bool glyphs = count % 6 == 0;  // a line of letters: every quad letter-sized (not a dark picture)
+    for (uint32_t q = 0; glyphs && q < count; q += 6) {
+        Box g = BoxOf(v, stride, l, q, 6);
+        glyphs = g.x1 - g.x0 < 48 && g.y1 - g.y0 < 48;
+    }
+    if (glyphs && TextureSize(s, 256, 128) && IsShadow(ColorOf(v, stride, l)) && ColorOf(v, stride, l)[0] != kMoved) {
         constexpr float kPull = 0.65f, kFade = 0.6f;
         for (uint32_t i = 0; i < count; i++) {
             float* p = At(v, stride, i, l.pos);
