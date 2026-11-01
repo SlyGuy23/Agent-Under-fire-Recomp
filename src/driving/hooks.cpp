@@ -5,6 +5,7 @@
 
 #include "common/controls.h"
 #include "kernel/kernel.h"
+#include "xdk/d3d8.h"
 #include "xdk/hle.h"
 
 namespace {
@@ -98,4 +99,53 @@ X86_FUNC(sub_00076310) {
     kernel::W32(0x1C6C18, 0);
     __imp__sub_00076310(ctx, base);
     kernel::W32(0x1C6C18, target);
+}
+
+// Quit Mission -> "Yes": the frame that takes the answer closes the pause menu and runs one plain frame of the mission
+// (no dimming, no panel) before the mission's teardown (0x43680) fades the screen out with 0xB7B60. That fade draws only
+// a black quad of growing alpha onto the back buffer each frame, over whatever picture the buffer last had, and the
+// device rotates three buffers: the two older ones hold the pause screen, the newest that plain frame, so the panel
+// flashed off every third frame of the fade (and on the answering frame itself). So when that plain frame is about to
+// be shown, the last pause picture is copied over it and over the oldest buffer: every buffer the fade darkens, and
+// the answering frame, show the pause screen.
+// 0x100690 is the end of a frame (EndScene, Swap). The quit is asked for at 0xB5B89 ([0x1E0780] = 1) while the run
+// state [0x1BEB1C] is still 3 (pause); it becomes 2 at the end of that frame.
+namespace {
+
+struct Shown {
+    uint32_t header = 0, data = 0;
+};
+Shown g_shown[2];  // the back buffer of the last two frames ended, newest first
+
+void CopySurface(X86Context& ctx, uint32_t header, uint32_t from, uint32_t to) {
+    static uint32_t src = 0, dst = 0;  // surface headers of our own, the device's back buffer with another memory
+    if (!src) {
+        src = mem::AllocSystem(32);
+        dst = mem::AllocSystem(32);
+    }
+    for (uint32_t i = 0; i < 32; i += 4) {
+        kernel::W32(src + i, kernel::R32(header + i));
+        kernel::W32(dst + i, kernel::R32(header + i));
+    }
+    kernel::W32(src + 4, from);
+    kernel::W32(dst + 4, to);
+    constexpr uint32_t kCopyRects = 0x1153E0;  // D3DDevice_CopyRects(src, rects, count, dst, points), whole surface
+    kernel::CallGuest(ctx, kCopyRects, {src, 0, 0, dst, 0});
+}
+
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_00100690);
+X86_FUNC(sub_00100690) {
+    const gpu::Surface rt = d3d::State().rt;
+    if (kernel::R32(0x1E0780) == 1 && kernel::R32(0x1BEB1C) == 3 && rt.header && g_shown[0].header == rt.header &&
+        g_shown[0].data && g_shown[0].data != rt.data) {
+        CopySurface(ctx, rt.header, g_shown[0].data, rt.data);
+        if (g_shown[1].header == rt.header && g_shown[1].data && g_shown[1].data != rt.data &&
+            g_shown[1].data != g_shown[0].data)
+            CopySurface(ctx, rt.header, g_shown[0].data, g_shown[1].data);
+    }
+    g_shown[1] = g_shown[0];
+    g_shown[0] = {rt.header, rt.data};
+    __imp__sub_00100690(ctx, base);
 }
