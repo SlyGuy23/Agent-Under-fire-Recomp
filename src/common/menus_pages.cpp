@@ -229,6 +229,12 @@ int64_t Ms() {
 std::string Pct(uint32_t v) { return std::to_string(v) + "%"; }
 
 // the mouse looks around where no key is bound to looking: on foot turning and looking up and down, on rails aiming
+// driving looks nowhere with the mouse (its motion goes to no stick unless the settings file names one): its mouse
+// options would change nothing
+bool MouseMoves(Context c, const controls::Options& o) {
+    return c != Context::Driving || o.mouse_x != controls::MouseAxis::None || o.mouse_y != controls::MouseAxis::None;
+}
+
 bool MouseLooks(Context c, Action a) {
     if (c == Context::OnFoot) return a >= Action::RSUp && a <= Action::RSRight;
     if (c == Context::OnRails) return a >= Action::LSUp && a <= Action::LSRight;
@@ -278,15 +284,27 @@ std::vector<CRow> Rows(const Tab& t, bool view_only) {
         rows.back().desc = "The game's aim assist pulling your aim onto enemies, on foot and on rails";
     }
     if (view_only) return rows;
-    rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, t.device == Device::Controller ? "STICKS" : "MOUSE", ""});
+    bool mouse = MouseMoves(t.context, o);
+    if (t.device == Device::Controller || mouse)
+        rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, t.device == Device::Controller ? "STICKS" : "MOUSE", ""});
     if (t.device == Device::Controller) {
+        const char* turn = "How fast the stick turns at each tilt: 200% is twice the game's own speed";
+        const char* steer = "How far the stick steers at each tilt: at 200% it reaches full lock about half way";
+        const char* dead = "How far from the centre the stick does nothing";
+        const char* outer = "How far short of the edge the stick already counts as full tilt";
         opt(Opt::LeftSens, "LEFT STICK SENSITIVITY", Pct(o.left.sensitivity));
+        rows.back().desc = t.context == Context::Driving ? steer : turn;
         opt(Opt::LeftDead, "LEFT STICK DEADZONE", Pct(o.left.deadzone));
+        rows.back().desc = dead;
         opt(Opt::LeftOuter, "LEFT STICK OUTER DEADZONE", Pct(o.left.outer_deadzone));
+        rows.back().desc = outer;
         opt(Opt::RightSens, "RIGHT STICK SENSITIVITY", Pct(o.right.sensitivity));
+        if (t.context != Context::Driving) rows.back().desc = turn;
         opt(Opt::RightDead, "RIGHT STICK DEADZONE", Pct(o.right.deadzone));
+        rows.back().desc = dead;
         opt(Opt::RightOuter, "RIGHT STICK OUTER DEADZONE", Pct(o.right.outer_deadzone));
-    } else {
+        rows.back().desc = outer;
+    } else if (mouse) {
         opt(Opt::MouseSens, "MOUSE SENSITIVITY", Pct(o.mouse_sensitivity));
         opt(Opt::MouseInvert, "INVERT MOUSE Y", o.mouse_invert_y ? "ON" : "OFF");
         const char* looks[] = {"AUTOMATIC", "DIRECT", "AS A STICK"};
@@ -696,9 +714,11 @@ std::vector<CRow> PauseOptions(controls::Context context) {
     opt(Opt::RightSens, "RIGHT STICK SENSITIVITY", Pct(o.right.sensitivity));
     opt(Opt::RightDead, "RIGHT STICK DEADZONE", Pct(o.right.deadzone));
     opt(Opt::RightOuter, "RIGHT STICK OUTER DEADZONE", Pct(o.right.outer_deadzone));
-    heading("MOUSE");
-    opt(Opt::MouseSens, "MOUSE SENSITIVITY", Pct(o.mouse_sensitivity));
-    opt(Opt::MouseInvert, "INVERT MOUSE Y", o.mouse_invert_y ? "ON" : "OFF");
+    if (MouseMoves(context, o)) {
+        heading("MOUSE");
+        opt(Opt::MouseSens, "MOUSE SENSITIVITY", Pct(o.mouse_sensitivity));
+        opt(Opt::MouseInvert, "INVERT MOUSE Y", o.mouse_invert_y ? "ON" : "OFF");
+    }
     return rows;
 }
 

@@ -80,3 +80,28 @@ X86_FUNC(sub_000B8BB0) {
     __imp__sub_000B8BB0(ctx, base);
     X86_MEM8(player + 0x716) = allowed;
 }
+
+// Stick sensitivity past 100% on foot: the game turns the view in proportion to the stick (0x24130 yaw, 0x24260 pitch,
+// at most 180 and 90 degrees a second times its look scale), so a stick can turn it no faster than full tilt does.
+// 0x24570 builds player p's command from the pad, turning the client view angles (0x2A8124 pitch, 0x2A8128 yaw; the
+// mouse look of game_info.cpp is already in them) by the stick on the way: what it turned player 0's view by is
+// scaled by the part of the stick's sensitivity the pad could not carry (controls::TurnGains). In manual aim (0x2A814C)
+// and on a mounted gun (the player's gentity flag 0x100) the game puts the angles back and aims with the left stick
+// (0x24310, 0x24490), otherwise the right stick's X turns and its Y looks up and down (the game's setup 1).
+X86_EXTERN_FUNC(__imp__sub_00024570);
+X86_FUNC(sub_00024570) {
+    constexpr uint32_t kPitch = 0x2A8124, kYaw = 0x2A8128, kAiming = 0x2A814C, kGentities = 0x2A88A8;
+    float lx, ly, rx, ry;
+    controls::TurnGains(lx, ly, rx, ry);
+    const uint32_t player = X86_MEM32(ctx.esp + 8);
+    if (player != 0 || (lx == 1 && ly == 1 && rx == 1 && ry == 1)) {
+        __imp__sub_00024570(ctx, base);
+        return;
+    }
+    const uint32_t gent = X86_MEM32(kGentities);
+    const bool left = X86_MEM32(kAiming) != 0 || (gent && (X86_MEM32(gent + 8) & 0x100));
+    const float pitch = X86_MEMF32(kPitch), yaw = X86_MEMF32(kYaw);
+    __imp__sub_00024570(ctx, base);
+    X86_MEMF32(kYaw) = yaw + (X86_MEMF32(kYaw) - yaw) * (left ? lx : rx);
+    X86_MEMF32(kPitch) = pitch + (X86_MEMF32(kPitch) - pitch) * (left ? ly : ry);
+}

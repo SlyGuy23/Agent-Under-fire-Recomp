@@ -87,6 +87,28 @@ X86_FUNC(sub_00077A20) {
     __imp__sub_00077A20(ctx, base);
 }
 
+// Stick sensitivity on rails. The gun's action handler (0x7B230) turns the further of the two sticks on each axis into
+// a rate (0x75620: nothing up to half tilt, 0.0015 a frame to three quarters, 0.005 past it) that 0x76C00 stores as the
+// target yaw rate (+0x264) and 0x76BE0 as the pitch one (+0x260); the update eases toward them. With only those steps
+// the stick cannot carry a sensitivity: the rates are scaled by it (controls::TurnGains, the same on both sticks' axes).
+X86_EXTERN_FUNC(__imp__sub_00076C00);
+X86_FUNC(sub_00076C00) {
+    const uint32_t gun = ctx.ecx;
+    __imp__sub_00076C00(ctx, base);
+    float lx, ly, rx, ry;
+    controls::TurnGains(lx, ly, rx, ry);
+    if (lx != 1) F(gun + 0x264) *= lx;
+}
+
+X86_EXTERN_FUNC(__imp__sub_00076BE0);
+X86_FUNC(sub_00076BE0) {
+    const uint32_t gun = ctx.ecx;
+    __imp__sub_00076BE0(ctx, base);
+    float lx, ly, rx, ry;
+    controls::TurnGains(lx, ly, rx, ry);
+    if (ly != 1) F(gun + 0x260) *= ly;
+}
+
 // The gunner's auto-aim (0x76310, the camera's turn toward the current target [0x1C6C18]): with the keyboard and mouse
 // and the port's AUTO LOCK-ON off it sees no target, which also clears its auto-aiming flag; the target is put back.
 X86_EXTERN_FUNC(__imp__sub_00076310);

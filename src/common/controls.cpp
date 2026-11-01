@@ -248,6 +248,7 @@ constexpr int kWheelQueue = 3;
 constexpr int64_t kStickWindowMs = 32;    // mouse to stick: the speed over this much time
 constexpr float kFullTiltCountsPerSecond = 1200;  // at 100%
 constexpr float kDegreesPerCount = 0.044f;        // direct mouse look at 100%
+constexpr float kMouseStickMax = 4;               // the mouse as a stick: up to 4 times full tilt's turn
 constexpr int64_t kDirectConsumerMs = 500;        // Auto: Direct while TakeMouseLook was called this recently
 
 // ---- state ----
@@ -309,7 +310,7 @@ struct Toggle {
 };
 Toggle g_crouch, g_aim;
 GameState g_last_state = GameState::Menu;
-constexpr int kLayout = 5;  // 5: on foot the game setup 1, new keys; 4:  // 4: RB cycles weapons;  // 3: reload on its own, X with the gadget, B crouching  // settings written before 2 had the game's stick layout as the on-foot default
+constexpr int kLayout = 6;  // 6: mouse as a stick, the old defaults' axes given way; 5: on foot the game setup 1, new keys; 4:  // 4: RB cycles weapons;  // 3: reload on its own, X with the gadget, B crouching  // settings written before 2 had the game's stick layout as the on-foot default
 
 int64_t Now() {
     if (g_clock) return g_clock();
@@ -355,12 +356,47 @@ Options Defaults(Context c) {
     return o;
 }
 
+void Clamp(Options& o);
+
+// The headless harness has no settings file: env CONTROLS_OPTIONS sets the options of every context, as
+// "key=value,..." with ls/rs (stick sensitivity), ldz/rdz (deadzone), lodz/rodz (outer deadzone), ms (mouse
+// sensitivity), ml (mouse look: auto, direct, stick)
+void HarnessOptions() {
+#if !CONTROLS_TOML
+    const char* e = std::getenv("CONTROLS_OPTIONS");
+    if (!e) return;
+    std::string_view all = e;
+    while (!all.empty()) {
+        size_t comma = all.find(',');
+        std::string_view kv = all.substr(0, comma);
+        all = comma == std::string_view::npos ? std::string_view() : all.substr(comma + 1);
+        size_t eq = kv.find('=');
+        if (eq == std::string_view::npos) continue;
+        std::string_view k = kv.substr(0, eq), v = kv.substr(eq + 1);
+        uint32_t n = uint32_t(std::strtoul(std::string(v).c_str(), nullptr, 10));
+        for (ContextState& s : g_state) {
+            Options& o = s.options;
+            if (k == "ls") o.left.sensitivity = n;
+            else if (k == "rs") o.right.sensitivity = n;
+            else if (k == "ldz") o.left.deadzone = n;
+            else if (k == "rdz") o.right.deadzone = n;
+            else if (k == "lodz") o.left.outer_deadzone = n;
+            else if (k == "rodz") o.right.outer_deadzone = n;
+            else if (k == "ms") o.mouse_sensitivity = n;
+            else if (k == "ml") o.mouse_look = v == "direct" ? MouseLook::Direct : v == "stick" ? MouseLook::Stick : MouseLook::Auto;
+            Clamp(o);
+        }
+    }
+#endif
+}
+
 bool InitDefaults() {
     for (int c = 0; c < kContexts; c++) {
         DefaultBindings(Context(c), Device::Controller);
         DefaultBindings(Context(c), Device::KeyboardMouse);
         g_state[c].options = Defaults(Context(c));
     }
+    HarnessOptions();
     return true;
 }
 [[maybe_unused]] const bool g_defaults = InitDefaults();
@@ -460,16 +496,30 @@ float Inverse(float d) {
     return d < 0 ? -m : m;
 }
 
+// Each input is 0 to 1, as the game can be given it. A stick direction also has a gain, the sensitivity of the stick
+// (or the mouse's speed past full tilt) it came from: v * g is how far it means to turn. What the game is sent of
+// that, and what is left to the hooks that scale its turning (TurnGains), depends on the context (Build).
 struct Inputs {
     float v[kActions] = {};
+    float g[kActions];
+    Inputs() { std::fill(std::begin(g), std::end(g), 1.0f); }
 };
 
-void SetStick(Inputs& in, A up, float x, float y) {
+void SetStick(Inputs& in, A up, float x, float y, float gain = 1) {
     int u = int(up);  // up, down, left, right follow each other
     in.v[u] = std::max(y, 0.0f);
     in.v[u + 1] = std::max(-y, 0.0f);
     in.v[u + 2] = std::max(-x, 0.0f);
     in.v[u + 3] = std::max(x, 0.0f);
+    for (int i = 0; i < 4; i++) in.g[u + i] = gain;
+}
+
+// a stick direction that may mean more than full tilt (the mouse as a stick): full tilt, the rest as its gain; it
+// takes the place of what is there when it goes further
+void PutStick(Inputs& in, A a, float amount) {
+    if (amount <= 0) return;
+    float v = std::min(amount, 1.0f), g = std::max(amount, 1.0f);
+    if (v * g > in.v[int(a)] * in.g[int(a)]) in.v[int(a)] = v, in.g[int(a)] = g;
 }
 
 // the physical controller as it is, sticks unprocessed
@@ -484,7 +534,8 @@ Inputs Physical(const input::Pad& p) {
     return in;
 }
 
-// the round deadzone, keeping the angle, then sensitivity; the outer deadzone is full tilt early
+// the round deadzone, keeping the angle; the outer deadzone is full tilt early. The sensitivity is the stick's
+// gain (Inputs), applied when the pad is built.
 void ProcessStick(int16_t sx, int16_t sy, const StickOptions& o, float& dx, float& dy) {
     float x = Normal(sx), y = Normal(sy);
     float r = std::sqrt(x * x + y * y);
@@ -493,19 +544,29 @@ void ProcessStick(int16_t sx, int16_t sy, const StickOptions& o, float& dx, floa
     dx = dy = 0;
     if (r <= inner || r <= 0) return;
     float m = std::min((r - inner) / span, 1.0f);
-    m = std::min(m * o.sensitivity / 100.0f, 1.0f);
     dx = x / r * m;
     dy = y / r * m;
 }
 
+float Gain(const StickOptions& o) { return o.sensitivity / 100.0f; }
+
 bool IsStick(int i) { return i >= int(A::LSUp); }
 
-// a stick out of its four inputs
-void StickOut(const Inputs& out, A up, float& x, float& y) {
+// a stick out of its four inputs, and the gain of each axis (the direction that is further's)
+void StickOut(const Inputs& out, A up, float& x, float& y, float* gx = nullptr, float* gy = nullptr) {
     int u = int(up);
     y = out.v[u] - out.v[u + 1];
     x = out.v[u + 3] - out.v[u + 2];
+    if (gy) *gy = out.v[u] >= out.v[u + 1] ? out.g[u] : out.g[u + 1];
+    if (gx) *gx = out.v[u + 3] >= out.v[u + 2] ? out.g[u + 3] : out.g[u + 2];
 }
+
+// what the hooks scale the game's own turning by, per console stick axis (TurnGains)
+std::atomic<float> g_turn[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // LX, LY, RX, RY
+void SetTurn(const float (&g)[4]) {
+    for (int i = 0; i < 4; i++) g_turn[i].store(g[i], std::memory_order_relaxed);
+}
+void NoTurn() { SetTurn({1, 1, 1, 1}); }
 
 // keys held together go no further than full tilt, the angle kept: W and D are half way up and right each
 void RoundStick(Inputs& in, A up) {
@@ -515,7 +576,12 @@ void RoundStick(Inputs& in, A up) {
     if (r > 1) SetStick(in, up, x / r, y / r);
 }
 
-input::Pad Build(const Inputs& out, bool compensate, bool connected) {
+// The pad the game gets. A stick axis means v * g (Inputs). On foot the game turns the view in proportion to the
+// stick (0x24130, 0x24260): it is sent up to full tilt and the rest, past it, goes to turn (the hook on 0x24570
+// scales the turn by it). On rails the game only has three rates (0x75620: none under half tilt, slow, fast): the
+// stick goes as it is and turn is the whole gain (the hooks on 0x76C00 and 0x76BE0 scale the rates). Driving steers
+// to where the stick is: sent up to full tilt, as far as the stick means, and turn is 1.
+input::Pad Build(const Inputs& out, bool compensate, bool connected, float (*turn)[4] = nullptr) {
     input::Pad p;
     p.connected = connected;
     constexpr A kBits[8] = {A::DpadUp, A::DpadDown, A::DpadLeft, A::DpadRight, A::Start, A::Back, A::LSClick, A::RSClick};
@@ -529,11 +595,24 @@ input::Pad Build(const Inputs& out, bool compensate, bool connected) {
         if (!compensate) return Raw(d);
         return std::fabs(d) < 1e-4f ? int16_t(0) : Raw(Inverse(d));
     };
-    float x, y;
-    StickOut(out, A::LSUp, x, y);
-    p.lx = enc(x), p.ly = enc(y);
-    StickOut(out, A::RSUp, x, y);
-    p.rx = enc(x), p.ry = enc(y);
+    float a[4], g[4];  // LX, LY, RX, RY
+    StickOut(out, A::LSUp, a[0], a[1], &g[0], &g[1]);
+    StickOut(out, A::RSUp, a[2], a[3], &g[2], &g[3]);
+    float t[4] = {1, 1, 1, 1};
+    if (Ctx() == Context::OnRails) {
+        // the game takes the further of the two sticks on each axis: both turn by that one's gain
+        for (int i = 0; i < 2; i++) t[i] = t[i + 2] = std::fabs(a[i]) >= std::fabs(a[i + 2]) ? g[i] : g[i + 2];
+    } else {
+        for (int i = 0; i < 4; i++) {
+            float m = std::fabs(a[i]) * g[i];
+            if (Ctx() == Context::OnFoot) t[i] = std::max(m, 1.0f);
+            a[i] = std::copysign(std::min(m, 1.0f), a[i]);
+        }
+    }
+    if (turn)
+        for (int i = 0; i < 4; i++) (*turn)[i] = t[i];
+    p.lx = enc(a[0]), p.ly = enc(a[1]);
+    p.rx = enc(a[2]), p.ry = enc(a[3]);
     return p;
 }
 
@@ -541,7 +620,7 @@ Inputs Remap(const Inputs& in, const ContextState& s) {
     Inputs out;
     for (int i = 0; i < kPhysical; i++) {
         A t = s.remap[i];
-        if (t != A::None) out.v[int(t)] = std::max(out.v[int(t)], in.v[i]);
+        if (t != A::None && in.v[i] * in.g[i] > out.v[int(t)] * out.g[int(t)]) out.v[int(t)] = in.v[i], out.g[int(t)] = in.g[i];
     }
     return out;
 }
@@ -559,9 +638,9 @@ Inputs ControllerInputs(int port, const input::Pad& raw, const ContextState& s) 
     if (modern) {
         float x, y;
         ProcessStick(raw.lx, raw.ly, s.options.left, x, y);
-        SetStick(in, A::LSUp, x, y);
+        SetStick(in, A::LSUp, x, y, Gain(s.options.left));
         ProcessStick(raw.rx, raw.ry, s.options.right, x, y);
-        SetStick(in, A::RSUp, x, y);
+        SetStick(in, A::RSUp, x, y, Gain(s.options.right));
     }
     return Remap(in, s);
 }
@@ -613,7 +692,10 @@ void PlayExtras(Inputs& out, const Options& o, bool keyboard) {
     // with what moves forward and back: the two Y axes trade places while aiming
     if (out.v[int(A::LT)] >= kPressed || out.v[int(A::RSClick)] >= kPressed) {
         // the crosshair is on the game's left stick in every setup, the zoom on its right stick's Y
-        for (int i = 0; i < 4; i++) std::swap(out.v[int(A::LSUp) + i], out.v[int(A::RSUp) + i]);
+        for (int i = 0; i < 4; i++) {
+            std::swap(out.v[int(A::LSUp) + i], out.v[int(A::RSUp) + i]);
+            std::swap(out.g[int(A::LSUp) + i], out.g[int(A::RSUp) + i]);
+        }
     }
 }
 
@@ -642,13 +724,14 @@ void MouseStick(const Options& o, int64_t now, Inputs& out) {
     for (const Sample& m : g_samples) sx += m.dx, sy += m.dy;
     float k = 1000.0f / kStickWindowMs * o.mouse_sensitivity / 100.0f / kFullTiltCountsPerSecond;
     float x = sx * k, y = -sy * k * (o.mouse_invert_y ? -1 : 1);
-    // on one stick the two keep their angle; on two sticks each goes to full tilt on its own
+    // past full tilt the rest turns faster (Inputs' gain), up to kMouseStickMax; on one stick the two keep their
+    // angle, on two sticks each goes as far on its own
     bool one = o.mouse_x != MouseAxis::None && o.mouse_y != MouseAxis::None &&
                (int(o.mouse_x) <= 2) == (int(o.mouse_y) <= 2);
     float r = std::sqrt(x * x + y * y);
-    if (one && r > 1) x /= r, y /= r;
-    x = std::clamp(x, -1.0f, 1.0f);
-    y = std::clamp(y, -1.0f, 1.0f);
+    if (one && r > kMouseStickMax) x *= kMouseStickMax / r, y *= kMouseStickMax / r;
+    x = std::clamp(x, -kMouseStickMax, kMouseStickMax);
+    y = std::clamp(y, -kMouseStickMax, kMouseStickMax);
     auto put = [&](MouseAxis axis, float v) {
         A positive, negative;
         switch (axis) {
@@ -658,8 +741,8 @@ void MouseStick(const Options& o, int64_t now, Inputs& out) {
             case MouseAxis::RightY: positive = A::RSUp, negative = A::RSDown; break;
             default: return;
         }
-        out.v[int(positive)] = std::max(out.v[int(positive)], v);
-        out.v[int(negative)] = std::max(out.v[int(negative)], -v);
+        PutStick(out, positive, v);
+        PutStick(out, negative, -v);
     };
     put(o.mouse_x, x);
     put(o.mouse_y, y);
@@ -973,7 +1056,10 @@ bool TakeMouseLook(float& yaw_degrees, float& pitch_degrees) {
 void Pad(int port, input::Pad& pad) {
     std::lock_guard lock(g_lock);
     int64_t now = Now();
+    // first: in driving.xbe the query also tells driving from on rails, whose options this poll then uses
+    GameState st = State();
     const ContextState& s = g_state[int(Ctx())];
+    if (port == 0) NoTurn();  // until play builds the pad
     Inputs phys = Physical(pad);
     if (!pad.connected) phys = Inputs{};
     if (port == 0) ControllerActivity(pad, phys, s.options);
@@ -999,7 +1085,6 @@ void Pad(int port, input::Pad& pad) {
         for (Wheel& w : g_wheels) w = {};
         g_samples.clear();
     }
-    GameState st = State();
     if (port == 0 && st != g_last_state) {
         // from a menu into play or back: what is held now stays away from the game until let go (Escape closing
         // the pause menu must not open it again)
@@ -1041,7 +1126,9 @@ void Pad(int port, input::Pad& pad) {
         // the game skips a cutscene on A alone (its raw A bit): Enter, Space and left click do it too
         if (g_cutscene && g_cutscene() && (KeyHeld(kEnter, now) || KeyHeld(kSpace, now) || KeyHeld(kMouseLeft, now)))
             out.v[int(A::A)] = 1;
-        pad = Build(out, kThisImage, true);
+        float turn[4];
+        pad = Build(out, kThisImage, true, &turn);
+        SetTurn(turn);
         return;
     }
     if (!pad.connected) {
@@ -1050,7 +1137,16 @@ void Pad(int port, input::Pad& pad) {
     }
     Inputs out = ControllerInputs(port, pad, s);
     if (port == 0) PlayExtras(out, s.options, false);
-    pad = Build(out, sticks::g_modern && kThisImage, pad.connected);
+    float turn[4];
+    pad = Build(out, sticks::g_modern && kThisImage, pad.connected, &turn);
+    if (port == 0) SetTurn(turn);
+}
+
+void TurnGains(float& lx, float& ly, float& rx, float& ry) {
+    lx = g_turn[0].load(std::memory_order_relaxed);
+    ly = g_turn[1].load(std::memory_order_relaxed);
+    rx = g_turn[2].load(std::memory_order_relaxed);
+    ry = g_turn[3].load(std::memory_order_relaxed);
 }
 
 // ---- the settings file ----
@@ -1083,6 +1179,11 @@ void Load(const void* table) {
         };
         axis("mouse_x", o.mouse_x);
         axis("mouse_y", o.mouse_y);
+        // layout 6: the defaults of before (on foot the left stick's X, which turned in the game's setup 0 and strafes
+        // in setup 1, kept on since layout 5; driving the right stick, whose Y looks back) give way to today's
+        if (layout < 6 && c == int(Context::OnFoot) && o.mouse_x == MouseAxis::LeftX) o.mouse_x = MouseAxis::RightX;
+        if (layout < 6 && c == int(Context::Driving) && o.mouse_x == MouseAxis::RightX && o.mouse_y == MouseAxis::RightY)
+            o.mouse_x = o.mouse_y = MouseAxis::None;
         auto stick = [&](const char* name, StickOptions& so) {
             std::string n = name;
             so.sensitivity = (*x)[n + "_sensitivity"].value_or(so.sensitivity);

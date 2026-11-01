@@ -72,7 +72,7 @@ enum class MouseLook : uint8_t { Auto, Direct, Stick };
 enum class MouseAxis : uint8_t { None, LeftX, LeftY, RightX, RightY };
 
 struct StickOptions {
-    uint32_t sensitivity = 100;   // percent of the tilt past the deadzone, 50 to 200
+    uint32_t sensitivity = 100;   // percent of the game's turn rate (or steering) at each tilt, 50 to 200
     uint32_t deadzone = 10;       // percent of full tilt, round, 0 to 30
     uint32_t outer_deadzone = 0;  // percent short of full tilt that already counts as full tilt, 0 to 30
 };
@@ -161,6 +161,13 @@ void SetCursorWanted(bool wanted);
 // (0.044 degrees a count at 100%). False with zeros while the keyboard and mouse are not driving the game, the
 // game's input is blocked or this context's mouse look is Stick. Call once a game frame from the camera hook.
 bool TakeMouseLook(float& yaw_degrees, float& pitch_degrees);
+
+// How much faster than the game's own the turning from each console stick axis of port 0's last pad is to be, for
+// the hooks that scale it (src/game/hooks.cpp on foot, src/driving/hooks.cpp on rails): the stick sensitivity (or
+// the mouse as a stick past full tilt) where the game cannot be sent it as a stick value. On foot the part past
+// full tilt (under 100% the stick itself is sent less far); on rails all of it, the game having only three rates
+// (and the further of the two sticks' on each axis, which the game takes). 1 everywhere else and outside play.
+void TurnGains(float& lx, float& ly, float& rx, float& ry);
 
 // GameInfo hooks
 void Pad(int port, input::Pad& pad);  // from GameInfo::pad: in place of sticks::Apply, before menus::Pad
