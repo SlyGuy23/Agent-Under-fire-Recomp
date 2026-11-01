@@ -197,6 +197,7 @@ constexpr MenuKey kMenuKeys[] = {
     {kLeft, A::DpadLeft, 0}, {'A', A::DpadLeft, 0},
     {kRight, A::DpadRight, 0}, {'D', A::DpadRight, 0},
     {kEnter, A::A, 0}, {kSpace, A::A, 0}, {kMouseLeft, A::A, 0},
+    {kEnter, A::Start, 1},  // the title screen waits for START
     {kBackspace, A::B, 0}, {kMouseRight, A::B, 0}, {kEscape, A::B, 1}, {kEscape, A::Start, 2},
     {'X', A::X, 0}, {'Y', A::Y, 0},
     {'Q', A::White, 0}, {'E', A::Black, 0}, {kPageUp, A::LT, 0}, {kPageDown, A::RT, 0}, {kTab, A::Back, 0},

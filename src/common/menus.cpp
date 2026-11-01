@@ -1331,9 +1331,11 @@ bool AddSheetFont(ImGuiIO& io, const MenuFont& mf, const char* name, SheetFont& 
     sf.im = io.Fonts->AddFontDefault(&cfg);  // the rest of its characters, should any be drawn
     for (int gi = 0; gi < mf.count; gi++) {
         const MenuGlyph& g = mf.glyphs[gi];
-        int gw = int(std::lround((g.x1 - g.x0 + 1) * k)), gh = int(std::lround((g.y1 - g.y0 + 1) * k));
+        // a transparent pixel round each letter in the atlas: drawn smaller than the atlas holds it, the filtering
+        // otherwise reached the next letter's edge row or column, a thin line over or beside the letter
+        int gw = int(std::lround((g.x1 - g.x0 + 1) * k)) + 2, gh = int(std::lround((g.y1 - g.y0 + 1) * k)) + 2;
         sf.ids.push_back(io.Fonts->AddCustomRectFontGlyph(sf.im, ImWchar(static_cast<unsigned char>(g.c)), gw, gh,
-                                                          g.advance * k, ImVec2(0, (g.dy + 2) * k)));
+                                                          g.advance * k, ImVec2(-1, (g.dy + 2) * k - 1)));
     }
     sf.space = io.Fonts->AddCustomRectFontGlyph(sf.im, ImWchar(' '), 1, 1, mf.space * k, ImVec2(0, 0));
     return true;
@@ -1428,10 +1430,11 @@ void FillSheetFont(ImGuiIO& io, const SheetFont& sf) {
         for (int y = 0; y < r->Height; y++)
             for (int x = 0; x < r->Width; x++) {
                 uint8_t a = 0;
-                if (g) {
+                bool border = x == 0 || y == 0 || x == r->Width - 1 || y == r->Height - 1;
+                if (g && !border) {
                     // the sheet's pixels under the glyph's rectangle, stretched over the quad as the game does
-                    float tx = g->x0 + float(x) / r->Width * (g->x1 - g->x0);
-                    float ty = g->y0 + float(y) / r->Height * (g->y1 - g->y0);
+                    float tx = g->x0 + float(x - 1) / (r->Width - 2) * (g->x1 - g->x0);
+                    float ty = g->y0 + float(y - 1) / (r->Height - 2) * (g->y1 - g->y0);
                     int ix = std::clamp(int(tx * sf.k), 0, int(sf.w) - 1), iy = std::clamp(int(ty * sf.k), 0, int(sf.h) - 1);
                     int mx = std::clamp(int(tx) - g->x0 + 1, 0, mw - 1), my = std::clamp(int(ty) - g->y0 + 1, 0, g->y1 - g->y0 + 1);
                     if (mask[size_t(my) * mw + mx]) a = sf.px[(size_t(iy) * sf.w + ix) * 4 + 3];
@@ -1506,7 +1509,8 @@ void AddKeyPictures(ImGuiIO& io) {
         std::filesystem::path p = FindFile(k.file);
         if (p.empty() || !LoadPicture(p, k.px, k.w, k.h)) continue;
         k.aspect = float(k.w) / float(k.h);
-        k.id = io.Fonts->AddCustomRectRegular(std::max(1, int(std::lround(kKeyHeight * k.aspect))), kKeyHeight);
+        // a transparent pixel round it, as the letters (FillKeyPictures)
+        k.id = io.Fonts->AddCustomRectRegular(std::max(1, int(std::lround(kKeyHeight * k.aspect))) + 2, kKeyHeight + 2);
     }
 }
 
@@ -1517,11 +1521,18 @@ void FillKeyPictures(ImGuiIO& io) {
     for (KeyPicture& k : g_keys) {
         if (k.id < 0) continue;
         ImFontAtlasCustomRect* r = io.Fonts->GetCustomRectByIndex(k.id);
-        // box filtered down to the rectangle
+        // box filtered down to the rectangle inside its transparent border
+        int iw = r->Width - 2, ih = r->Height - 2;
         for (int y = 0; y < r->Height; y++)
             for (int x = 0; x < r->Width; x++) {
-                int sx0 = int(float(x) * k.w / r->Width), sx1 = std::max(sx0 + 1, int(float(x + 1) * k.w / r->Width));
-                int sy0 = int(float(y) * k.h / r->Height), sy1 = std::max(sy0 + 1, int(float(y + 1) * k.h / r->Height));
+                if (x == 0 || y == 0 || x == r->Width - 1 || y == r->Height - 1) {
+                    unsigned char* d = atlas + (size_t(r->Y + y) * aw + r->X + x) * 4;
+                    d[0] = d[1] = d[2] = d[3] = 0;
+                    continue;
+                }
+                int ix = x - 1, iy = y - 1;
+                int sx0 = int(float(ix) * k.w / iw), sx1 = std::max(sx0 + 1, int(float(ix + 1) * k.w / iw));
+                int sy0 = int(float(iy) * k.h / ih), sy1 = std::max(sy0 + 1, int(float(iy + 1) * k.h / ih));
                 float acc[4] = {}, n = 0;
                 for (int sy = sy0; sy < sy1 && sy < int(k.h); sy++)
                     for (int sx = sx0; sx < sx1 && sx < int(k.w); sx++) {
@@ -1536,6 +1547,8 @@ void FillKeyPictures(ImGuiIO& io) {
                 d[3] = uint8_t(std::clamp(alpha, 0.0f, 255.0f));
             }
         io.Fonts->CalcCustomRectUV(r, &k.uv0, &k.uv1);
+        ImVec2 px((k.uv1.x - k.uv0.x) / r->Width, (k.uv1.y - k.uv0.y) / r->Height);
+        k.uv0.x += px.x, k.uv0.y += px.y, k.uv1.x -= px.x, k.uv1.y -= px.y;
         k.ready = true;
         k.px.clear();
     }
