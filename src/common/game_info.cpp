@@ -20,6 +20,7 @@
 #include "app/app.h"
 #include "common/autosave.h"
 #include "common/controls.h"
+#include "common/fov.h"
 #include "common/game_options.h"
 #include "common/menus.h"
 #include "common/overlay.h"
@@ -442,11 +443,13 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
 void LoadSettings(const void* table) {
     controls::Load(table);
     game_options::Load(table);
+    fov::Load(table);
 }
 
 void SaveSettings(void* table) {
     controls::Save(table);
     game_options::Save(table);
+    fov::Save(table);
 }
 
 }  // namespace

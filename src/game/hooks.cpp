@@ -8,6 +8,7 @@
 // }
 
 #include "common/controls.h"
+#include "common/fov.h"
 #include "cpu/x86_ops.h"
 
 #include <cmath>
@@ -104,4 +105,52 @@ X86_FUNC(sub_00024570) {
     __imp__sub_00024570(ctx, base);
     X86_MEMF32(kYaw) = yaw + (X86_MEMF32(kYaw) - yaw) * (left ? lx : rx);
     X86_MEMF32(kPitch) = pitch + (X86_MEMF32(kPitch) - pitch) * (left ? ly : ry);
+}
+
+// FIELD OF VIEW: 0xB5FB0, the player's end of frame, copies what the player sees into its playerState, the field of
+// view (player+0x4A0: 60 degrees top to bottom, less while a scope or zoom is in use) to ps+0x2E0. Everything after
+// reads it from there: the view's projection and culling (0x15DAA0 into the render camera, 0x357E54 in radians), the
+// HUD's copy with its projection (0x55C20) and the aim. It is widened there, on the tangent, so a zoom keeps its
+// magnification. A cinematic camera (pm_flags 0x100, its field at ps+0x30C) is left as the game frames it.
+X86_EXTERN_FUNC(__imp__sub_000B5FB0);
+X86_FUNC(sub_000B5FB0) {
+    const uint32_t player = ctx.ecx;
+    __imp__sub_000B5FB0(ctx, base);
+    if (fov::g_offset.load(std::memory_order_relaxed) == 0) return;
+    const uint32_t ps = X86_MEM32(player + 0x10);
+    if (!ps || (X86_MEM32(ps + 0x0C) & 0x100)) return;
+    X86_MEMF32(ps + 0x2E0) = fov::Apply(X86_MEMF32(ps + 0x2E0));
+}
+
+// The weapon and hands in view have a projection of their own (0x14B600), at a fraction of the view's field
+// (0x15C920: ps+0x340, 0.55, times ps+0x2E0, in radians): from the game's own field, so they keep their size and shape
+// at any FIELD OF VIEW. 0x644xx, which carries points between the two projections, asks the same function.
+X86_EXTERN_FUNC(__imp__sub_0015C920);
+X86_FUNC(sub_0015C920) {
+    const uint32_t local = X86_MEM32(ctx.esp + 4);
+    __imp__sub_0015C920(ctx, base);
+    const int32_t players = int32_t(X86_MEM32(0x205408));
+    const uint32_t states = X86_MEM32(0x2A88B8);
+    if (fov::g_offset.load(std::memory_order_relaxed) == 0 || players <= 0 || !states) return;
+    const uint32_t ps = states + uint32_t(int32_t(local) % players) * X86_MEM32(0x2A88BC);
+    constexpr double kRad = 3.14159265358979 / 180;
+    X87_ST(0) = double(X86_MEMF32(ps + 0x340)) * double(fov::Unapply(X86_MEMF32(ps + 0x2E0))) * kRad;
+}
+
+// The crosshair (0x51320, the HUD's crosshair element in esi, called each frame from 0x55589) is picked by the state
+// the player's think leaves in ps+0xC4, seen through the HUD's copy ([esi+0x2F0] = HUD player + 0x158): 1 the normal
+// crosshair_auto_aim_on, 0x201 crosshair_auto_aim_on_targeted (a larger cross, whenever the aim trace 0xB2750 meets an
+// enemy, locked on or not), 2 crosshair_manual, 0x107 crosshair_qcamera. With the keyboard and mouse the crosshair keeps
+// its normal size over an enemy: the targeted state is drawn as the normal one. The state itself is left as it was.
+X86_EXTERN_FUNC(__imp__sub_00051320);
+X86_FUNC(sub_00051320) {
+    constexpr uint32_t kTargeted = 0x201, kNormal = 1;
+    const uint32_t state = X86_MEM32(ctx.esi + 0x2F0);
+    if (!state || X86_MEM32(state) != kTargeted || controls::ActiveDevice() != controls::Device::KeyboardMouse) {
+        __imp__sub_00051320(ctx, base);
+        return;
+    }
+    X86_MEM32(state) = kNormal;
+    __imp__sub_00051320(ctx, base);
+    X86_MEM32(state) = kTargeted;
 }

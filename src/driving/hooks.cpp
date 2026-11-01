@@ -4,6 +4,7 @@
 #include <initializer_list>
 
 #include "common/controls.h"
+#include "common/fov.h"
 #include "kernel/kernel.h"
 #include "xdk/d3d8.h"
 #include "xdk/hle.h"
@@ -170,4 +171,20 @@ X86_FUNC(sub_00100690) {
     g_shown[1] = g_shown[0];
     g_shown[0] = {rt.header, rt.data};
     __imp__sub_00100690(ctx, base);
+}
+
+// FIELD OF VIEW: 0x102990 sets a view's projection (thiscall, three arguments, the first the field of view top to
+// bottom in degrees; ret 0xC) through D3DXMatrixPerspectiveFovLH. The mission's camera asks it from
+// 0x84746 each frame with twice the camera's half field [camera+0x60]: widened there as on foot, on the tangent, so a
+// zoom keeps its power. Only while driving ([0x1C2C2C]+0x408 clear): the on-rails gunner's rifle and arms are drawn
+// with the view's own projection, and a wider view stretched them across the screen, so rails keep the game's 66
+// degrees (33 doubled; 40 while aiming). The game's own uses of the field (the aim's rates, the crosshair) are left.
+X86_EXTERN_FUNC(__imp__sub_00102990);
+X86_FUNC(sub_00102990) {
+    constexpr uint32_t kMissionCamera = 0x8474B;  // the return address of the call at 0x84746
+    constexpr uint32_t kMission = 0x1C2C2C;
+    const uint32_t mission = kernel::R32(kMission);
+    if (kernel::R32(ctx.esp) == kMissionCamera && GuestPointer(mission) && !kernel::G<uint8_t>(mission + 0x408))
+        F(ctx.esp + 4) = fov::Apply(F(ctx.esp + 4));
+    __imp__sub_00102990(ctx, base);
 }

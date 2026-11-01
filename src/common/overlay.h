@@ -33,6 +33,7 @@ void Pad(int port, input::Pad& pad);  // GameInfo::pad: the chord, and no input 
 struct SettingRow {
     std::string section, label, value;
     bool enabled;
+    std::string desc;  // a line saying what it does, shown under the row while it is selected (may be empty)
 };
 std::vector<SettingRow> SettingRows();
 void StepSetting(int index, int step);  // index into SettingRows, step -1 or 1

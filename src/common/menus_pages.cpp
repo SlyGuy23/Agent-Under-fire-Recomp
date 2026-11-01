@@ -47,6 +47,7 @@ struct Row {
     std::string label, value;
     bool enabled = true;
     bool heading = false;  // a section's name, not selectable
+    std::string desc;      // a line saying what it does, shown under the row while it is selected
 };
 
 // what the mouse did to the list this frame
@@ -68,9 +69,14 @@ MouseHit DrawList(const PageContext& c, const char* title, const std::vector<Row
     scroll = std::clamp(scroll, 0, std::max(0, int(rows.size()) - kVisibleRows));
     MouseHit hit;
     ImGuiIO& io = ImGui::GetIO();
+    float extra = 0;  // the selected row's description pushes the rows after it down, as on CONTROLLER SETUP
     for (int i = scroll; i < int(rows.size()) && i < scroll + kVisibleRows; i++) {
         const Row& r = rows[size_t(i)];
-        float y = kTopY + kRowStep * float(i - scroll);
+        float y = kTopY + kRowStep * float(i - scroll) + extra;
+        if (i == sel && !r.desc.empty()) {
+            c.say(dl, kLabelX + 8, y + 16, 11, Dim(c.lit), r.desc.c_str(), 0);
+            extra += 13;
+        }
         if (r.heading) {
             c.title(dl, kLabelX - 10, y + 5, 11, Dim(c.lit), r.label.c_str(), 0);
             continue;
@@ -86,8 +92,8 @@ MouseHit DrawList(const PageContext& c, const char* title, const std::vector<Row
         }
     }
     if (scroll > 0) c.title(dl, 320, kTopY - 12, 11, c.unlit, "^", 0.5f);
-    if (scroll + kVisibleRows < int(rows.size())) c.title(dl, 320, kTopY + kRowStep * kVisibleRows - 2, 11, c.unlit, "v", 0.5f);
-    if (hint) c.say(dl, 320, kTopY + kRowStep * kVisibleRows + 6, kTextSize - 4, Dim(c.unlit), hint, 0.5f);
+    if (scroll + kVisibleRows < int(rows.size())) c.title(dl, 320, kTopY + kRowStep * kVisibleRows - 2 + extra, 11, c.unlit, "v", 0.5f);
+    if (hint) c.say(dl, 320, kTopY + kRowStep * kVisibleRows + 6 + extra, kTextSize - 4, Dim(c.unlit), hint, 0.5f);
     hit.wheel = io.MouseWheel;
     return hit;
 }
@@ -122,7 +128,7 @@ bool PcSettingsPage(const PageContext& c, const std::vector<PageNav>& nav) {
             rows.push_back({section, "", true, true});
             index.push_back(-1);
         }
-        rows.push_back({settings[i].label, settings[i].value, settings[i].enabled, false});
+        rows.push_back({settings[i].label, settings[i].value, settings[i].enabled, false, settings[i].desc});
         index.push_back(int(i));
     }
     rows.push_back({"RESET TO DEFAULTS", "", true, false});

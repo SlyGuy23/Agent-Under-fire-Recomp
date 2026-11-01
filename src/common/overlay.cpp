@@ -15,6 +15,7 @@
 #include "app/app.h"
 #include "audio/audio.h"
 #include "common/controls.h"
+#include "common/fov.h"
 #include "common/menus.h"
 #include "core/input.h"
 
@@ -241,6 +242,7 @@ struct Entry {
     std::string (*value)();
     void (*step)(int);  // -1 or 1
     bool (*enabled)();
+    const char* desc = nullptr;  // optional: shown under the row on the PC Settings page while it is selected
 };
 
 std::string Percent(uint32_t v) {
@@ -361,6 +363,14 @@ const Entry kEntries[] = {
          Changed(false);
      },
      [] { return true; }},
+    // degrees added across the screen (the on-foot view's shown in brackets), applied at once on foot and in the
+    // driving and on-rails missions; zooms and scopes keep their magnification (src/common/fov.h)
+    {"GENERAL", "FIELD OF VIEW", [] { return fov::Label(); },
+     [](int st) {
+         fov::Step(st);
+         Changed(false);
+     },
+     [] { return true; }, "How much you see across the screen, in degrees on foot: zooms keep their power"},
     // every upscaled texture in the pack, the characters' too (their folder is no longer a setting of its own)
     {"TEXTURES", "UPSCALED TEXTURE REPLACEMENT", [] { return std::string(OnOff(app::Get().custom_textures)); },
      [](int) {
@@ -407,6 +417,7 @@ void Defaults() {
     if (!g_hd_characters) app::g_pack_folders++;
     g_hd_characters = true;
     g_master_volume = 100;
+    fov::g_offset = 0;
     ApplyVolume();
     Changed(display);
 }
@@ -415,7 +426,7 @@ void Defaults() {
 
 std::vector<SettingRow> SettingRows() {
     std::vector<SettingRow> rows;
-    for (const Entry& e : kEntries) rows.push_back({e.section, e.label, e.value(), e.enabled()});
+    for (const Entry& e : kEntries) rows.push_back({e.section, e.label, e.value(), e.enabled(), e.desc ? e.desc : ""});
     return rows;
 }
 
