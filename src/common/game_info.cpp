@@ -200,14 +200,17 @@ controls::Context PickedMission() {
 
 // On foot, the item in player 0's hands ([[0x329390]+0x278] is the player, +0x2EC what it holds): a gadget (its
 // byte +0x395 set, the flag the game's own fire code reads) and no mounted gun (+0x2F0) is used with B, where FIRE
-// would only put it away
+// would only put it away. The Q-Camera and the Q-Jet are not held: picked, they leave the hands empty (+0x2EC 0)
+// and sit at +0x84C, the gadget B uses first (0xB4C00); FIRE with empty hands brings the weapon back (0xBBA9F)
+// instead, so empty hands with one of those out are B as well.
 controls::Action FireRedirect() {
     if (!kernel::R32(0x2A88B8)) return controls::Action::RT;
     uint32_t players = kernel::R32(0x329390);
     uint32_t player = GuestPointer(players) ? kernel::R32(players + 0x278) : 0;
-    uint32_t held = GuestPointer(player) ? kernel::R32(player + 0x2EC) : 0;
+    if (!GuestPointer(player) || kernel::R32(player + 0x2F0)) return controls::Action::RT;
+    uint32_t held = kernel::R32(player + 0x2EC);
+    if (!held) return GuestPointer(kernel::R32(player + 0x84C)) ? controls::Action::B : controls::Action::RT;
     if (!GuestPointer(held)) return controls::Action::RT;
-    if (!held || kernel::R32(player + 0x2F0)) return controls::Action::RT;
     return kernel::G<uint8_t>(held + 0x395) ? controls::Action::B : controls::Action::RT;
 }
 
