@@ -88,6 +88,67 @@ X86_FUNC(sub_00077A20) {
     __imp__sub_00077A20(ctx, base);
 }
 
+// Manual aim on rails: the shot through the crosshair as drawn. The player's shot (0x4B490, the weapon event of the
+// gunner) fires from the eye (gun+0x40) along gun+0x150, which 0x75850 hands it (called from 0x4BA33 with 1.0). The
+// update builds that direction by turning the forward +0x30 by the crosshair's angles (+0x1B0 about the right +0x10,
+// +0x1B4 about the world's Y) and, apart from it, places the crosshair on the 640x576 screen at 320 + [+0x1A0],
+// 288 + [+0x1A4] with a formula of its own: tan(0.49 yaw) * 320 / tan(fov / 2), tan(0.62 pitch) * 288 / tan(fov / 2).
+// The view (0x102990: horizontal half field +0x60 degrees, the vertical one narrower by 1.212) puts the direction a
+// few pixels nearer the centre than that, most at the box's edges (aiming at fov 20: 1 to 2 pixels across, 5 up or
+// down). The shot itself has no spread (one ray bullet, 0x68FA0) and no assist while aiming (the camera's auto-aim
+// 0x76310 only runs when not aiming, and homing projectiles only lock when not aiming, 0x4BE08), and it fires after
+// the update in the same frame as the crosshair drawn. So while aiming the direction handed to the shot is the ray
+// through the crosshair's pixel with the projection the frame is drawn with. Not aiming the crosshair is the centre
+// and the game's own direction (the forward) is that ray already.
+namespace {
+
+struct RailsView {
+    bool known = false;
+    float kx = 0, ky = 0;  // the projection's x and y scales times tan(half field): constant for a camera
+    float ox = 0, oy = 0;  // its off-centre terms (zero in the game)
+};
+RailsView g_rails_view;
+
+uint32_t RailsCrosshairRay(uint32_t gun) {
+    constexpr uint32_t kMission = 0x1C2C2C;
+    uint32_t m = kernel::R32(kMission);
+    if (!GuestPointer(m) || !kernel::G<uint8_t>(m + 0x408) || !GuestPointer(gun) || !g_rails_view.known) return 0;
+    uint32_t in = kernel::R32(gun + 0x2F8);
+    if (!GuestPointer(in) || !kernel::G<uint8_t>(in + 0x0A)) return 0;  // not aiming: the game's own
+    constexpr float kPi = 3.14159265f;
+    float fov = F(gun + 0x60);
+    if (!(fov > 1 && fov < 89)) return 0;
+    float t = std::tan(fov * kPi / 180);
+    float px = g_rails_view.kx / t, py = g_rails_view.ky / t;  // the projection this frame is drawn with
+    // the crosshair's pixel to normalised device coordinates, then to the view (right handed: x right, y up, the
+    // forward +0x30 at one unit)
+    float nx = F(gun + 0x1A0) / 320, ny = -F(gun + 0x1A4) / 288;
+    float vx = (nx + g_rails_view.ox) / px, vy = (ny + g_rails_view.oy) / py;
+    float d[3], len = 0;
+    for (int i = 0; i < 3; ++i) {
+        d[i] = F(gun + 0x10 + 4 * i) * vx + F(gun + 0x20 + 4 * i) * vy + F(gun + 0x30 + 4 * i);
+        len += d[i] * d[i];
+    }
+    if (!(len > 0)) return 0;
+    len = std::sqrt(len);
+    static uint32_t ray = 0;
+    if (!ray) ray = mem::AllocSystem(16);
+    for (int i = 0; i < 3; ++i) F(ray + 4 * i) = d[i] / len;
+    F(ray + 12) = F(gun + 0x15C);
+    return ray;
+}
+
+}  // namespace
+
+X86_EXTERN_FUNC(__imp__sub_00075850);
+X86_FUNC(sub_00075850) {
+    constexpr uint32_t kPlayerShot = 0x4BA38;  // the return address of the call at 0x4BA33
+    const uint32_t gun = ctx.ecx, ret = kernel::R32(ctx.esp);
+    __imp__sub_00075850(ctx, base);
+    if (ret != kPlayerShot) return;
+    if (uint32_t ray = RailsCrosshairRay(gun)) ctx.eax = ray;
+}
+
 // Stick sensitivity on rails. The gun's action handler (0x7B230) turns the further of the two sticks on each axis into
 // a rate (0x75620: nothing up to half tilt, 0.0015 a frame to three quarters, 0.005 past it) that 0x76C00 stores as the
 // target yaw rate (+0x264) and 0x76BE0 as the pitch one (+0x260); the update eases toward them. With only those steps
@@ -184,7 +245,21 @@ X86_FUNC(sub_00102990) {
     constexpr uint32_t kMissionCamera = 0x8474B;  // the return address of the call at 0x84746
     constexpr uint32_t kMission = 0x1C2C2C;
     const uint32_t mission = kernel::R32(kMission);
-    if (kernel::R32(ctx.esp) == kMissionCamera && GuestPointer(mission) && !kernel::G<uint8_t>(mission + 0x408))
-        F(ctx.esp + 4) = fov::Apply(F(ctx.esp + 4));
+    const bool camera = kernel::R32(ctx.esp) == kMissionCamera && GuestPointer(mission);
+    const bool rails = camera && kernel::G<uint8_t>(mission + 0x408);
+    const uint32_t view = ctx.ecx;
+    const float field = F(ctx.esp + 4);  // twice the camera's [+0x60]
+    if (camera && !rails) F(ctx.esp + 4) = fov::Apply(field);
     __imp__sub_00102990(ctx, base);
+    if (rails && field > 1 && field < 179) {
+        // the projection made (view+0x40, right handed): what the shot through the crosshair needs of it, per unit
+        // of the gun's field so that it fits the gun's [+0x60] at the shot (the view model's pass halves the field)
+        constexpr float kPi = 3.14159265f;
+        float t = std::tan(field * 0.5f * kPi / 180);
+        g_rails_view.kx = F(view + 0x40) * t;
+        g_rails_view.ky = F(view + 0x54) * t;
+        g_rails_view.ox = F(view + 0x60);
+        g_rails_view.oy = F(view + 0x64);
+        g_rails_view.known = g_rails_view.kx > 0 && g_rails_view.ky > 0;
+    }
 }
