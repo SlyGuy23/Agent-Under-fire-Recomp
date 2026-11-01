@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
@@ -17,7 +18,9 @@
 #endif
 
 #include "app/app.h"
+#include "common/autosave.h"
 #include "common/controls.h"
+#include "common/game_options.h"
 #include "common/menus.h"
 #include "common/overlay.h"
 #include "common/sticks.h"
@@ -35,6 +38,48 @@ namespace {
 
 constexpr const char* kGameExe = "AgentUnderFireGame";
 
+// driving.xbe takes the game's OPTIONS from bond_eng.xbe in its launch data (bond_eng.xbe's 0x420C0, at +0x400 in
+// launch.bin): difficulty +0x9C/+0xA0, music +0xE4 and sound effects +0xE8 (0 to 1), controller setup * 2 + invert
+// pitch +0xEC, vibration +0xF4, HUD always visible +0x10C, no cross hair +0x110. Played again on its own, the kept data
+// gets the remembered ones (src/common/game_options.h).
+void DrivingOptions(const std::filesystem::path& launch) {
+    using namespace game_options;
+    Values v = Get();
+    std::FILE* f = std::fopen(launch.string().c_str(), "r+b");
+    if (!f) return;
+    uint8_t d[0x1000];
+    if (std::fread(d, 1, sizeof(d), f) == sizeof(d)) {
+        auto put = [&](uint32_t at, uint32_t x) { std::memcpy(d + 0x400 + at, &x, 4); };
+        auto putf = [&](uint32_t at, int32_t x) {
+            float y = std::clamp(x, 0, 128) / 128.0f;
+            std::memcpy(d + 0x400 + at, &y, 4);
+        };
+        auto get = [&](uint32_t at) {
+            uint32_t x;
+            std::memcpy(&x, d + 0x400 + at, 4);
+            return x;
+        };
+        if (v.have[kDifficulty]) {
+            static const uint32_t kLevels[3][2] = {{0, 5}, {1, 3}, {2, 2}};
+            int i = std::clamp(v.value[kDifficulty], 0, 2);
+            put(0x9C, kLevels[i][0]);
+            put(0xA0, kLevels[i][1]);
+        }
+        if (v.have[kMusic]) putf(0xE4, v.value[kMusic]);
+        if (v.have[kSoundEffects]) putf(0xE8, v.value[kSoundEffects]);
+        uint32_t setup = get(0xEC);
+        if (v.have[kControllerSetup]) setup = uint32_t(std::clamp(v.value[kControllerSetup], 0, 3)) * 2 | (setup & 1);
+        if (v.have[kInvertPitch]) setup = (setup & ~1u) | (v.value[kInvertPitch] ? 1 : 0);
+        put(0xEC, setup);
+        if (v.have[kVibration]) put(0xF4, v.value[kVibration] ? 1 : 0);
+        if (v.have[kHudAlwaysVisible]) put(0x10C, v.value[kHudAlwaysVisible] ? 1 : 0);
+        if (v.have[kCrossHair]) put(0x110, v.value[kCrossHair] ? 0 : 1);
+        std::fseek(f, 0, SEEK_SET);
+        std::fwrite(d, 1, sizeof(d), f);
+    }
+    std::fclose(f);
+}
+
 // A driving mission is a separate executable the game relaunches into, with the mission in its launch data
 // (hdd\launch.bin, read once at boot). That data is kept as hdd\driving_launch.bin, so starting
 // AgentUnderFireDriving.exe on its own plays the last driving mission again without the on-foot mission before it.
@@ -47,6 +92,7 @@ void KeepDrivingLaunch(bool relaunched) {
         LOGR("Driving: mission launch data kept for a direct restart%s", ec ? " (not written)" : "");
     } else if (!fs::exists(launch, ec) && fs::exists(kept, ec)) {
         fs::copy_file(kept, launch, fs::copy_options::overwrite_existing, ec);
+        if (!ec) DrivingOptions(launch);
         LOGR("Driving: started on its own, playing the last driving mission again%s", ec ? " (not read)" : "");
     } else if (!fs::exists(kept, ec)) {
         LOGR("Driving: started on its own with no driving mission played yet");
@@ -392,6 +438,17 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     }
 }
 
+// the settings file: the port's controls, and the game's OPTIONS remembered
+void LoadSettings(const void* table) {
+    controls::Load(table);
+    game_options::Load(table);
+}
+
+void SaveSettings(void* table) {
+    controls::Save(table);
+    game_options::Save(table);
+}
+
 }  // namespace
 
 const app::GameInfo app::kGame = {
@@ -408,9 +465,10 @@ const app::GameInfo app::kGame = {
     .options = {{"skip_intros", &overlay::g_skip_intros, nullptr}, {"fps_counter", &overlay::g_fps_counter, nullptr},
                 {"master_volume", nullptr, &overlay::g_master_volume}, {"modern_sticks", &sticks::g_modern, nullptr},
                 {"stick_deadzone", nullptr, &sticks::g_deadzone},
-                {"menus_4x3", &app::g_menus_4x3, nullptr}, {"hd_character_textures", &overlay::g_hd_characters, nullptr}},
-    .load = controls::Load,
-    .save = controls::Save,
+                {"menus_4x3", &app::g_menus_4x3, nullptr}, {"hd_character_textures", &overlay::g_hd_characters, nullptr},
+                {"autosave", &autosave::g_enabled, nullptr}},
+    .load = LoadSettings,
+    .save = SaveSettings,
     .init = Init,
     .loaded = Loaded,
     .window = WindowUp,
