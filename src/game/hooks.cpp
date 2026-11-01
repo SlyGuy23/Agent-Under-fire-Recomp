@@ -162,9 +162,10 @@ X86_FUNC(sub_00051320) {
 // SPGoldenGun) zeroes the weapon's bulletspread (+0x4A0/+0x4A4); every other weapon's handler is empty (0x9A530). The
 // player's shot goes from the eye along the aim angles (player+0x758/+0x75C, which manual aim moves with the crosshair,
 // 0xB7FA0) and is scattered by the spread 0x9DB30 works out (the weapon's base, plus what firing adds, up to its
-// maximum) before 0x83D50 traces it. With the reward on and the player in manual aim (player+0x671), the shot of any
-// weapon is fired with no spread: exactly where the crosshair points. Outside manual aim the game's own aim (auto-aim
-// included) and spread are left as they are; the crosshair's size (0x12E0B7 asks the same function) is untouched.
+// maximum) before 0x83D50 traces it. With the reward on and the player in manual aim (player+0x671), the Golden Gun's
+// shot is fired with no spread at all: exactly where the crosshair points. Other weapons keep their spread, as the
+// reward is the Golden Gun's alone. Outside manual aim the game's own aim (auto-aim included) and spread are left as
+// they are; the crosshair's size (0x12E0B7 asks the same function) is untouched.
 X86_EXTERN_FUNC(__imp__sub_0009DB30);
 X86_FUNC(sub_0009DB30) {
     constexpr uint32_t kFireSite = 0xA36F0;  // the return address of the player's fire (0xA36EB)
@@ -174,6 +175,8 @@ X86_FUNC(sub_0009DB30) {
     const uint32_t game = X86_MEM32(0x328664);  // deathmatch cvar: single player only
     if (game && X86_MEM32(game + 0x20) != 0) return;
     if (X86_MEM32(0x20732C) == 0 || X86_MEM32(0x2A9BBC + 3 * 4) == 0) return;  // Golden Accuracy not on
+    constexpr uint32_t kGoldenGun = 0x1DF778;  // SPGoldenGun's vtable: the reward is the Golden Gun's alone
+    if (X86_MEM32(weapon) != kGoldenGun) return;
     const uint32_t owner = X86_MEM32(weapon + 0x2CC), entities = X86_MEM32(0x329390);
     if (!owner || !entities) return;
     const int32_t players = std::clamp(int32_t(X86_MEM32(0x205408)), 1, 4);
