@@ -182,6 +182,8 @@ bool PcSettingsPage(const PageContext& c, const std::vector<PageNav>& nav) {
 
 #include "app/app.h"
 #include "common/controls.h"
+#include "common/damage_fx.h"
+#include "common/fov.h"
 
 namespace menus {
 
@@ -211,7 +213,7 @@ int TabOf(Context c, Device d) {
 
 enum class RowKind { Action, Option, Reset, Heading, Note };  // Note: small text under the row before it
 enum class Opt { LeftSens, LeftDead, LeftOuter, RightSens, RightDead, RightOuter, MouseSens, MouseInvert, MouseLook,
-                 CrouchToggle, AimToggle, SmartFire, KbmAutoAim };
+                 CrouchToggle, AimToggle, SmartFire, KbmAutoAim, Fov, DamageFx, DamageFlash };
 
 struct CRow {
     RowKind kind;
@@ -321,6 +323,20 @@ std::vector<CRow> Rows(const Tab& t, bool view_only) {
 }
 
 void StepOption(Context c, Opt k, int step) {
+    // the PC Settings ones the pause page offers too: the same settings, saved the same way
+    switch (k) {
+        case Opt::Fov: fov::Step(step); app::Save(); return;
+        case Opt::DamageFx:
+            damage_fx::g_level = uint32_t((int(damage_fx::Current()) + step + int(damage_fx::kLevels)) % int(damage_fx::kLevels));
+            app::Save();
+            return;
+        case Opt::DamageFlash:
+            if (damage_fx::Current() == damage_fx::kOff) return;
+            damage_fx::g_flash_black = !damage_fx::g_flash_black;
+            app::Save();
+            return;
+        default: break;
+    }
     controls::Options o = controls::GetOptions(c);
     auto bump = [&](uint32_t& v, int by, int lo, int hi) { v = uint32_t(std::clamp(int(v) + step * by, lo, hi)); };
     switch (k) {
@@ -713,6 +729,20 @@ std::vector<CRow> PauseOptions(controls::Context context) {
     if (context == Context::OnRails) heading("GENERAL");
     if (context == Context::OnFoot || context == Context::OnRails)
         opt(Opt::KbmAutoAim, "AUTO LOCK-ON (KEYBOARD & MOUSE)", o.kbm_auto_aim ? "ON" : "OFF");
+    // the view and what being hit does, as in PC Settings (the on-rails missions keep the game's view and have no
+    // damage flash, the driving ones only the view)
+    if (context != Context::OnRails) {
+        heading("DISPLAY");
+        opt(Opt::Fov, "FIELD OF VIEW", fov::Label());
+        rows.back().desc = "How much you see across the screen, in degrees on foot: zooms keep their power";
+    }
+    if (context == Context::OnFoot) {
+        opt(Opt::DamageFx, "DAMAGE EFFECTS", damage_fx::Name());
+        rows.back().desc = "The flash and view kick when you are hit: Reduced halves them, Minimal keeps a quarter, Off removes them";
+        opt(Opt::DamageFlash, "DAMAGE FLASH COLOUR", damage_fx::g_flash_black ? "BLACK" : "WHITE");
+        rows.back().desc = damage_fx::Current() == damage_fx::kOff ? "No flash while Damage Effects is Off"
+                                                                   : "The flash when you are hit drawn white, as the game does, or dark";
+    }
     heading("CONTROLLER");
     opt(Opt::LeftSens, "LEFT STICK SENSITIVITY", Pct(o.left.sensitivity));
     opt(Opt::LeftDead, "LEFT STICK DEADZONE", Pct(o.left.deadzone));
