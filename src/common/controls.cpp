@@ -302,6 +302,7 @@ std::atomic<bool> g_blocked{false}, g_cursor_wanted{false};
 GameState (*g_state_query)() = nullptr;
 A (*g_fire_redirect)() = nullptr;
 void (*g_reload_request)() = nullptr;
+bool (*g_mounted_gun)() = nullptr;
 bool g_reload_held = false;
 std::atomic<int> g_drive_mode{int(Context::Driving)};
 // the toggles: the console input as the player holds it last poll, and whether the game gets it held
@@ -653,8 +654,9 @@ void ApplyToggle(Toggle& t, float& v) {
     v = t.on ? 1.0f : 0.0f;
 }
 
-// what play adds on top of the bindings: the toggles on foot, and FIRE keys using a raised gadget
-void PlayExtras(Inputs& out, const Options& o, bool keyboard) {
+// what play adds on top of the bindings: the toggles on foot, and FIRE keys using a raised gadget (mouse_stick: the
+// keyboard and mouse, with the mouse's motion on a stick, MouseStick)
+void PlayExtras(Inputs& out, const Options& o, bool keyboard, bool mouse_stick = false) {
     float reload = out.v[int(A::Reload)];
     out.v[int(A::Reload)] = 0;
     if (Ctx() == Context::OnRails) {
@@ -689,8 +691,13 @@ void PlayExtras(Inputs& out, const Options& o, bool keyboard) {
     else g_aim = {};
     // Manual aim moves the crosshair with the left stick and zooms with the right stick's Y; the player has it the
     // other way round, aiming with what looks (the right stick, as the modern layout turns with it) and zooming
-    // with what moves forward and back: the two Y axes trade places while aiming
-    if (out.v[int(A::LT)] >= kPressed || out.v[int(A::RSClick)] >= kPressed) {
+    // with what moves forward and back: the two Y axes trade places while aiming.
+    // A mounted gun (0x24490) is aimed with the left stick too, the right one doing nothing there: the sticks trade
+    // places on it as well, so it aims with what looks. With the keyboard and mouse only when the mouse moves a
+    // stick: looking straight into the view angles (TakeMouseLook) already aims the gun, which aims with the view.
+    bool aiming = out.v[int(A::LT)] >= kPressed || out.v[int(A::RSClick)] >= kPressed;
+    bool mounted = (!keyboard || mouse_stick) && g_mounted_gun && g_mounted_gun();
+    if (aiming || mounted) {
         // the crosshair is on the game's left stick in every setup, the zoom on its right stick's Y
         for (int i = 0; i < 4; i++) {
             std::swap(out.v[int(A::LSUp) + i], out.v[int(A::RSUp) + i]);
@@ -915,6 +922,11 @@ void SetFireRedirect(Action (*query)()) {
     g_fire_redirect = query;
 }
 
+void SetMountedGunQuery(bool (*query)()) {
+    std::lock_guard lock(g_lock);
+    g_mounted_gun = query;
+}
+
 const char* ActionToken(Action a) { return int(a) < kActions ? kTokens[int(a)] : "NONE"; }
 const char* ActionInputName(Action a) { return int(a) < kActions ? kInputNames[int(a)] : ""; }
 const char* ActionLabel(Context c, Action a) { return int(a) < kActions ? kLabels[std::min(int(c), kContexts - 1)][int(a)] : ""; }
@@ -1122,7 +1134,7 @@ void Pad(int port, input::Pad& pad) {
     }
     if (port == 0 && g_keyboard && g_device == Device::KeyboardMouse) {
         Inputs out = KeyboardInputs(s, now);
-        PlayExtras(out, s.options, true);
+        PlayExtras(out, s.options, true, LookMode(now) == MouseLook::Stick);
         // the game skips a cutscene on A alone (its raw A bit): Enter, Space and left click do it too
         if (g_cutscene && g_cutscene() && (KeyHeld(kEnter, now) || KeyHeld(kSpace, now) || KeyHeld(kMouseLeft, now)))
             out.v[int(A::A)] = 1;

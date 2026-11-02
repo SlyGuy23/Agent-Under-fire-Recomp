@@ -149,6 +149,7 @@ controls::GameState OnFootState();
 bool GuestPointer(uint32_t va) { return (va >= 0x10000 && va < 0x7F00000) || (va >= 0x80000000u && va < 0x84000000u); }
 controls::GameState DrivingState();
 controls::Action FireRedirect();
+bool MountedGun();
 void ReloadRequest();
 bool Cutscene();
 controls::Context PickedMission();
@@ -231,6 +232,7 @@ void Init() {
     if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
         controls::SetGameStateQuery(OnFootState);
         controls::SetFireRedirect(FireRedirect);
+        controls::SetMountedGunQuery(MountedGun);
         controls::SetReloadRequest(ReloadRequest);
         controls::SetCutsceneQuery(Cutscene);
         menus::SetMissionQuery(PickedMission);
@@ -358,6 +360,17 @@ controls::GameState DrivingState() {
     if (m) controls::SetDrivingMode(kernel::G<uint8_t>(m + 0x408) ? controls::Context::OnRails : controls::Context::Driving);
     if (kernel::R32(kMenu) == 3) return controls::GameState::Paused;
     return m && kernel::R32(m + 0x404) == 1 ? controls::GameState::Playing : controls::GameState::Menu;
+}
+
+// On foot, player 0 on a mounted gun (the FixedGun class: Fire & Water's AA gun, the 50 cal guns of Night of the
+// Jackal and Fire & Water, Mediterranean Crisis's AA guns): taking it (0x73690, the only writer) sets the gun at
+// player+0x2F0 and the player's gentity flag 0x100 ([0x2A88A8] + 8 for player 0), and leaving it clears both. The
+// flag is what the game's own stick code tests (0x24490): set, it puts the view angles back and aims the gun with
+// the left stick.
+bool MountedGun() {
+    if (!kernel::R32(0x2A88B8)) return false;
+    uint32_t gent = kernel::R32(0x2A88A8);
+    return GuestPointer(gent) && (kernel::R32(gent + 8) & 0x100) != 0;
 }
 
 // The mission picked in the front end ([0x2A9F98], 0 to 11): Precious Cargo and Forbidden Depths are on-rails

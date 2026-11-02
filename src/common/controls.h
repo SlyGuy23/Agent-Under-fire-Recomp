@@ -96,6 +96,8 @@ void SetDrivingMode(Context c);
 void SetFireRedirect(Action (*query)());
 // on foot: Reload pressed with a weapon in hand (the game's own reload request, game_info.cpp)
 void SetReloadRequest(void (*request)());
+// on foot: true while player 0 is on a mounted gun (game_info.cpp), which the game aims with its left stick
+void SetMountedGunQuery(bool (*query)());
 // on foot, the device in use has Reload bound: A (action) no longer reloads (src/game/hooks.cpp)
 bool SeparateReload();
 
