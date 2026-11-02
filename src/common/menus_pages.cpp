@@ -70,6 +70,14 @@ void Chevron(const PageContext& c, ImDrawList* dl, float x, float y, bool up, Im
     dl->AddPolyline(pts, 3, col, ImDrawFlags_None, kStroke * c.scale());
 }
 
+// a label leading to the page's other section, above or below: its name in the italic title lettering between two
+// chevrons pointing that way (the controls grid and its options)
+void SectionLabel(const PageContext& c, ImDrawList* dl, float y, const char* name, bool up) {
+    c.title(dl, 320, y, 11, Dim(c.unlit), name, 0.5f);
+    float half = c.title_width(11, name) / 2 + 14;
+    Chevron(c, dl, 320 - half, y, up, Dim(c.unlit)), Chevron(c, dl, 320 + half, y, up, Dim(c.unlit));
+}
+
 // a list in the options screen's style: title, rows with values, scrolled to keep sel in view
 MouseHit DrawList(const PageContext& c, const char* title, const std::vector<Row>& rows, int sel, int& scroll,
                   const char* hint, float top = kTopY, float step = kRowStep, float label_x = kLabelX,
@@ -766,7 +774,7 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
         std::string waiting = g_capturing ? (keyboard ? "PRESS A KEY" : "PRESS A BUTTON") : "";
         GridHit hit = DrawGrid(c, dl, actions, 152, g_cell, g_slot, keyboard, waiting, shown);
         float bottom = 152 + 20 + kGridRow * float(std::max(1, (int(actions.size()) + 1) / 2));
-        c.title(dl, 320, bottom + 4, 11, Dim(c.unlit), "v  General & Sticks  v", 0.5f);
+        SectionLabel(c, dl, bottom + 4, "General & Sticks", false);
         if (idle && hit.row >= 0) {
             if (moved) g_cell = hit.row, g_slot = hit.slot;
             if (ImGui::IsMouseClicked(0)) g_cell = hit.row, g_slot = hit.slot, Activate(shown, actions[size_t(hit.row)], 1);
@@ -777,9 +785,7 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
         if (idle && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) g_section = 1;
         if (idle && ImGui::GetIO().MouseWheel < 0) g_section = 1;
     } else {
-        c.title(dl, 320, 146, 11, Dim(c.unlit), "Controls", 0.5f);
-        float half = c.title_width(11, "Controls") / 2 + 14;
-        Chevron(c, dl, 320 - half, 146, true, Dim(c.unlit)), Chevron(c, dl, 320 + half, 146, true, Dim(c.unlit));
+        SectionLabel(c, dl, 146, "Controls", true);
         ImVec2 a = c.guest(220, 144), b = c.guest(420, 160);
         if (idle && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) g_section = 0;
         g_rows_y = 166;
