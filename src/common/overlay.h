@@ -24,13 +24,13 @@ inline bool g_hd_menus = true;
 inline constexpr const wchar_t* kCharacterPack = L"AUF Characters 4x";
 inline constexpr const wchar_t* kWeaponPack = L"AUF Weapons 4x";
 inline constexpr const wchar_t* kMenuPacks[] = {L"AUF Menus and HUD 4x", L"AUF Driving HUD 4x", L"AUF Loading Screens 4x"};
-// a pack folder named "AUF Evil Summit Only 4x" is drawn only in the cutscenes of Evil Summit's last part (mission 12,
-// level alp2_3), and only with the character part on: the Harrier and Bloch's rocket launcher in the closing cutscene.
-// While it is drawn its images replace the same textures of the other folders (the launcher's 4x one in the weapon
-// part); the rest of the time it is left out and those stay as the other folders have them. The mission's first two
-// parts (alp2_1, alp2_2, with the Harrier landing at the start) and every other mission do not use it
+// a pack folder named "AUF Evil Summit Only 4x" is drawn only in Evil Summit's cutscenes (mission 12, levels alp2_1
+// to alp2_3), and only with the character part on: the Harrier landing at the start and leaving at the end, and Bloch's
+// rocket launcher in the closing cutscene. While it is drawn its images replace the same textures of the other folders
+// (the launcher's 4x one in the weapon part); the rest of the time it is left out and those stay as the other folders
+// have them
 inline constexpr const wchar_t* kEvilSummitPack = L"AUF Evil Summit Only 4x";
-inline constexpr const char* kEvilSummitLevel = "alp2_3";
+inline constexpr const char* kEvilSummitLevels[] = {"alp2_1", "alp2_2", "alp2_3"};
 inline bool (*g_level_is)(const char* name) = nullptr;  // the level being played is <name> (set by the game)
 inline bool (*g_in_cutscene)() = nullptr;               // a cutscene is playing (set by the game)
 bool PackFolderOff(const std::wstring& folder);        // app::g_pack_folder_off

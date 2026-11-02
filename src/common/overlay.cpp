@@ -58,8 +58,15 @@ std::string DamageFlashDesc() {
                                     : "The flash when you are hit is white, as the game draws it";
 }
 
-// the cutscenes of Evil Summit's last part, where the pack's "AUF Evil Summit Only 4x" folder is drawn
-bool EvilSummitFinale() { return g_level_is && g_level_is(kEvilSummitLevel) && g_in_cutscene && g_in_cutscene(); }
+// the cutscenes of Evil Summit, where the pack's "AUF Evil Summit Only 4x" folder is drawn
+// (all three parts: the Harrier lands in alp2_1's opening and leaves in alp2_3's closing cutscene; Bloch's launcher
+// model is only in alp2_3)
+bool EvilSummitFinale() {
+    if (!g_level_is || !g_in_cutscene || !g_in_cutscene()) return false;
+    for (const char* level : kEvilSummitLevels)
+        if (g_level_is(level)) return true;
+    return false;
+}
 
 bool PackFolderOverrides(const std::wstring& folder) {
     constexpr std::wstring_view kTail = L"Only 4x";
