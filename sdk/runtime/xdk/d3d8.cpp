@@ -659,6 +659,8 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         }
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
+    // without the render thread the frame is presented here (with it, when the thread gets to it: render_thread.cpp)
+    if (!kRenderThread) app::g_shown_frame.store(app::g_swaps.load(std::memory_order_relaxed));
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
     app::g_swaps.fetch_add(1, std::memory_order_relaxed);
     app::Pace();

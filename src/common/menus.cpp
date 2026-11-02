@@ -129,6 +129,10 @@ bool PausePage() {
     Page p = g_page.load();
     return p == Page::PauseControls || p == Page::PausePcSettings;
 }
+// START or Escape on a pause page: the page stays up (and the pause menu's rows hidden) until the game has shut its
+// pause menu, so the menu is never seen for a frame on the way back to the game. When asked, 0 none.
+std::atomic<int64_t> g_closing_at{0};
+bool Closing() { return g_closing_at.load() != 0; }
 
 bool TextureSize(const gpu::State& s, uint32_t w, uint32_t h) {
     gpu::TextureDesc d;
@@ -347,13 +351,37 @@ std::array<float, 4> g_pause_lit_color{0.83f, 0.93f, 1.0f, 1.0f}, g_pause_unlit_
 
 bool Paused() { return controls::CurrentGameState() == controls::GameState::Paused; }
 
-// a row of the pause menu's MISSION page, -1 when not one
-int PauseRow(const gpu::State& s, const Box& b) {
+// The five rows sat low on the panel, PC Settings against the Lives Remaining / Mission Duration bar: the game's rows,
+// the added ones and the marker all go this far up, the block in the middle of the panel.
+constexpr float kPauseLift = 20;
+
+// a row of the pause menu's MISSION page, -1 when not one; *lifted: already moved up by kPauseLift (a line the game
+// keeps and draws again is moved once only). The two grids are 6 apart, each row is matched to 3.
+int PauseRow(const gpu::State& s, const Box& b, bool* lifted = nullptr) {
     if (!TextureSize(s, 256, 128) || !Near(b.x0, kPauseX, 3)) return -1;
-    float r = (b.y0 - kPauseTop) / kPauseStep;
-    int row = int(std::lround(r));
-    if (row < 0 || row >= kPauseRows || std::fabs(r - row) > 0.25f) return -1;
-    return row;
+    for (int up = 0; up < 2; up++) {
+        float r = (b.y0 - (kPauseTop - (up ? kPauseLift : 0))) / kPauseStep;
+        int row = int(std::lround(r));
+        if (row < 0 || row >= kPauseRows || std::fabs(r - row) * kPauseStep > 3) continue;
+        if (lifted) *lifted = up != 0;
+        return row;
+    }
+    return -1;
+}
+
+// where the >> marker goes (its top): beside the added row selected, else beside the game's row it is at, moved up with
+// the rows. y0: where it is drawn, on the game's grid or already moved; elsewhere (on its way between rows) it only
+// moves up.
+float PauseMarkerTarget(float y0, int extra) {
+    for (int up = 0; up < 2; up++) {
+        float top = kPauseTop - kMarkerAbove - (up ? kPauseLift : 0);
+        float r = (y0 - top) / kPauseStep;
+        int row = int(std::lround(r));
+        if (std::fabs(r - row) * kPauseStep > 3) continue;
+        if (extra >= 0) row = kPauseRows + extra;
+        return kPauseTop - kMarkerAbove - kPauseLift + kPauseStep * float(row);
+    }
+    return y0 - kPauseLift;
 }
 
 // text in the italic lettering (menu_font.h) laid out from a line of the game's in it: its first letter's vertices
@@ -419,26 +447,102 @@ bool SetupTitle(const gpu::State& s, const Box& b, uint32_t count) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// A pause page (Controls, PC Settings) is drawn on the pause menu's own panel: its moving background, frame, bars and
+// prompts stay, its words, rows, marker and running figure go, and the panel is drawn taller (each piece's height
+// stretched between the panel's top and bottom, the small pictures and letters on it moved with it rather than
+// stretched), so the page's rows fit inside it. Console pixels, 640x480.
+
+struct PanelStretch {
+    float s0, s1;  // the panel's top and bottom as the game draws it
+    float d0, d1;  // and while a page is up
+};
+constexpr PanelStretch kFootPanel{97, 353, 55, 425}, kDrivePanel{108, 338, 62, 418};
+// the words that go start above this (tabs, rows, Lives Remaining and Mission Duration, the tops of their letters):
+// the prompts' bar under them stays
+constexpr float kFootWordsEnd = 310, kDriveWordsEnd = 306;
+
+float StretchY(const PanelStretch& p, float y) { return p.d0 + (y - p.s0) * (p.d1 - p.d0) / (p.s1 - p.s0); }
+bool InPanel(const PanelStretch& p, float x0, float y0, float y1) { return x0 > 10 && y0 >= p.s0 - 2 && y1 <= p.s1 + 2; }
+// a piece moved with the panel but kept its size (a letter, a prompt's picture), else stretched
+bool KeepsSize(float w, float h) { return w <= 48 && h <= 24; }
+
+// bond_eng.xbe while a pause page is up: a 2D draw (two triangles a quad, float4 positions under the identity
+// projection, textured or not) of the panel. Its words, the >> marker and the running figure go (true: nothing to
+// draw), the rest is stretched (StretchPanel).
+void StretchPanel(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count);
+bool PausePanelDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
+    static constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    if (prim != kTriangleList || count < 6 || count % 6 || !s.vs || !s.vs->program.empty()) return false;
+    if (std::memcmp(s.transforms[3].data(), kIdentity, sizeof(kIdentity)) != 0) return false;
+    const auto& pos = s.vs->inputs[0];
+    if (pos.stream != 0 || pos.type != kFloat4 || pos.offset + 16 > stride) return false;
+    Layout l;
+    l.pos = pos.offset;
+    Box b = BoxOf(v, stride, l, 0, count);
+    // the running figure (a 128x128 picture right of the rows)
+    if (count == 6 && TextureSize(s, 128, 128) && b.x0 > 450 && b.y0 > 150 && b.y0 < kFootPanel.s1) {
+        Hide(v, stride, l, count);
+        return true;
+    }
+    if (!InPanel(kFootPanel, b.x0, b.y0, b.y1)) return false;
+    bool glyphs = true;  // a line of letters: every quad letter-sized
+    for (uint32_t q = 0; glyphs && q < count; q += 6) {
+        Box g = BoxOf(v, stride, l, q, 6);
+        glyphs = g.x1 - g.x0 < 48 && g.y1 - g.y0 < 48;
+    }
+    // the menu is still up underneath (its Quit Mission row drawn): the pad's handling of it holds
+    if (PauseRow(s, b) == kPauseRows - 1) g_pause_seen.store(Frame() + 1);
+    bool marker = count == 6 && TextureSize(s, 64, 64) && Near(b.x0, kMarkerX, 3);
+    bool words = glyphs && s.textures[0] && TextureSize(s, 256, 128) && b.y0 < kFootWordsEnd;
+    if (marker || words) {
+        Hide(v, stride, l, count);
+        return true;
+    }
+    StretchPanel(v, stride, l, count);
+    return false;
+}
+
+// bond_eng.xbe: a draw of the panel, two triangles a quad. A line of letters the game keeps and draws again from the
+// same memory is stretched once: the first vertex's height written last time is remembered with the memory's place.
+void StretchPanel(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count) {
+    static std::mutex lock;
+    static std::unordered_map<const uint8_t*, float> done;
+    std::lock_guard g(lock);
+    if (auto it = done.find(v); it != done.end() && At(v, stride, 0, l.pos)[1] == it->second) return;
+    for (uint32_t q = 0; q + 6 <= count; q += 6) {
+        Box b = BoxOf(v, stride, l, q, 6);
+        if (KeepsSize(b.x1 - b.x0, b.y1 - b.y0)) {
+            float dy = StretchY(kFootPanel, (b.y0 + b.y1) / 2) - (b.y0 + b.y1) / 2;
+            for (uint32_t i = q; i < q + 6; i++) At(v, stride, i, l.pos)[1] += dy;
+        } else {
+            for (uint32_t i = q; i < q + 6; i++) At(v, stride, i, l.pos)[1] = StretchY(kFootPanel, At(v, stride, i, l.pos)[1]);
+        }
+    }
+    if (done.size() > 4096) done.clear();
+    done[v] = At(v, stride, 0, l.pos)[1];
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // driving.xbe's pause menu (driving and on-rails missions): the same MISSION page, but each letter its own draw of a
 // 256x256 sheet (a triangle fan of 4: float4 positions in stream 0, a colour in stream 1, coordinates in stream 2),
 // in 640x480 space: Continue, Restart and Quit Mission with tops 178, 204 and 230 (shadows, 2 below and right of
 // the letters), bottoms of the letters on the line at 195, 221 and 247; the >> marker a 10x13 quad at x 88 of
-// another 256x256 sheet, at 178 + 25.5 a row. Controls and PC Settings go under Quit Mission, drawn by the pages (Ui)
-// in the italic lettering; the game's own rows and marker are moved and recoloured here.
+// another 256x256 sheet, at 178 + 25.5 a row. Controls and PC Settings go under Quit Mission, drawn by the game's own
+// text routine (src/driving/pause.cpp), which also moves the rows and the marker up and tells this file what the menu
+// shows (DrivingPauseShown, DrivingPauseMarker).
 
-constexpr float kDriveBase = 195, kDriveStep = 26, kDriveMarkerTop = 178, kDriveMarkerStep = 25.5f;
+// driving.xbe's rows and marker go this far up (console pixels), as kPauseLift on foot
+constexpr float kDriveLift = 22;
+// the rows' tops (the letters) once moved up, and the step between them: the mouse's boxes (Ui)
+[[maybe_unused]] constexpr float kDriveRowsTop = 178 - kDriveLift, kDriveStep = 26;
 std::atomic<uint64_t> g_drive_seen{0};
 std::atomic<uint64_t> g_drive_marker_seen{0};  // the >> marker: only the MISSION page has it
 // the MISSION page, not another page whose words happen to fall on its rows' lines (the briefing)
 bool DriveMissionPage() { return Recent(g_drive_seen.load()) && Recent(g_drive_marker_seen.load()); }
 std::atomic<int> g_drive_lit{-1};
-std::atomic<uint32_t> g_drive_lit_color{0xFFFFFFFF}, g_drive_unlit_color{0xFF5A9BE5};
-// the rows' letters shade from their top vertices' colour to their bottom ones' (alpha too): unlit and lit
-std::atomic<uint32_t> g_drive_unlit_top{0xFF5A9BE5}, g_drive_unlit_bottom{0xFF5A9BE5};
-std::atomic<uint32_t> g_drive_lit_top{0xFFFFFFFF}, g_drive_lit_bottom{0xFFFFFFFF};
-std::atomic<float> g_drive_x{109};  // the rows' left edge (the letters, not the shadows)
 
-bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1);
+bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1,
+                float alpha);
 void LabelQuad(float x0, float y0, float x1, float y1);
 uint64_t StageKey(const gpu::State& s);
 
@@ -470,6 +574,33 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
     auto collapse = [&] {
         for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[0] = x0, At(v, stride, i, 0)[1] = y0;
     };
+    // a pause page up: the panel without its words and figure, taller (the rows and the marker are not drawn at all
+    // then, src/driving/pause.cpp)
+    // the running figure (a 128x128 picture right of the rows, reaching under the panel)
+    if (page && (Paused() || Closing()) && TextureSize(s, 128, 128) && x0 > 450 && y0 > 150 && y0 < kDrivePanel.s1) {
+        collapse();
+        return;
+    }
+    if (page && (Paused() || Closing()) && InPanel(kDrivePanel, x0, y0, y1)) {
+        bool word = false;
+        if (KeepsSize(x1 - x0, y1 - y0) && y0 < kDriveWordsEnd && TextureSize(s, 256, 256)) {
+            uint64_t key = StageKey(s);
+            word = key == 0x03fc5f1b2a199c51ull || key == 0x3a69e5569f788462ull || key == 0xf3b5a8f28d4357d7ull;
+        }
+        if (word) {
+            collapse();
+            return;
+        }
+        // the quad's vertices are the game's of this frame (each draw its own buffer): moved once
+        if (KeepsSize(x1 - x0, y1 - y0)) {
+            float dy = StretchY(kDrivePanel, (y0 + y1) / 2) - (y0 + y1) / 2;
+            for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[1] += dy;
+            y0 += dy, y1 += dy;
+        } else {
+            for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[1] = StretchY(kDrivePanel, At(v, stride, i, 0)[1]);
+            y0 = StretchY(kDrivePanel, y0), y1 = StretchY(kDrivePanel, y1);
+        }
+    }
     // a button prompt (coordinates in stream 2)
     if (const uint8_t* tc = StreamOf(s, v, 2); tc && s.streams[2].stride >= 8) {
         float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
@@ -477,7 +608,13 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
             const float* t = reinterpret_cast<const float*>(tc + i * s.streams[2].stride);
             u0 = std::min(u0, t[0]), u1 = std::max(u1, t[0]), v0 = std::min(v0, t[1]), v1 = std::max(v1, t[1]);
         }
-        if (PromptQuad(s, x0, y0, x1, y1, u0, v0, u1, v1)) {
+        float alpha = 1;
+        if (const uint8_t* col = StreamOf(s, v, 1); col && s.streams[1].stride >= 4) {
+            uint32_t c;
+            std::memcpy(&c, col, 4);
+            alpha = float(c >> 24) / 255.0f;
+        }
+        if (PromptQuad(s, x0, y0, x1, y1, u0, v0, u1, v1, alpha)) {
             collapse();
             return;
         }
@@ -530,65 +667,6 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
             if ((c >> 24) >= 0x80 && Channels(c) >= 60) LabelQuad(x0, y0, x1, y1);
         }
     }
-    if (!Paused()) return;
-    // the marker
-    if (Near(x0, 88, 2) && Near(x1 - x0, 10, 1.5f) && Near(y1 - y0, 13, 1.5f)) {
-        g_drive_marker_seen.store(Frame() + 1);
-        if (page) collapse();
-        else if (int extra = g_pause_extra.load(); extra >= 0) {
-            float dy = kDriveMarkerTop + kDriveMarkerStep * float(kPauseRows + extra) - y0;
-            for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[1] += dy;
-        }
-        return;
-    }
-    if (x0 < 95 || x0 > 300) return;
-    float r = (y1 - kDriveBase + 1) / kDriveStep;
-    int row = int(std::lround(r));
-    if (row < 0 || row > 2 || std::fabs(r - row) > 0.3f) return;
-    uint8_t* col = StreamOf(s, v, 1);
-    if (!col) return;
-    uint32_t c;
-    std::memcpy(&c, col, 4);
-    bool shadow = (c >> 24) < 0x80 || Channels(c) < 60;
-    if (!shadow) {
-        if (row == 2) g_drive_seen.store(Frame() + 1);
-        // each vertex's colour, by its height
-        uint32_t top = c, bottom = c;
-        for (uint32_t i = 0; i < 4; i++) {
-            uint32_t ci;
-            std::memcpy(&ci, col + i * s.streams[1].stride, 4);
-            float y = At(v, stride, i, 0)[1];
-            if (y < (y0 + y1) / 2) top = ci;
-            else bottom = ci;
-        }
-        if (Channels(c) > 600) {
-            g_drive_lit.store(row);
-            g_drive_lit_color.store(c);
-            g_drive_lit_top.store(top), g_drive_lit_bottom.store(bottom);
-        } else {
-            g_drive_unlit_color.store(c);
-            g_drive_unlit_top.store(top), g_drive_unlit_bottom.store(bottom);
-        }
-        // the rows' left edge: the leftmost letter of the frame's rows
-        static uint64_t frame = ~0ull;
-        static float left = 1e9f;
-        if (frame != Frame()) {
-            // only from the MISSION page (the marker drawn that frame or this one): the briefing's and objectives'
-            // words on the same lines start further left
-            if (left < 1e8f && g_drive_marker_seen.load() >= frame + 1) g_drive_x.store(left);
-            frame = Frame();
-            left = 1e9f;
-        }
-        left = std::min(left, x0);
-        if (g_pause_extra.load() >= 0 && Channels(c) > 600) {
-            uint32_t ut = g_drive_unlit_top.load(), ub = g_drive_unlit_bottom.load();
-            for (uint32_t i = 0; i < 4; i++) {
-                uint32_t u = At(v, stride, i, 0)[1] < (y0 + y1) / 2 ? ut : ub;
-                std::memcpy(col + i * s.streams[1].stride, &u, 4);
-            }
-        }
-    }
-    if (page) collapse();
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -621,11 +699,22 @@ constexpr PromptPart kPrompts[] = {
 struct PromptRect {
     Prompt prompt;
     float x0, y0, x1, y1;  // console coordinates
+    float alpha = 1;       // the picture's own (a menu fading out)
 };
 std::mutex g_prompt_lock;
-std::vector<PromptRect> g_prompts_building, g_prompts_shown;
-uint64_t g_prompts_frame = ~0ull;
+// the prompts of the last few frames, each with its frame (Frame() while it was drawn): the keys are drawn over the
+// frame being shown with that frame's prompts, none when it had none (a screen gone black, a loading screen)
+struct FramePrompts {
+    uint64_t frame = ~0ull;
+    std::vector<PromptRect> list;
+};
+std::array<FramePrompts, 4> g_prompt_frames;
 std::atomic<uint64_t> g_prompts_seen{0};
+// driving.xbe quitting a mission: the pause screen's last picture stays up while the screen fades to black, its prompts
+// not drawn again (src/driving/hooks.cpp); the prompts it showed are kept and fade with it
+std::vector<PromptRect> g_prompts_held;
+std::atomic<uint64_t> g_hold_seen{0};
+std::atomic<float> g_fade{1};  // what the fade to black leaves (1 none, 0 black)
 
 bool Keyboard() { return controls::ActiveDevice() == controls::Device::KeyboardMouse; }
 
@@ -667,7 +756,8 @@ uint64_t StageKey(const gpu::State& s) {
 }
 
 // a prompt picture drawn: kept for the pages to draw the key over, true when the game's should go
-bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1) {
+bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1,
+                float alpha) {
     if (x1 - x0 > 48 || y1 - y0 > 48 || x1 <= x0 || y1 <= y0) return false;
     uint64_t key = StageKey(s);
     if (!key) return false;
@@ -679,12 +769,9 @@ bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, flo
         if (p.u0 >= 0 && !(Near(tu0, p.u0, 2) && Near(tu1, p.u1, 2) && Near(tv0, p.v0, 2) && Near(tv1, p.v1, 2))) continue;
         std::lock_guard l(g_prompt_lock);
         uint64_t f = Frame();
-        if (f != g_prompts_frame) {
-            g_prompts_shown.swap(g_prompts_building);
-            g_prompts_building.clear();
-            g_prompts_frame = f;
-        }
-        g_prompts_building.push_back({p.prompt, x0, y0, x1, y1});
+        FramePrompts& fp = g_prompt_frames[f % g_prompt_frames.size()];
+        if (fp.frame != f) fp.frame = f, fp.list.clear();
+        if (fp.list.size() < 64) fp.list.push_back({p.prompt, x0, y0, x1, y1, std::clamp(alpha, 0.0f, 1.0f)});
         g_prompts_seen.store(f + 1);
         return Keyboard();
     }
@@ -722,11 +809,25 @@ bool Labelled(const PromptRect& p, float* mid = nullptr) {
     return false;
 }
 
-std::vector<PromptRect> ShownPrompts() {
+// the frame being shown has this seen mark (a frame number plus one, as the draws store them): the overlays that
+// follow the game's own pictures (the keys over the prompts, the controls over the pre-mission Controller Setup) are
+// drawn over the frames that have those pictures and no other
+[[maybe_unused]] bool InShownFrame(uint64_t seen) { return seen && seen == app::g_shown_frame.load() + 1; }
+
+// the prompts of the frame being shown
+[[maybe_unused]] std::vector<PromptRect> ShownPrompts() {
     std::lock_guard l(g_prompt_lock);
-    if (!Recent(g_prompts_seen.load())) return {};
-    // the frame being drawn now has them all once the next one starts; until then the last whole one
-    return g_prompts_shown.empty() ? g_prompts_building : g_prompts_shown;
+    uint64_t shown = app::g_shown_frame.load();
+    const FramePrompts& fp = g_prompt_frames[shown % g_prompt_frames.size()];
+    if (fp.frame == shown && !fp.list.empty()) {
+        g_prompts_held = fp.list;
+        return fp.list;
+    }
+    // quitting a driving mission: the last ones, as the screen fades
+    if (!Recent(g_hold_seen.load())) return {};
+    std::vector<PromptRect> held = g_prompts_held;
+    for (PromptRect& p : held) p.alpha *= g_fade.load();
+    return held;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -842,6 +943,7 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     }
     if (!kMenus) return;
     const auto& s = *static_cast<const gpu::State*>(state);
+    if ((Paused() || Closing()) && PausePage() && PausePanelDraw(s, prim, v, stride, count)) return;
     Layout l = MenuLayout(s, prim, stride, count);
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
@@ -875,7 +977,7 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
         }
 
     // a button prompt: the keyboard's key in its place while the keyboard and mouse play
-    if (count == 6 && PromptQuad(s, b.x0, b.y0, b.x1, b.y1, b.u0, b.v0, b.u1, b.v1)) {
+    if (count == 6 && PromptQuad(s, b.x0, b.y0, b.x1, b.y1, b.u0, b.v0, b.u1, b.v1, ColorOf(v, stride, l)[3])) {
         Hide(v, stride, l, count);
         return;
     }
@@ -940,11 +1042,13 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
             }
             int extra = g_pause_extra.load();
             if (page) Hide(v, stride, l, count);
-            else if (extra >= 0) MoveY(v, stride, l, count, kPauseTop + kPauseStep * float(kPauseRows + extra) - kMarkerAbove - b.y0);
+            else MoveY(v, stride, l, count, PauseMarkerTarget(b.y0, extra) - b.y0);
             return;
         }
-        int row = PauseRow(s, b);
+        bool lifted = false;
+        int row = PauseRow(s, b, &lifted);
         if (row >= 0) {
+            if (!lifted) MoveY(v, stride, l, count, -kPauseLift);
             auto color = ColorOf(v, stride, l);
             if (!IsShadow(color)) {
                 if (row == kPauseRows - 1) g_pause_seen.store(Frame() + 1);
@@ -1078,6 +1182,23 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
 
 bool PageOpen() { return g_page.load() != Page::None; }
 
+void DrivingPauseShown(int lit) {
+    g_drive_seen.store(Frame() + 1);
+    g_drive_lit.store(lit);
+}
+void DrivingPauseMarker() { g_drive_marker_seen.store(Frame() + 1); }
+bool PausePageUp() { return PausePage(); }
+int PauseExtraSelected() { return g_pause_extra.load(); }
+int PauseExtraRows() { return kPauseExtraRows; }
+const char* PauseExtraLabel(int row) { return row >= 0 && row < kPauseExtraRows ? kPauseExtra[row] : ""; }
+float DrivingPauseLift() { return kDriveLift; }
+
+void ScreenFade(float left) { g_fade.store(std::clamp(left, 0.0f, 1.0f)); }
+void HoldPrompts() {
+    if (!Recent(g_hold_seen.load())) g_fade.store(1);
+    g_hold_seen.store(Frame() + 1);
+}
+
 void SetMissionQuery(controls::Context (*query)()) { g_mission_query = query; }
 
 bool TakePauseClose() {
@@ -1088,8 +1209,86 @@ bool TakePauseClose() {
 
 void PadInner(int port, input::Pad& pad, const Held& h);
 
+namespace {
+
+// ---------------------------------------------------------------------------------------------------------------
+// The mouse on the game's own menus (the main menu, the options list, the pause menus' MISSION page): the row under
+// the cursor is selected as the cursor moves, and a click on it accepts it. Ui finds the row (MouseMenus, the rows'
+// boxes known here); the pad then gets D-pad presses toward it, one row a press, and A once there, as a player would
+// press them, so the added rows (QUIT GAME, PC Settings, Controls) work through the same code as the controller's.
+
+enum class MouseMenu { None, Main, Options, Pause };
+std::atomic<int> g_mouse_menu{0};       // a MouseMenu
+std::atomic<int> g_mouse_target{-1};    // the row to go to, -1 none
+std::atomic<bool> g_mouse_accept{false};  // and A there
+std::atomic<bool> g_mouse_strip_a{false};  // the click's own A held back until the row is reached
+std::atomic<int64_t> g_mouse_at{0};
+
+// the menu up and its selected row (the main menu 0 to 5 with QUIT GAME; the options list 0 to 10 with PC Settings
+// third; the pause menu 0 to 4 with Controls and PC Settings), -1 when that menu is not up
+int MouseRowNow(MouseMenu m) {
+    switch (m) {
+        case MouseMenu::Main:
+            if (!Recent(g_main_seen.load()) || g_page.load() != Page::None) return -1;
+            return g_quit_selected.load() ? kMainItems : g_main_selected.load();
+        case MouseMenu::Options: {
+            if (!Recent(g_options_seen.load()) || g_page.load() != Page::None) return -1;
+            int sel = g_options_selected.load();
+            if (g_pc_selected.load()) return kControllerRow + 1;
+            return sel < 0 ? -1 : sel <= kControllerRow ? sel : sel + 1;
+        }
+        case MouseMenu::Pause: {
+            if (!Paused() || g_page.load() != Page::None) return -1;
+            bool up = kDrivingImage ? DriveMissionPage() : Recent(g_pause_seen.load());
+            if (!up) return -1;
+            int extra = g_pause_extra.load();
+            if (extra >= 0) return kPauseRows + extra;
+            return kDrivingImage ? g_drive_lit.load() : g_pause_lit.load();
+        }
+        default: return -1;
+    }
+}
+
+void MouseSteer(input::Pad& pad) {
+    static int phase = 0, accepting = 0;
+    int target = g_mouse_target.load();
+    bool strip = g_mouse_strip_a.load();
+    if (strip) {
+        // held back until the row is reached and accepted, then until the button is let go
+        if (target < 0 && !accepting && pad.analog[0] == 0) g_mouse_strip_a.store(false);
+        pad.analog[0] = 0;
+    }
+    if (accepting) {
+        pad.analog[0] = 0xFF;
+        accepting--;
+        return;
+    }
+    if (target < 0) {
+        phase = 0;
+        return;
+    }
+    int cur = MouseRowNow(MouseMenu(g_mouse_menu.load()));
+    if (cur < 0 || NowMs() - g_mouse_at.load() > 4000) {
+        g_mouse_target.store(-1), g_mouse_accept.store(false);
+        return;
+    }
+    if (cur == target) {
+        g_mouse_target.store(-1);
+        if (g_mouse_accept.exchange(false)) accepting = 3;
+        phase = 0;
+        return;
+    }
+    // a press toward it, held two polls and let go four: the selection the menus' draws report has caught up by the
+    // next one
+    if (phase < 2) pad.buttons |= target > cur ? 2 : 1;
+    phase = (phase + 1) % 6;
+}
+
+}  // namespace
+
 void Pad(int port, input::Pad& pad) {
     if (!(kMenus || kDrivingImage) || port != 0) return;
+    MouseSteer(pad);
     Held h = Read(pad);
     PadInner(port, pad, h);
     // what the game was kept from stays kept from it until let go
@@ -1117,10 +1316,30 @@ void PadInner(int, input::Pad& pad, const Held& h) {
     // (bond_eng.xbe's split screen games, [0x205408] players, have a pause screen a player and keep the game's way.)
     bool esc = g_escape_close.exchange(false);
     bool own = kDrivingImage || kernel::R32(0x205408) == 1;
-    if (Paused() && own) {
-        if (start || esc) {
+    // a pause page asked to close with the pause menu: it goes once the game has shut the menu (or after 1.5 s, should
+    // the game never do so), the game held back meanwhile
+    if (int64_t at = g_closing_at.load()) {
+        // the game draws its pause menu once more in the frame it shuts it: the page stays until that has gone by
+        uint64_t seen = kDrivingImage ? g_drive_seen.load() : g_pause_seen.load();
+        bool drawn = seen && Frame() + 1 - seen <= 1;
+        if ((!Paused() && !drawn) || NowMs() - at > 1500) {
+            g_closing_at.store(0);
             g_page.store(Page::None);
             g_pause_extra.store(-1);
+        } else {
+            // driving.xbe takes START as Continue Mission (src/driving/pause.cpp): held for its first polls, as a
+            // press is, and for as long as it is held
+            input::Pad out = Neutral(pad);
+            if (kDrivingImage && (NowMs() - at < 100 || h.start)) out.buttons |= 0x10;
+            pad = out;
+            return;
+        }
+    }
+    if (Paused() && own) {
+        if (start || esc) {
+            // from a page: it stays up until the menu has shut (no frame of the pause menu on the way out)
+            if (PausePage()) g_closing_at.store(NowMs());
+            else g_page.store(Page::None), g_pause_extra.store(-1);
             input::Pad out = Neutral(pad);
             if (kDrivingImage) out.buttons |= 0x10;
             else g_close_pause_at.store(NowMs());
@@ -1381,6 +1600,7 @@ PageContext Context() {
     c.lit = Rgb(g_lit_color);
     c.unlit = Rgb(g_unlit_color);
     c.value = Rgb(g_unlit_value_color);
+    if (kDrivingImage) c.pause_title_y = 72, c.pause_top = 106, c.pause_bar_y = 386;
     return c;
 }
 
@@ -1823,7 +2043,10 @@ void DrawPrompts() {
             if (w > most) w = most, h = w / key.aspect;
             cx = p.x1 - w / 2 + (p.x1 - p.x0) * 0.08f;
         }
-        dl->AddImage(tex, Guest(cx - w / 2, cy - h / 2), Guest(cx + w / 2, cy + h / 2), key.uv0, key.uv1);
+        int alpha = int(std::clamp(p.alpha, 0.0f, 1.0f) * 255 + 0.5f);
+        if (alpha <= 0) continue;
+        dl->AddImage(tex, Guest(cx - w / 2, cy - h / 2), Guest(cx + w / 2, cy + h / 2), key.uv0, key.uv1,
+                     IM_COL32(255, 255, 255, alpha));
     }
 }
 
@@ -1892,54 +2115,69 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
     return true;
 }
 
-// driving.xbe's pause menu: Controls and PC Settings under Quit Mission, in the italic lettering at the game's size
-// and colours
-void DrivingPauseRows() {
-    if (!DriveMissionPage() || !Paused()) return;
-    // gone the frame the page changes (DriveMissionPage holds a few frames for the pad's sake)
-    if (Frame() + 1 - g_drive_marker_seen.load() > 1 || Frame() + 1 - g_drive_seen.load() > 1) return;
-    ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    // D3DCOLOR (ARGB) to ImGui's ABGR, alpha kept: the rows are see-through
-    auto im = [](uint32_t c) { return IM_COL32((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24); };
-    // the game's unlit rows read greyer than their vertex colour (their shadow and the panel under them): the same
-    // greying here, measured from the game's rows, so the added rows match Restart and Quit Mission
-    auto grey = [](uint32_t c) {
-        float r = float((c >> 16) & 0xFF), g = float((c >> 8) & 0xFF), b = float(c & 0xFF), m = (r + g + b) / 3;
-        auto f = [&](float v) { return uint32_t(std::clamp((v * 0.55f + m * 0.45f) * 0.96f, 0.0f, 255.0f)); };
-        return (c & 0xFF000000u) | f(r) << 16 | f(g) << 8 | f(b);
-    };
-    ImFont* f = g_title_font ? g_title_font : g_font;
-    float px = 18 * GuestScale();
-    int extra = g_pause_extra.load();
-    for (int row = 0; row < kPauseExtraRows; row++) {
-        bool lit = extra == row;
-        const char* text = kPauseExtra[row];
-        ImU32 top = im(lit ? g_drive_lit_top.load() : grey(g_drive_unlit_top.load()));
-        ImU32 bottom = im(lit ? g_drive_lit_bottom.load() : grey(g_drive_unlit_bottom.load()));
-        float x = g_drive_x.load() + 4, y = kDriveBase - 2 + kDriveStep * float(kPauseRows + row) - 18;
-        ImVec2 p = Guest(x, y), sh = Guest(x + 0.6f, y + 0.6f);
-        // the game's shadow as it is now drawn (tucked under the letters, fainter)
-        auto line = [&](ImVec2 at, ImU32 col) {
-            if (f == g_title_font) ItalicLine(f, dl, px, at, col, text);
-            else dl->AddText(f, px, at, col, text);
-        };
-        line(sh, IM_COL32(0, 0, 0, 90));
-        int first = dl->VtxBuffer.Size;
-        line(p, top);
-        // the game's shading, top to bottom over the line
-        for (int i = first; i < dl->VtxBuffer.Size; i++) {
-            ImDrawVert& vx = dl->VtxBuffer[i];
-            float t = std::clamp((vx.pos.y - p.y) / px, 0.0f, 1.0f);
-            ImVec4 a = ImGui::ColorConvertU32ToFloat4(top), b = ImGui::ColorConvertU32ToFloat4(bottom);
-            vx.col = ImGui::ColorConvertFloat4ToU32(ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
-                                                           a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t));
+// the mouse in console coordinates, false off the frame
+bool MouseGuest(float& x, float& y) {
+    ImGuiIO& io = ImGui::GetIO();
+    if (!ImGui::IsMousePosValid()) return false;
+    const float* r = app::g_frame_rect;
+    float rx = r[0], ry = r[1], rw = r[2], rh = r[3];
+    if (rw <= 0 || rh <= 0) rx = ry = 0, rw = io.DisplaySize.x, rh = io.DisplaySize.y;
+    if (rw <= 0 || rh <= 0) return false;
+    x = (io.MousePos.x - rx) * 640 / rw;
+    y = (io.MousePos.y - ry) * 480 / rh;
+    return x >= 0 && y >= 0 && x < 640 && y < 480;
+}
+
+// The mouse on the game's own menus (MouseSteer): the row under the cursor, selected when the cursor moves onto it,
+// accepted when clicked. The rows' boxes in console pixels: the main menu's bars (QUIT GAME sixth), the options list's
+// lines (PC Settings third), the pause menu's MISSION rows (Controls and PC Settings fourth and fifth).
+void MouseMenus() {
+    ImGuiIO& io = ImGui::GetIO();
+    if (!Keyboard() || io.WantCaptureMouse || g_page.load() != Page::None) return;
+    MouseMenu menu = MouseMenu::None;
+    int rows = 0;
+    float x0 = 0, x1 = 0, h = 0;
+    auto top = [&](int r) -> float {
+        switch (menu) {
+            case MouseMenu::Main: return kNewTop + kNewStep * float(r);
+            case MouseMenu::Options:
+                if (r <= kControllerRow) return kRowTop + kRowStep * float(r);
+                return kRowTop + kRowStep * float(r - 1) + kInsert;  // PC Settings, then the rows moved down under it
+            case MouseMenu::Pause:
+                return kDrivingImage ? kDriveRowsTop + kDriveStep * float(r) : kPauseTop - kPauseLift + kPauseStep * float(r);
+            default: return -1000;
         }
+    };
+    if (Paused()) {
+        menu = MouseMenu::Pause, rows = kPauseRows + kPauseExtraRows, x0 = 95, x1 = 430, h = kPauseStep;
+    } else if (kMenus && Recent(g_main_seen.load())) {
+        menu = MouseMenu::Main, rows = kMainItems + 1, x0 = kBarX0, x1 = kBarX1, h = kNewStep - 6;
+    } else if (kMenus && Recent(g_options_seen.load())) {
+        menu = MouseMenu::Options, rows = kOptionRows + 1, x0 = kLabelX - 8, x1 = 600, h = kRowStep;
     }
+    int cur = MouseRowNow(menu);
+    float mx, my;
+    if (cur < 0 || !MouseGuest(mx, my)) return;
+    int hover = -1;
+    for (int r = 0; r < rows; r++) {
+        float y = top(r);
+        if (mx >= x0 && mx <= x1 && my >= y - 3 && my < y - 3 + h) hover = r;
+    }
+    if (hover < 0 || hover == cur) return;
+    bool moved = io.MouseDelta.x != 0 || io.MouseDelta.y != 0;
+    bool click = ImGui::IsMouseClicked(0);
+    if (!moved && !click) return;
+    g_mouse_menu.store(int(menu));
+    g_mouse_at.store(NowMs());
+    g_mouse_target.store(hover);
+    // a click on a row not yet selected: its A waits for the selection to get there (a click on the selected row is
+    // the menus' own A, controls.cpp)
+    if (click) g_mouse_strip_a.store(true), g_mouse_accept.store(true);
 }
 
 // "Press ENTER" where the title screen's "Press START" was, in the same lettering, size and colour
 void PressEnter() {
-    if (!Keyboard() || !Recent(g_press_seen.load()) || !g_font) return;
+    if (!Keyboard() || !InShownFrame(g_press_seen.load()) || !g_font) return;
     PressLine p;
     {
         std::lock_guard lock(g_prompt_lock);
@@ -1963,17 +2201,12 @@ void PressEnter() {
 void Ui() {
     if (kMenus) PressEnter();
     if (kMenus || kDrivingImage) DrawPrompts();
-    if (kDrivingImage) {
-        if (g_page.load() == Page::None) {
-            DrivingPauseRows();
-            return;
-        }
-    } else if (!kMenus) {
-        return;
-    }
+    if (!kMenus && !kDrivingImage) return;
+    MouseMenus();
     Page page = g_page.load();
     if (page == Page::None) {
-        if (Recent(g_setup_seen.load())) {
+        // exactly on the frames the game draws its Controller Setup: not on the black screen after it
+        if (kMenus && InShownFrame(g_setup_seen.load())) {
             controls::Context c = g_mission_query ? g_mission_query() : controls::Context::OnFoot;
             ControlsList(Context(), c, 130, 14);
         }
@@ -1991,9 +2224,8 @@ void Ui() {
     }
     bool opened = g_opened.exchange(false);
     if (page == Page::PauseControls || page == Page::PausePcSettings) {
-        // over the pause menu's panel
-        ImDrawList* dl = ImGui::GetForegroundDrawList();
-        dl->AddRectFilled(Guest(32, 66), Guest(608, 420), IM_COL32(6, 12, 34, 238));
+        // on the pause menu's own panel (its moving background, frame and prompts' bar), whose rows and words are
+        // hidden meanwhile (Draw, DrivingPauseDraw)
         std::vector<PageNav> pn;
         for (Nav n : nav) pn.push_back(PageNav(int(n)));
         bool open = page == Page::PauseControls ? ControlsViewPage(Context(), pn, controls::CurrentContext(), opened)

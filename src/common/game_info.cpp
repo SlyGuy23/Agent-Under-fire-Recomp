@@ -152,6 +152,7 @@ controls::Action FireRedirect();
 bool MountedGun();
 void ReloadRequest();
 bool Cutscene();
+bool DrivingCutscene();
 controls::Context PickedMission();
 
 // default.xbe plays the intro films before the game itself starts: A on a controller, Enter, Space, Escape or a left
@@ -258,7 +259,10 @@ void Init() {
         controls::SetCutsceneQuery(Cutscene);
         menus::SetMissionQuery(PickedMission);
     }
-    if (std::string_view(IMAGE_XBE) == "driving.xbe") controls::SetGameStateQuery(DrivingState);
+    if (std::string_view(IMAGE_XBE) == "driving.xbe") {
+        controls::SetGameStateQuery(DrivingState);
+        controls::SetCutsceneQuery(DrivingCutscene);
+    }
     bool launcher = std::string_view(IMAGE_XBE) == "default.xbe";
 #ifdef _WIN32
     bool relaunched = std::wcsstr(GetCommandLineW(), L"--relaunched") != nullptr;
@@ -455,6 +459,10 @@ void GameRumble(int, uint16_t& left, uint16_t& right) {
 bool Cutscene() {
     return kernel::R32(0x2A88B8) != 0 && kernel::R32(0x3B2428) == 0 && kernel::R32(0x329600) != 0;
 }
+
+// driving.xbe: a film playing (a mission's intro, 0xD3910): its player's handle [0x1E132C] is set from its start until
+// 0xD3870 closes it, and the player skips on the A button of the active port (its analog byte, 0xD3DBF), as on foot
+bool DrivingCutscene() { return kernel::R32(0x1E132C) != 0; }
 
 void GamePad(int port, input::Pad& pad) {
     if (port == 0 && std::string_view(IMAGE_XBE) == "bond_eng.xbe") {

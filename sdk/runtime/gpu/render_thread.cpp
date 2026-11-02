@@ -24,6 +24,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "app/app.h"
 #include "core/diag.h"
 #include "core/log.h"
 #include "gpu/backend.h"
@@ -191,6 +192,7 @@ public:
         auto t = Clock::now();
         Cmd c{Op::Present};
         c.s1 = front;
+        c.a = uint32_t(app::g_swaps.load(std::memory_order_relaxed));  // the frame it ends (app::g_shown_frame)
         c.s1.header = Header(front.header);
         cur_->cmds.push_back(c);
         Use(front.header);
@@ -553,7 +555,10 @@ private:
             case Op::Draw: inner_->Draw(state_, c.a, c.b, c.c, c.d ? data : nullptr); break;
             case Op::Clear: inner_->Clear(state_, c.a, c.size ? data : nullptr, c.b, c.c, c.f, c.d); break;
             case Op::Copy: inner_->Copy(c.s1, c.s2, c.a, c.b, c.c); break;
-            case Op::Present: inner_->Present(c.s1); break;
+            case Op::Present:
+                app::g_shown_frame.store(c.a);
+                inner_->Present(c.s1);
+                break;
             case Op::Sync: inner_->Sync(c.a, 0); break;
             case Op::RecordLate: inner_->RecordLate(c.a); break;
             case Op::Flush: inner_->Flush(); break;

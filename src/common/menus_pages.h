@@ -23,6 +23,9 @@ struct PageContext {
     void (*title)(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align);
     float (*title_width)(float size, const char* text);
     ImU32 lit, unlit, value;  // the list's colours: the selected row, the others, values
+    // the pause pages' places on the pause menu's panel as drawn under them (taller, menus.cpp PanelStretch): the
+    // title's line (in the tabs' bar), the rows' left edge and first row, and the prompts' bar at the bottom
+    float pause_title_y = 80, pause_x = 116, pause_top = 112, pause_bar_y = 378;
 };
 
 // each returns false once the page closes

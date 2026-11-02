@@ -72,7 +72,9 @@ void Chevron(const PageContext& c, ImDrawList* dl, float x, float y, bool up, Im
 
 // a list in the options screen's style: title, rows with values, scrolled to keep sel in view
 MouseHit DrawList(const PageContext& c, const char* title, const std::vector<Row>& rows, int sel, int& scroll,
-                  const char* hint) {
+                  const char* hint, float top = kTopY, float step = kRowStep, float label_x = kLabelX,
+                  float value_x = kValueX) {
+    const float kTopY = top, kRowStep = step, kLabelX = label_x, kValueX = value_x;  // the list's places on this page
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     (void)title;
     if (sel < scroll) scroll = sel;
@@ -248,9 +250,11 @@ bool PausePcSettingsPage(const PageContext& c, const std::vector<PageNav>& nav, 
             rows[r].desc = "Upscaled Texture Replacement is off: it is turned on in the main menu's PC Settings";
     }
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-    c.title(dl, kLabelX - 30, 80, 15, c.lit, "PC Settings", 0);
-    c.title(dl, 570, 82, 13, Dim(c.lit), kPauseContextNames[std::clamp(int(context), 0, 2)], 1);
-    MouseHit hit = DrawList(c, "PC SETTINGS", rows, g_pause_pc_sel, g_pause_pc_scroll, nullptr);
+    // on the pause menu's panel: the title in its tabs' bar, the rows under it
+    c.title(dl, c.pause_x - 10, c.pause_title_y, 15, c.lit, "PC Settings", 0);
+    c.title(dl, 590, c.pause_title_y + 2, 13, Dim(c.lit), kPauseContextNames[std::clamp(int(context), 0, 2)], 1);
+    MouseHit hit = DrawList(c, "PC SETTINGS", rows, g_pause_pc_sel, g_pause_pc_scroll, nullptr, c.pause_top, 21,
+                            c.pause_x, kValueX + 20);
     ImVec2 m = io.MousePos;
     bool moved = m.x != g_pause_pc_mouse.x || m.y != g_pause_pc_mouse.y;
     g_pause_pc_mouse = m;
@@ -519,6 +523,7 @@ void Activate(const Tab& t, const CRow& r, int step) {
 // the two rows of tabs: the devices, then on foot, driving and on rails; the shown ones lit. Returns a clicked tab,
 // -1 for none. only: one context alone (the pause menu's page)
 float g_tabs_y = kTitleY, g_rows_y = kTitleY + 42;  // where the tabs and the rows start on the page drawn
+float g_rows_x = kLabelX;                            // and the rows' left edge
 constexpr int kControlRows = 11;
 
 int DrawTabs(const PageContext& c, ImDrawList* dl, int tab, bool clickable, int only = -1) {
@@ -549,6 +554,7 @@ int DrawTabs(const PageContext& c, ImDrawList* dl, int tab, bool clickable, int 
 // the rows from kTopY, scrolled to keep sel in view; the hovered row (or -1) through hover
 void DrawRows(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& rows, int sel, int scroll, bool keyboard,
               const std::string& sel_value, int* hover, float value_x) {
+    const float kLabelX = g_rows_x;  // the rows' left edge on this page
     constexpr float kStep = 21;
     float extra = 0;  // the selected row's description pushes the rows after it down
     for (int i = scroll; i < int(rows.size()) && i < scroll + kControlRows; i++) {
@@ -952,30 +958,34 @@ bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, con
     ImVec2 m = io.MousePos;
     bool moved = m.x != g_view_mouse.x || m.y != g_view_mouse.y;
     g_view_mouse = m;
-    c.title(dl, 570, 82, 13, Dim(c.lit), Titled(kContextNames[int(context)]).c_str(), 1);
+    // on the pause menu's panel: the title (or the layout's tabs) in its tabs' bar, the rows under it
+    float ty = c.pause_title_y;
+    c.title(dl, 590, ty + 2, 13, Dim(c.lit), Titled(kContextNames[int(context)]).c_str(), 1);
     if (g_view_mode == 1) {
-        // CONTROLLER LAYOUT: the tabs, the table, and Back to the list
-        float x = kLabelX - 30;
+        // CONTROLLER LAYOUT: the tabs, the table, and Back to the list (in the prompts' bar, left of the game's)
+        float x = c.pause_x - 10;
         for (int i = 0; i < 2; i++) {
             std::string name = Titled(kNames[i]);
-            c.title(dl, x, 80, 15, i == g_view_tab ? c.lit : Dim(c.unlit), name.c_str(), 0);
+            c.title(dl, x, ty, 15, i == g_view_tab ? c.lit : Dim(c.unlit), name.c_str(), 0);
             float w = c.title_width(15, name.c_str());
-            if (ImGui::IsMouseHoveringRect(c.guest(x - 3, 78), c.guest(x + w + 3, 96), false) && ImGui::IsMouseClicked(0)) g_view_tab = i;
+            if (ImGui::IsMouseHoveringRect(c.guest(x - 3, ty - 2), c.guest(x + w + 3, ty + 16), false) && ImGui::IsMouseClicked(0)) g_view_tab = i;
             x += w + 22;
         }
-        DrawTable(c, dl, context, g_view_tab == 0 ? Device::Controller : Device::KeyboardMouse, 112, 14);
-        float bw = c.title_width(13, "Back");
-        bool over = ImGui::IsMouseHoveringRect(c.guest(kLabelX - 33, 394), c.guest(kLabelX - 27 + bw, 412), false);
-        c.title(dl, kLabelX - 30, 396, 13, over ? c.lit : Dim(c.unlit), "Back", 0);
+        DrawTable(c, dl, context, g_view_tab == 0 ? Device::Controller : Device::KeyboardMouse, c.pause_top, 13);
+        float bw = c.title_width(13, "Back"), by = c.pause_bar_y, bx = c.pause_x;
+        bool over = ImGui::IsMouseHoveringRect(c.guest(bx - 3, by - 2), c.guest(bx + 3 + bw, by + 16), false);
+        c.title(dl, bx, by, 13, over ? c.lit : Dim(c.unlit), "Back", 0);
         if ((over && ImGui::IsMouseClicked(0)) || ImGui::IsMouseClicked(1)) g_view_mode = 0;
         return true;
     }
     // the list: left and right (or a click) to change, CONTROLLER LAYOUT accepted (or clicked) to open
-    c.title(dl, kLabelX - 30, 80, 15, c.lit, "Controls", 0);
-    g_rows_y = 116;
+    c.title(dl, c.pause_x - 10, ty, 15, c.lit, "Controls", 0);
+    g_rows_y = c.pause_top;
+    g_rows_x = c.pause_x;
     int hover = -1;
     g_pause_scroll = Clamp(g_pause_scroll, g_pause_sel, int(rows.size()));
-    DrawRows(c, dl, rows, g_pause_sel, g_pause_scroll, false, "", &hover, kValueX + 40);
+    DrawRows(c, dl, rows, g_pause_sel, g_pause_scroll, false, "", &hover, kValueX + 50);
+    g_rows_x = kLabelX;
     if (hover >= 0 && Selectable(rows[size_t(hover)])) {
         if (moved) g_pause_sel = hover;
         const CRow& r = rows[size_t(hover)];

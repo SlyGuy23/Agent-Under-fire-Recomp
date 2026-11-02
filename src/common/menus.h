@@ -43,4 +43,21 @@ void SetMissionQuery(controls::Context (*query)());
 // menu tick to close the pause menu as Continue Mission does (src/game/pause.cpp)
 bool TakePauseClose();
 
+// driving.xbe's pause menu, from its own drawing (src/driving/pause.cpp): the MISSION page's rows drawn this frame and
+// the row the game has lit (-1 while one of its questions is up), and its >> marker drawn
+void DrivingPauseShown(int lit);
+void DrivingPauseMarker();
+// a pause page (Controls, PC Settings) is up, or closing with the pause menu: the menu's rows and marker are not drawn
+bool PausePageUp();
+// the added row selected (an index of the labels), -1 while the game's own selection holds; the added rows' labels
+int PauseExtraSelected();
+int PauseExtraRows();
+const char* PauseExtraLabel(int row);
+// how far driving.xbe's pause rows and marker are moved up, in console pixels (640x480)
+float DrivingPauseLift();
+// driving.xbe quitting a mission: the screen fading to black (left: what still shows, 1 to 0), and the prompts of the
+// pause screen kept over the picture it leaves up meanwhile (src/driving/hooks.cpp)
+void ScreenFade(float left);
+void HoldPrompts();
+
 }  // namespace menus

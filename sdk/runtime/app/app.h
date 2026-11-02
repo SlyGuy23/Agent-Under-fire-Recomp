@@ -65,6 +65,10 @@ inline bool (*g_pack_folder_overrides)(const std::wstring& folder) = nullptr;
 inline std::atomic<uint32_t> g_pack_folders{0};
 // frames the game has swapped (D3DDevice_Swap), for hooks that look at a whole frame's draws
 inline std::atomic<uint64_t> g_swaps{0};
+// the frame being presented, as g_swaps counted while the game drew it (GameInfo::ui runs while it is presented, on
+// the render thread a frame or so behind the game): for overlays that must show exactly on the frames whose draws
+// asked for them
+inline std::atomic<uint64_t> g_shown_frame{0};
 // where the console's frame was last shown in the window, in window pixels: x, y, width, height (set by the renderer)
 inline float g_frame_rect[4] = {0, 0, 0, 0};
 // the size in pixels the renderer last drew the console's frame at, before it was scaled to the window (set by the
