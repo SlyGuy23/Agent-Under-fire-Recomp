@@ -263,6 +263,15 @@ void DumpGuestThreads(const char* why, int seconds) {
 }
 
 void Loaded() {
+    if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
+        // the Loading Mission screen's line, in the image's read-only data (0x1D4F60, 41 bytes with its end): this
+        // is no console
+        constexpr uint32_t kTurnOff = 0x1D4F60;
+        constexpr char kWas[] = "Please don't turn off your Xbox console.";
+        constexpr char kNow[] = "Please don't turn off your system.";
+        char* text = static_cast<char*>(kernel::HostPtr(kTurnOff));
+        if (std::memcmp(text, kWas, sizeof(kWas)) == 0) std::memcpy(text, kNow, sizeof(kNow));
+    }
     if (std::string_view(IMAGE_XBE) != "driving.xbe") return;
     LOGR("Driving: image loaded, starting");
     app::g_smooth_figures = true;  // the pause screen's running figure
