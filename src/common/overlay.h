@@ -21,6 +21,9 @@ inline constexpr const wchar_t* kCharacterPack = L"AUF Characters 4x";
 bool PackFolderOff(const std::wstring& folder);  // app::g_pack_folder_off
 
 inline std::atomic<uint64_t> g_frames{0};  // frames the game presented, counted in Draw
+// default.xbe: the game is being started, the intro films skipped or over. Set once, by whichever starts it: a press
+// that skips the films (game_info.cpp) or the launcher's own start of the game after them (src/launcher/hooks.cpp)
+inline std::atomic<bool> g_intros_done{false};
 
 bool Open();
 void ApplyVolume();  // g_master_volume to the audio output
@@ -33,10 +36,16 @@ void Pad(int port, input::Pad& pad);  // GameInfo::pad: the chord, and no input 
 struct SettingRow {
     std::string section, label, value;
     bool enabled;
-    std::string desc;  // a line saying what it does, shown under the row while it is selected (may be empty)
+    std::string desc;  // a line saying what its current value does, shown under the row while it is selected (may be empty)
 };
 std::vector<SettingRow> SettingRows();
 void StepSetting(int index, int step);  // index into SettingRows, step -1 or 1
 void ResetSettings();                   // the panel's Defaults
+
+// what the current value of a setting does, for the line under its row (PC Settings, the pause menu's OPTIONS):
+// a line for the value chosen, not one listing them all
+std::string FovDesc();
+std::string DamageEffectsDesc();  // damage_fx::g_level
+std::string DamageFlashDesc();    // damage_fx::g_flash_black (and whether there is a flash at all)
 
 }  // namespace overlay

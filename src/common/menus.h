@@ -36,5 +36,8 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
 bool PageOpen();
 // what the mission picked in the front end plays as (its pre-mission Controller Setup lists those controls)
 void SetMissionQuery(controls::Context (*query)());
+// START or Escape pressed on bond_eng.xbe's pause menu (any page, row or question of it): true once, for the game's
+// menu tick to close the pause menu as Continue Mission does (src/game/pause.cpp)
+bool TakePauseClose();
 
 }  // namespace menus

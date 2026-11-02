@@ -145,6 +145,7 @@ std::atomic<uint64_t> g_main_seen{0};
 std::atomic<int> g_main_selected{-1};  // the game's lit bar
 std::atomic<bool> g_quit_selected{false};
 std::atomic<bool> g_escape_close{false};  // ESCAPE on the pause menu's Controls page: the pause menu shuts
+std::atomic<int64_t> g_close_pause_at{0};  // when START or ESCAPE asked bond_eng.xbe's pause menu to shut, 0 none
 std::atomic<int> g_quit_game_row{-1};  // the game's selection under QUIT GAME: Options, or Start Mission when come to by wrapping
 
 // band of a bar quad, -1 when not one
@@ -754,7 +755,8 @@ Held Read(const input::Pad& p) {
     h.down = (p.buttons & 2) || p.ly < -kStick;
     h.left = (p.buttons & 4) || p.lx < -kStick;
     h.right = (p.buttons & 8) || p.lx > kStick;
-    h.a = p.analog[0] > kPressed || (p.buttons & 0x10);  // START accepts too
+    // START accepts too in the front end; on the pause menu it only shuts the menu (PadInner)
+    h.a = p.analog[0] > kPressed || ((p.buttons & 0x10) && !Paused());
     h.b = p.analog[1] > kPressed || (p.buttons & 0x20);  // and BACK goes back
     h.lt = p.analog[6] > kPressed || p.analog[5] > kPressed;
     h.rt = p.analog[7] > kPressed || p.analog[4] > kPressed;
@@ -1042,6 +1044,12 @@ bool PageOpen() { return g_page.load() != Page::None; }
 
 void SetMissionQuery(controls::Context (*query)()) { g_mission_query = query; }
 
+bool TakePauseClose() {
+    int64_t at = g_close_pause_at.exchange(0);
+    // a request the game's menu tick never came for (the menu shut meanwhile) goes stale
+    return at && NowMs() - at < 1000;
+}
+
 void PadInner(int port, input::Pad& pad, const Held& h);
 
 void Pad(int port, input::Pad& pad) {
@@ -1065,9 +1073,26 @@ void PadInner(int, input::Pad& pad, const Held& h) {
     bool start = h.start && !g_edges.last.start;
     g_edges.last = h;
 
-    // START (ESCAPE on the keyboard) only opens and shuts the pause menu: from the Controls page it shuts the lot
+    // START (ESCAPE on the keyboard) only opens and shuts the pause menu: from any page, row or question of it
+    // (the game's own and this port's Controls) it shuts the lot, and it never selects. The game's own pause menus
+    // take START as A: bond_eng.xbe never sees it while paused, the menu shuts as Continue Mission does
+    // (TakePauseClose, src/game/pause.cpp); driving.xbe gets it and turns it into Continue Mission
+    // (src/driving/pause.cpp).
+    // (bond_eng.xbe's split screen games, [0x205408] players, have a pause screen a player and keep the game's way.)
     bool esc = g_escape_close.exchange(false);
-    if (g_page.load() == Page::PauseControls && (start || esc)) {
+    bool own = kDrivingImage || kernel::R32(0x205408) == 1;
+    if (Paused() && own) {
+        if (start || esc) {
+            g_page.store(Page::None);
+            g_pause_selected.store(false);
+            input::Pad out = Neutral(pad);
+            if (kDrivingImage) out.buttons |= 0x10;
+            else g_close_pause_at.store(NowMs());
+            pad = out;
+            return;
+        }
+        if (!kDrivingImage) pad.buttons &= uint16_t(~0x10u);
+    } else if (g_page.load() == Page::PauseControls && (start || esc)) {
         g_page.store(Page::None);
         g_pause_selected.store(false);
         input::Pad out = Neutral(pad);

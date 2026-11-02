@@ -39,6 +39,24 @@ bool Open() { return g_open.load(std::memory_order_relaxed); }
 
 void ApplyVolume() { audio::g_master_volume.store(std::min<uint32_t>(g_master_volume, 100) / 100.0f); }
 
+std::string FovDesc() { return "How much you see across the screen, in degrees on foot: zooms keep their power"; }
+
+std::string DamageEffectsDesc() {
+    constexpr const char* kDescs[damage_fx::kLevels] = {
+        "The game's white flash and view kick when you are hit",
+        "Half the view kick and a dimmer flash when you are hit",
+        "A quarter of the view kick and a faint flash when you are hit",
+        "No flash or view kick when you are hit",
+    };
+    return kDescs[damage_fx::Current()];
+}
+
+std::string DamageFlashDesc() {
+    if (damage_fx::Current() == damage_fx::kOff) return "No flash while Damage Effects is Off";
+    return damage_fx::g_flash_black ? "The flash when you are hit is dark, at the strength Damage Effects sets"
+                                    : "The flash when you are hit is white, as the game draws it";
+}
+
 bool PackFolderOff(const std::wstring& folder) {
     if (g_hd_characters) return false;
     std::wstring want = kCharacterPack;
@@ -243,7 +261,9 @@ struct Entry {
     std::string (*value)();
     void (*step)(int);  // -1 or 1
     bool (*enabled)();
-    const char* desc = nullptr;  // optional: shown under the row on the PC Settings page while it is selected
+    // optional: a line saying what the current value does, shown under the row on the PC Settings page while it is
+    // selected
+    std::string (*desc)() = nullptr;
 };
 
 std::string Percent(uint32_t v) {
@@ -371,7 +391,7 @@ const Entry kEntries[] = {
          fov::Step(st);
          Changed(false);
      },
-     [] { return true; }, "How much you see across the screen, in degrees on foot: zooms keep their power"},
+     [] { return true; }, FovDesc},
     // every upscaled texture in the pack, the characters' too (their folder is no longer a setting of its own)
     {"TEXTURES", "UPSCALED TEXTURE REPLACEMENT", [] { return std::string(OnOff(app::Get().custom_textures)); },
      [](int) {
@@ -402,15 +422,13 @@ const Entry kEntries[] = {
          damage_fx::g_level = uint32_t(Step(int(damage_fx::Current()), st, int(damage_fx::kLevels)));
          Changed(false);
      },
-     [] { return true; },
-     "The flash and view kick when you are hit: Reduced halves them, Minimal keeps a quarter, Off removes them"},
+     [] { return true; }, DamageEffectsDesc},
     {"ACCESSIBILITY", "DAMAGE FLASH COLOUR", [] { return std::string(damage_fx::g_flash_black ? "BLACK" : "WHITE"); },
      [](int) {
          damage_fx::g_flash_black = !damage_fx::g_flash_black;
          Changed(false);
      },
-     [] { return damage_fx::Current() != damage_fx::kOff; },
-     "The flash when you are hit drawn white, as the game does, or dark, at the strength above"},
+     [] { return damage_fx::Current() != damage_fx::kOff; }, DamageFlashDesc},
 };
 
 void Rows() {
@@ -444,7 +462,7 @@ void Defaults() {
 
 std::vector<SettingRow> SettingRows() {
     std::vector<SettingRow> rows;
-    for (const Entry& e : kEntries) rows.push_back({e.section, e.label, e.value(), e.enabled(), e.desc ? e.desc : ""});
+    for (const Entry& e : kEntries) rows.push_back({e.section, e.label, e.value(), e.enabled(), e.desc ? e.desc() : std::string()});
     return rows;
 }
 

@@ -19,6 +19,7 @@
 #endif
 
 #include "app/app.h"
+#include "audio/audio.h"
 #include "common/autosave.h"
 #include "common/controls.h"
 #include "common/damage_fx.h"
@@ -152,28 +153,73 @@ void ReloadRequest();
 bool Cutscene();
 controls::Context PickedMission();
 
-// default.xbe plays the intro films before the game itself starts: A on a controller, Enter or a left click goes
-// straight on to the game, as the Skip Intros setting does. A press already held when the films start does not count,
-// and the keys only while this window has the focus.
+// default.xbe plays the intro films before the game itself starts: A on a controller, Enter, Space, Escape or a left
+// click goes straight on to the game, as the Skip Intros setting does. The press counts as it goes down (a press
+// already held when the films start does not count), the keys only while this window has the focus.
+// Starting the game is a new process, which takes a few seconds to show its first frame while this one keeps its
+// window up: so at the press the film goes at once. The sound is muted, a black window covers this one until the
+// process ends (once the game's window is up), and the film's own loop is told to stop ([0x1F046C], what its input
+// check sets), the films after it are not played and the launcher never starts the game a second time
+// (src/launcher/hooks.cpp).
+#ifdef _WIN32
+void CoverWindowBlack() {
+    HWND game = static_cast<HWND>(app::Window());
+    RECT r{};
+    if (!game || !GetWindowRect(game, &r)) return;
+    HANDLE shown = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::thread([r, shown] {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+        wc.hCursor = nullptr;
+        wc.lpszClassName = L"AgentUnderFireIntroSkip";
+        RegisterClassW(&wc);
+        HWND w = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"", WS_POPUP,
+                                 r.left, r.top, r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+        if (w) {
+            ShowWindow(w, SW_SHOWNOACTIVATE);
+            UpdateWindow(w);
+        }
+        if (shown) SetEvent(shown);
+        MSG m;
+        while (GetMessageW(&m, nullptr, 0, 0) > 0) {
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+    }).detach();
+    if (shown) {
+        WaitForSingleObject(shown, 250);
+        CloseHandle(shown);
+    }
+}
+#endif
+
 void SkipIntrosOnPress() {
 #ifdef _WIN32
     std::thread([] {
         bool armed = false;
         for (;;) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            if (overlay::g_intros_done.load()) return;  // the launcher starts the game itself
             DWORD pid = 0;
             HWND fg = GetForegroundWindow();
             if (fg) GetWindowThreadProcessId(fg, &pid);
             bool focus = pid == GetCurrentProcessId();
             bool held = (input::HeldOnAnyController() & 0x1000) != 0;  // XINPUT_GAMEPAD_A
-            if (focus) held = held || (GetAsyncKeyState(VK_RETURN) & 0x8000) || (GetAsyncKeyState(VK_LBUTTON) & 0x8000);
+            if (focus)
+                for (int key : {VK_RETURN, VK_SPACE, VK_ESCAPE, VK_LBUTTON}) held = held || (GetAsyncKeyState(key) & 0x8000);
             if (!held) {
                 armed = true;
-            } else if (armed) {
-                LOGR("Intros skipped");
-                kernel::Relaunch(kGameExe);
-                return;
+                continue;
             }
+            if (!armed || overlay::g_intros_done.exchange(true)) continue;
+            LOGR("Intros skipped");
+            audio::g_master_volume.store(0);  // this process only: the game's own starts from the setting
+            constexpr uint32_t kFilmStop = 0x1F046C;
+            kernel::W32(kFilmStop, 1);
+            CoverWindowBlack();
+            kernel::Relaunch(kGameExe);
         }
     }).detach();
 #endif

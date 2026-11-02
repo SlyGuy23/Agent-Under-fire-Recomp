@@ -211,7 +211,9 @@ int TabOf(Context c, Device d) {
     return 0;
 }
 
-enum class RowKind { Action, Option, Reset, Heading, Note };  // Note: small text under the row before it
+// Reset: the pause page's whole OPTIONS tab; ResetControls / ResetOptions: a Controller Setup tab's bindings or its
+// options. Note: small text under the row before it
+enum class RowKind { Action, Option, Reset, ResetControls, ResetOptions, Heading, Note };
 enum class Opt { LeftSens, LeftDead, LeftOuter, RightSens, RightDead, RightOuter, MouseSens, MouseInvert, MouseLook,
                  CrouchToggle, AimToggle, SmartFire, KbmAutoAim, Fov, DamageFx, DamageFlash };
 
@@ -235,6 +237,16 @@ int64_t Ms() {
 }
 
 std::string Pct(uint32_t v) { return std::to_string(v) + "%"; }
+
+// what the current value of an option does, for the line under its row
+std::string SmartFireDesc(const controls::Options& o) {
+    return o.smart_fire ? "With a gadget out RT uses it, rather than switching back to your weapon"
+                        : "With a gadget out RT switches back to your weapon, as in the game";
+}
+std::string AutoAimDesc(const controls::Options& o) {
+    return o.kbm_auto_aim ? "The game's aim assist pulls your aim onto enemies, on foot and on rails"
+                          : "No aim assist: your aim stays where the mouse puts it";
+}
 
 // the mouse looks around where no key is bound to looking: on foot turning and looking up and down, on rails aiming
 // driving looks nowhere with the mouse (its motion goes to no stick unless the settings file names one): its mouse
@@ -283,13 +295,13 @@ std::vector<CRow> Rows(const Tab& t, bool view_only) {
         opt(Opt::AimToggle, "MANUAL AIM", o.aim_toggle ? "TOGGLE" : "HOLD");
         if (t.device == Device::Controller && !view_only) {
             opt(Opt::SmartFire, "FIRE USES GADGET", o.smart_fire ? "ON" : "OFF");
-            rows.back().desc = "With a gadget out RT uses it rather than switching back to your weapon";
+            rows.back().desc = SmartFireDesc(o);
         }
     }
     if (t.device == Device::KeyboardMouse && !view_only && (t.context == Context::OnFoot || t.context == Context::OnRails)) {
         if (t.context == Context::OnRails) rows.push_back({RowKind::Heading, Action::None, Opt::LeftSens, "GENERAL", ""});
         opt(Opt::KbmAutoAim, "AUTO LOCK-ON", o.kbm_auto_aim ? "ON" : "OFF");
-        rows.back().desc = "The game's aim assist pulling your aim onto enemies, on foot and on rails";
+        rows.back().desc = AutoAimDesc(o);
     }
     if (view_only) return rows;
     bool mouse = MouseMoves(t.context, o);
@@ -318,7 +330,11 @@ std::vector<CRow> Rows(const Tab& t, bool view_only) {
         const char* looks[] = {"AUTOMATIC", "DIRECT", "AS A STICK"};
         opt(Opt::MouseLook, "MOUSE LOOK", looks[std::min<int>(int(o.mouse_look), 2)]);
     }
-    rows.push_back({RowKind::Reset, Action::None, Opt::LeftSens, "RESET TO DEFAULTS", ""});
+    rows.push_back({RowKind::ResetControls, Action::None, Opt::LeftSens, "RESET CONTROLS TO DEFAULTS", ""});
+    rows.back().desc = t.device == Device::Controller ? "This tab's buttons and sticks back to the defaults"
+                                                      : "This tab's keys and mouse buttons back to the defaults";
+    rows.push_back({RowKind::ResetOptions, Action::None, Opt::LeftSens, "RESET OPTIONS TO DEFAULTS", ""});
+    rows.back().desc = "This tab's options above back to the defaults, its controls kept";
     return rows;
 }
 
@@ -358,8 +374,14 @@ void StepOption(Context c, Opt k, int step) {
     app::Save();
 }
 
-void Reset(const Tab& t) {
+// a Controller Setup tab's bindings: its device in its context
+void ResetControls(const Tab& t) {
     controls::ResetBindings(t.context, t.device);
+    app::Save();
+}
+
+// the options a Controller Setup tab lists: its device's sticks or mouse, and the context's general ones
+void ResetTabOptions(const Tab& t) {
     controls::Options o = controls::GetOptions(t.context), d = controls::DefaultOptions(t.context);
     if (t.device == Device::Controller) {
         o.left = d.left;
@@ -390,7 +412,8 @@ int Next(const std::vector<CRow>& rows, int sel, int d) {
 
 void Activate(const Tab& t, const CRow& r, int step) {
     if (r.kind == RowKind::Option) StepOption(t.context, r.opt, step);
-    else if (r.kind == RowKind::Reset && step > 0) Reset(t);
+    else if (r.kind == RowKind::ResetControls && step > 0) ResetControls(t);
+    else if (r.kind == RowKind::ResetOptions && step > 0) ResetTabOptions(t);
     else if (r.kind == RowKind::Action && step > 0) {
         controls::BeginCapture(t.context, t.device, r.action, t.device == Device::Controller ? 0 : g_slot);
         g_capturing = true;
@@ -725,23 +748,25 @@ std::vector<CRow> PauseOptions(controls::Context context) {
         opt(Opt::CrouchToggle, "CROUCH", o.crouch_toggle ? "TOGGLE" : "HOLD");
         opt(Opt::AimToggle, "MANUAL AIM", o.aim_toggle ? "TOGGLE" : "HOLD");
         opt(Opt::SmartFire, "FIRE USES GADGET (CONTROLLER)", o.smart_fire ? "ON" : "OFF");
+        rows.back().desc = SmartFireDesc(o);
     }
     if (context == Context::OnRails) heading("GENERAL");
-    if (context == Context::OnFoot || context == Context::OnRails)
+    if (context == Context::OnFoot || context == Context::OnRails) {
         opt(Opt::KbmAutoAim, "AUTO LOCK-ON (KEYBOARD & MOUSE)", o.kbm_auto_aim ? "ON" : "OFF");
+        rows.back().desc = AutoAimDesc(o);
+    }
     // the view and what being hit does, as in PC Settings (the on-rails missions keep the game's view and have no
     // damage flash, the driving ones only the view)
     if (context != Context::OnRails) {
         heading("DISPLAY");
         opt(Opt::Fov, "FIELD OF VIEW", fov::Label());
-        rows.back().desc = "How much you see across the screen, in degrees on foot: zooms keep their power";
+        rows.back().desc = overlay::FovDesc();
     }
     if (context == Context::OnFoot) {
         opt(Opt::DamageFx, "DAMAGE EFFECTS", damage_fx::Name());
-        rows.back().desc = "The flash and view kick when you are hit: Reduced halves them, Minimal keeps a quarter, Off removes them";
+        rows.back().desc = overlay::DamageEffectsDesc();
         opt(Opt::DamageFlash, "DAMAGE FLASH COLOUR", damage_fx::g_flash_black ? "BLACK" : "WHITE");
-        rows.back().desc = damage_fx::Current() == damage_fx::kOff ? "No flash while Damage Effects is Off"
-                                                                   : "The flash when you are hit drawn white, as the game does, or dark";
+        rows.back().desc = overlay::DamageFlashDesc();
     }
     heading("CONTROLLER");
     opt(Opt::LeftSens, "LEFT STICK SENSITIVITY", Pct(o.left.sensitivity));
@@ -755,7 +780,36 @@ std::vector<CRow> PauseOptions(controls::Context context) {
         opt(Opt::MouseSens, "MOUSE SENSITIVITY", Pct(o.mouse_sensitivity));
         opt(Opt::MouseInvert, "INVERT MOUSE Y", o.mouse_invert_y ? "ON" : "OFF");
     }
+    rows.push_back({RowKind::Reset, Action::None, Opt::LeftSens, "RESET TO DEFAULTS", ""});
+    rows.back().desc = "Everything on this tab back to the defaults";
     return rows;
+}
+
+// the pause page's RESET TO DEFAULTS: what its OPTIONS tab shows for this context, back to the defaults (the
+// context's general, stick and mouse options; the field of view; the damage effects)
+void ResetPauseOptions(Context context) {
+    controls::Options o = controls::GetOptions(context), d = controls::DefaultOptions(context);
+    o.crouch_toggle = d.crouch_toggle;
+    o.aim_toggle = d.aim_toggle;
+    o.smart_fire = d.smart_fire;
+    o.kbm_auto_aim = d.kbm_auto_aim;
+    o.left = d.left;
+    o.right = d.right;
+    o.mouse_sensitivity = d.mouse_sensitivity;
+    o.mouse_invert_y = d.mouse_invert_y;
+    controls::SetOptions(context, o);
+    if (context != Context::OnRails) fov::g_offset = 0;
+    if (context == Context::OnFoot) {
+        damage_fx::g_level = damage_fx::kDefault;
+        damage_fx::g_flash_black = false;
+    }
+    app::Save();
+}
+
+// a row of the pause page's OPTIONS tab changed (left -1, right or accept 1)
+void ActivatePause(Context context, const CRow& r, int step) {
+    if (r.kind == RowKind::Option) StepOption(context, r.opt, step);
+    else if (r.kind == RowKind::Reset && step > 0) ResetPauseOptions(context);
 }
 
 int g_pause_sel = -1, g_pause_scroll = 0;
@@ -769,7 +823,8 @@ bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, con
     if (opened) g_view_tab = controls::ActiveDevice() == Device::Controller ? 0 : 1, g_pause_sel = -1, g_pause_scroll = 0;
     g_view_tab = std::clamp(g_view_tab, 0, 2);
     std::vector<CRow> rows = PauseOptions(context);
-    if (g_pause_sel < 0 || g_pause_sel >= int(rows.size()) || rows[size_t(g_pause_sel)].kind != RowKind::Option)
+    if (g_pause_sel < 0 || g_pause_sel >= int(rows.size()) ||
+        (rows[size_t(g_pause_sel)].kind != RowKind::Option && rows[size_t(g_pause_sel)].kind != RowKind::Reset))
         g_pause_sel = Next(rows, -1, 1);
     for (PageNav n : nav) {
         switch (n) {
@@ -785,7 +840,7 @@ bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, con
             case PageNav::Left:
             case PageNav::Right:
             case PageNav::Accept:
-                if (g_view_tab == 2) StepOption(context, rows[size_t(g_pause_sel)].opt, n == PageNav::Left ? -1 : 1);
+                if (g_view_tab == 2) ActivatePause(context, rows[size_t(g_pause_sel)], n == PageNav::Left ? -1 : 1);
                 else if (n != PageNav::Accept) g_view_tab = n == PageNav::Left ? (g_view_tab + 2) % 3 : (g_view_tab + 1) % 3;
                 break;
             default: break;
@@ -812,11 +867,11 @@ bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, con
     int hover = -1;
     g_pause_scroll = Clamp(g_pause_scroll, g_pause_sel, int(rows.size()));
     DrawRows(c, dl, rows, g_pause_sel, g_pause_scroll, false, "", &hover, kValueX + 40);
-    if (hover >= 0 && rows[size_t(hover)].kind == RowKind::Option) {
+    if (hover >= 0 && (rows[size_t(hover)].kind == RowKind::Option || rows[size_t(hover)].kind == RowKind::Reset)) {
         ImVec2 m = ImGui::GetIO().MouseDelta;
         if (m.x != 0 || m.y != 0) g_pause_sel = hover;
-        if (ImGui::IsMouseClicked(0)) StepOption(context, rows[size_t(hover)].opt, 1);
-        else if (ImGui::IsMouseClicked(1)) StepOption(context, rows[size_t(hover)].opt, -1);
+        if (ImGui::IsMouseClicked(0)) ActivatePause(context, rows[size_t(hover)], 1);
+        else if (ImGui::IsMouseClicked(1)) ActivatePause(context, rows[size_t(hover)], -1);
     }
     if (ImGui::GetIO().MouseWheel != 0) g_pause_scroll = std::max(0, g_pause_scroll - int(ImGui::GetIO().MouseWheel));
     return true;

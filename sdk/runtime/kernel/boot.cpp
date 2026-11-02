@@ -1,7 +1,10 @@
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <thread>
 
 #include "app/app.h"
 #include "kernel/kernel.h"
@@ -174,6 +177,13 @@ std::wstring HandoverEvent(unsigned long process) {
 }
 
 void Relaunch(const char* exe) {
+    // one relaunch a process: a second caller (another thread asking at the same moment, as default.xbe's own start of
+    // the game racing a press that skips its films) waits here for the process to end, so only one new instance starts
+    static std::atomic<bool> once{false};
+    if (once.exchange(true)) {
+        LOGI("relaunch: already relaunching, %s left out", exe);
+        for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
     logx::Flush();
 #ifdef _WIN32
     wchar_t self[MAX_PATH];
