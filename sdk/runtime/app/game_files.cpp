@@ -127,6 +127,7 @@ bool FindGame(GameFiles& game) {
     }
 
     if (other_name.empty()) {
+        fs::create_directories(ExeDir() / "ROM", ec);  // the folder the message points to
         MessageBoxW(nullptr, kGame.missing, kGame.short_title, MB_ICONERROR);
         return false;
     }
