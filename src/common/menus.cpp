@@ -480,7 +480,8 @@ bool PausePanelDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t str
     l.pos = pos.offset;
     Box b = BoxOf(v, stride, l, 0, count);
     // the running figure (a 128x128 picture right of the rows)
-    if (count == 6 && TextureSize(s, 128, 128) && b.x0 > 450 && b.y0 > 150 && b.y0 < kFootPanel.s1) {
+    // (anywhere right of the rows: it slides and grows in as the menu opens, so the first frames had it elsewhere)
+    if (count == 6 && TextureSize(s, 128, 128) && b.x1 > 380 && b.y1 > 120) {
         Hide(v, stride, l, count);
         return true;
     }
@@ -577,7 +578,7 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
     // a pause page up: the panel without its words and figure, taller (the rows and the marker are not drawn at all
     // then, src/driving/pause.cpp)
     // the running figure (a 128x128 picture right of the rows, reaching under the panel)
-    if (page && (Paused() || Closing()) && TextureSize(s, 128, 128) && x0 > 450 && y0 > 150 && y0 < kDrivePanel.s1) {
+    if (page && (Paused() || Closing()) && TextureSize(s, 128, 128) && x1 > 380 && y1 > 120) {
         collapse();
         return;
     }
