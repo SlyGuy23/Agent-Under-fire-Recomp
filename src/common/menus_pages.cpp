@@ -561,7 +561,7 @@ int DrawTabs(const PageContext& c, ImDrawList* dl, int tab, bool clickable, int 
 
 // the rows from kTopY, scrolled to keep sel in view; the hovered row (or -1) through hover
 void DrawRows(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& rows, int sel, int scroll, bool keyboard,
-              const std::string& sel_value, int* hover, float value_x) {
+              const std::string& sel_value, int* hover, float value_x, bool up_chevron = true) {
     const float kLabelX = g_rows_x;  // the rows' left edge on this page
     constexpr float kStep = 21;
     float extra = 0;  // the selected row's description pushes the rows after it down
@@ -591,7 +591,7 @@ void DrawRows(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& row
         if (hover && ImGui::IsMouseHoveringRect(a, b, false)) *hover = i;
     }
     (void)keyboard;
-    if (scroll > 0) Chevron(c, dl, 320, g_rows_y - 12, true, c.unlit);
+    if (scroll > 0 && up_chevron) Chevron(c, dl, 320, g_rows_y - 12, true, c.unlit);
     if (scroll + kControlRows < int(rows.size())) Chevron(c, dl, 320, g_rows_y + kStep * kControlRows - 2, false, c.unlit);
 }
 
@@ -791,7 +791,8 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
         g_rows_y = 166;
         int hover = -1;
         g_scroll = Clamp(g_scroll, g_opt_sel, int(options.size()));
-        DrawRows(c, dl, options, g_opt_sel, g_scroll, keyboard, "", idle ? &hover : nullptr, kValueX + 20);
+        // (the Controls label above already points up: no scroll chevron of the list's own under it)
+        DrawRows(c, dl, options, g_opt_sel, g_scroll, keyboard, "", idle ? &hover : nullptr, kValueX + 20, false);
         if (hover >= 0 && options[size_t(hover)].kind != RowKind::Heading) {
             if (moved) g_opt_sel = hover;
             const CRow& r = options[size_t(hover)];
