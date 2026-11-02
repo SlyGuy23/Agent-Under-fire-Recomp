@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -157,17 +158,33 @@ Mode CachedOutput() {
     return mode;
 }
 
-float RenderScale(uint32_t guest_height) {
+float RenderScale(uint32_t guest_width, uint32_t guest_height, uint32_t window_width, uint32_t window_height) {
     const Settings& s = Get();
+    if (!guest_width || !guest_height) return 1.0f;
+    // 100% is the window's own pixels where the frame is shown: the largest 16:9 (4:3 on a 4:3 output) rectangle in the
+    // window, as the renderer shows it. One scale serves both axes (the renderer's targets keep the console's shape),
+    // so it is the larger of the two: the console's 640 x 480 shown 16:9 needs 6 host pixels a console pixel across a
+    // 4K screen and 4.5 down it, and at 4.5 the frame had only 2880 pixels across 3840.
+    if (!window_width || !window_height) {
+        Mode m = CachedOutput();
+        window_width = m.width;
+        window_height = m.height;
+    }
+    float aspect = Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
+    float shown_w = std::min(float(window_width), float(window_height) * aspect);
+    float shown_h = shown_w / aspect;
+    float native = std::max(shown_w / float(guest_width), shown_h / float(guest_height));
     // supersampling: twice the pixels is the square root of two more on each axis, four times twice as many
     float ss = 1.0f;
     if (s.anti_aliasing == AntiAliasing::Ssaa2x) ss = 1.41421356f;
     if (s.anti_aliasing == AntiAliasing::Ssaa4x) ss = 2.0f;
-    // at most four times a 4K screen's height: a 4:3 picture stays inside D3D12's 16384 texel limit, and its targets
-    // inside a few GB
-    constexpr float kMaxHeight = 8640.0f;
-    float h = std::min(CachedOutput().height * (s.render_percent / 100.0f) * ss, kMaxHeight);
-    return guest_height ? std::max(h / guest_height, 0.1f) : 1.0f;
+    float scale = native * (std::clamp(s.render_percent, 25u, 400u) / 100.0f) * ss;
+    // inside D3D12's 16384 texel limit, and at most about four times a 4K screen's pixels a target
+    constexpr float kMaxSide = 16384.0f;
+    constexpr float kMaxPixels = 15360.0f * 8640.0f;
+    scale = std::min({scale, kMaxSide / float(guest_width), kMaxSide / float(guest_height),
+                      std::sqrt(kMaxPixels / (float(guest_width) * float(guest_height)))});
+    return std::max(scale, 0.1f);
 }
 
 }  // namespace app

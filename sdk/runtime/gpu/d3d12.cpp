@@ -1071,7 +1071,7 @@ void D3D12Backend::CreateGammaLut() {
 }
 
 void D3D12Backend::LoadSettings() {
-    scale_ = app::RenderScale(guest_h_);
+    scale_ = app::RenderScale(guest_w_, guest_h_, bb_w_, bb_h_);
     aniso_ = app::Get().aniso;
     texturedumper::Update();
     ext_ = g_extension.get();
@@ -3586,9 +3586,11 @@ void D3D12Backend::BlitFrame(Target& t, ID3D12Resource* aa) {
     cl_->RSSetScissorRects(1, &scissor);
     binds_ = {};
     // a frame drawn larger than it is shown (render_percent over 100, supersampling) is averaged over all the texels
-    // each pixel covers, up to 4 x 4 taps: one bilinear tap reads only the four nearest and keeps the jagged edges
+    // each pixel covers, up to 4 x 4 taps: one bilinear tap reads only the four nearest and keeps the jagged edges.
+    // The taps are spread the same on both axes: by the axis shrunk least, so at 100% the axis drawn at the window's
+    // own pixels (across a 16:9 frame, app::RenderScale) is not blurred by taps between its texels
     constexpr uint32_t kMaxTaps = 4;
-    float shrink = std::max(float(t.w) / vw, float(t.h) / vh);
+    float shrink = std::min(float(t.w) / vw, float(t.h) / vh);
     uint32_t taps = std::min(uint32_t(std::ceil(std::max(shrink, 1.0f) - kTapsSlack)), kMaxTaps);
     if (aa) {
         Blit(aa, kBgra, uv, {.gamma = gamma_, .taps = taps});
@@ -3760,7 +3762,7 @@ void D3D12Backend::ApplySettings() {
         smp_used_ = 0;
         aniso_ = aniso;
     }
-    float want = app::RenderScale(guest_h_);
+    float want = app::RenderScale(guest_w_, guest_h_, bb_w_, bb_h_);
     bool remake = ext_ && ext_->Settings();
     if (std::fabs(want - scale_) > 1e-4f || remake) {
         Flush();

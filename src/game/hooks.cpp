@@ -114,14 +114,59 @@ X86_FUNC(sub_00024570) {
 // reads it from there: the view's projection and culling (0x15DAA0 into the render camera, 0x357E54 in radians), the
 // HUD's copy with its projection (0x55C20) and the aim. It is widened there, on the tangent, so a zoom keeps its
 // magnification. A cinematic camera (pm_flags 0x100, its field at ps+0x30C) is left as the game frames it.
+// 0xB5FB0 only runs in frames the game plays: paused (the pause menu's OPTIONS, where FIELD OF VIEW is changed most)
+// the world kept the field it was last widened to while the weapon and hands (0x15C920, asked every drawn frame) took
+// the new setting, so only the hands moved. The game's own field is kept here and the view's is widened again from it
+// each drawn frame, when the camera is set up (0x15DAA0), so the setting shows at once, paused or not.
+namespace {
+struct ViewField {
+    uint32_t ps = 0;
+    float game = 0;      // the game's own field (player+0x4A0 as 0xB5FB0 copied it)
+    uint32_t shown = 0;  // the bits written to ps+0x2E0 from it
+};
+ViewField g_view_fields[4];
+
+ViewField& FieldOf(uint32_t ps) {
+    for (ViewField& f : g_view_fields)
+        if (f.ps == ps) return f;
+    for (ViewField& f : g_view_fields)
+        if (!f.ps) return f;
+    return g_view_fields[ps / 4 % 4];
+}
+
+void WidenField(uint8_t* base, ViewField& f) {
+    const float shown = fov::Apply(f.game);
+    X86_MEMF32(f.ps + 0x2E0) = shown;
+    std::memcpy(&f.shown, &shown, 4);
+}
+}  // namespace
+
 X86_EXTERN_FUNC(__imp__sub_000B5FB0);
 X86_FUNC(sub_000B5FB0) {
     const uint32_t player = ctx.ecx;
     __imp__sub_000B5FB0(ctx, base);
-    if (fov::g_offset.load(std::memory_order_relaxed) == 0) return;
     const uint32_t ps = X86_MEM32(player + 0x10);
     if (!ps || (X86_MEM32(ps + 0x0C) & 0x100)) return;
-    X86_MEMF32(ps + 0x2E0) = fov::Apply(X86_MEMF32(ps + 0x2E0));
+    ViewField& f = FieldOf(ps);
+    f.ps = ps;
+    f.game = X86_MEMF32(ps + 0x2E0);
+    WidenField(base, f);
+}
+
+// the view's camera for local player [esp+4], each drawn frame: its playerState's field widened again from the game's
+// own at the current setting, unless something other than 0xB5FB0 wrote the field since (or a cinematic camera is up)
+X86_EXTERN_FUNC(__imp__sub_0015DAA0);
+X86_FUNC(sub_0015DAA0) {
+    const int32_t players = int32_t(X86_MEM32(0x205408));
+    const uint32_t states = X86_MEM32(0x2A88B8);
+    if (players > 0 && states) {
+        const uint32_t ps = states + uint32_t(int32_t(X86_MEM32(ctx.esp + 4)) % players) * X86_MEM32(0x2A88BC);
+        for (ViewField& f : g_view_fields) {
+            if (f.ps != ps || X86_MEM32(ps + 0x2E0) != f.shown || (X86_MEM32(ps + 0x0C) & 0x100)) continue;
+            WidenField(base, f);
+        }
+    }
+    __imp__sub_0015DAA0(ctx, base);
 }
 
 // The weapon and hands in view have a projection of their own (0x14B600), at a fraction of the view's field
@@ -133,10 +178,17 @@ X86_FUNC(sub_0015C920) {
     __imp__sub_0015C920(ctx, base);
     const int32_t players = int32_t(X86_MEM32(0x205408));
     const uint32_t states = X86_MEM32(0x2A88B8);
-    if (fov::g_offset.load(std::memory_order_relaxed) == 0 || players <= 0 || !states) return;
+    if (players <= 0 || !states) return;
     const uint32_t ps = states + uint32_t(int32_t(local) % players) * X86_MEM32(0x2A88BC);
+    // the game's own field as 0xB5FB0's hook kept it while the view's is the one widened from it (the setting may have
+    // changed since, paused), else the view's undone
+    const ViewField* kept = nullptr;
+    for (const ViewField& f : g_view_fields)
+        if (f.ps == ps && X86_MEM32(ps + 0x2E0) == f.shown) kept = &f;
+    if (!kept && fov::g_offset.load(std::memory_order_relaxed) == 0) return;
+    const float game = kept ? kept->game : fov::Unapply(X86_MEMF32(ps + 0x2E0));
     constexpr double kRad = 3.14159265358979 / 180;
-    X87_ST(0) = double(X86_MEMF32(ps + 0x340)) * double(fov::Unapply(X86_MEMF32(ps + 0x2E0))) * kRad;
+    X87_ST(0) = double(X86_MEMF32(ps + 0x340)) * double(game) * kRad;
 }
 
 // The crosshair (0x51320, the HUD's crosshair element in esi, called each frame from 0x55589) is picked by the state

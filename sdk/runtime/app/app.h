@@ -23,7 +23,7 @@ inline constexpr uint32_t kFpsCapRefresh = 1;  // fps_cap: the monitor's refresh
 struct Settings {
     DisplayMode display_mode = DisplayMode::Borderless;
     uint32_t width = 0, height = 0;  // 0 is the desktop mode
-    uint32_t render_percent = 100;   // of the output height
+    uint32_t render_percent = 100;   // of the window's pixels the frame is shown on
     uint32_t fps_cap = 60;           // 0 unlimited, kFpsCapRefresh the monitor's refresh rate
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
@@ -45,7 +45,9 @@ struct Mode {
 };
 Mode Desktop();
 Mode Output();
-float RenderScale(uint32_t guest_height);
+// host pixels per console pixel of the render targets: render_percent (and supersampling) of the window's pixels where
+// the frame is shown; window 0 x 0 takes the output mode
+float RenderScale(uint32_t guest_width, uint32_t guest_height, uint32_t window_width, uint32_t window_height);
 // the output is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV
 bool Widescreen();
 // a widescreen output shows frames drawn in 2D alone (front end menus, loading screens, films) at 4:3 between bars:
