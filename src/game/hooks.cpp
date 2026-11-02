@@ -279,3 +279,30 @@ X86_FUNC(sub_00027910) {
     X86_MEMF32(view + 0x70) *= scale;
     X86_MEMF32(view + 0x74) *= scale;
 }
+
+// Crash in Evil Summit (mission 12): 0x14AD30 draws a list of 12-byte entries {object, mesh part, u16 material, u8
+// pass, pad} and, after drawing one, goes straight on to the next entry while its key (the dword at +8) equals the
+// one just drawn, without checking the end of the list: the list must end with an entry whose key differs. The game's
+// sorted list (0x3B3ACC) gets one (0x14ABE0 writes material 0xFFFF / pass 0xFF / no object after its last entry), but
+// the list 0x14B150 builds on its own stack (an object's parts drawn on their own: the shadow casters 0x1673B0 draws
+// into the shadow buffers) does not, so the slot after its last part is whatever an earlier call left on the stack.
+// On the console the guest D3D code (SetRenderTarget & co., called between two casters) overwrites that stack; here it
+// is native and leaves the guest stack alone, so an entry of an earlier caster can stay there, and when its key matches
+// the new last part, the stale object (by then freed) is drawn: a read of null+0x2C0 or of a freed texture pointer.
+// The slot after the last entry is given a key that cannot match for the call. When the list fills 0x14B150's
+// eight entries that slot is the start index the function reads (low word) and writes back, so its low word stays.
+X86_EXTERN_FUNC(__imp__sub_0014AD30);
+X86_FUNC(sub_0014AD30) {
+    const uint32_t out = X86_MEM32(ctx.esp + 0xC), count = X86_MEM32(ctx.esp + 0x10), list = X86_MEM32(ctx.esp + 0x14);
+    const uint32_t start = X86_MEM16(out);
+    if (list == 0x3B3ACCu || int32_t(count) <= 0 || start >= count) {  // the game's own list ends properly
+        __imp__sub_0014AD30(ctx, base);
+        return;
+    }
+    const uint32_t last = X86_MEM32(list + (count - 1) * 12 + 8), slot = list + count * 12 + 8;
+    const uint32_t keep = X86_MEM32(slot);
+    const uint32_t end = slot == out ? (~last & 0xFFFF0000u) | start : ~last;
+    X86_MEM32(slot) = end;
+    __imp__sub_0014AD30(ctx, base);
+    if (slot != out && X86_MEM32(slot) == end) X86_MEM32(slot) = keep;
+}
