@@ -3,7 +3,10 @@
 //   holds its art), asking before the game closes;
 // - PC Settings in the options list under Controller Setup, in the list's own lettering, opening a page of the F10
 //   panel's settings;
-// - Controller Setup opening this port's controls page (remapping, sticks, keyboard and mouse) in place of the game's.
+// - Controller Setup opening this port's controls page (remapping, sticks, keyboard and mouse) in place of the game's;
+// - Controls and PC Settings under Quit Mission on the pause menus (bond_eng.xbe on foot, driving.xbe driving and on
+//   rails): the Controls page (its options, and CONTROLLER LAYOUT opening the grid of the mission's controls) and a
+//   PC Settings page of the settings that can change in a mission.
 // The game's menus stay the game's: the hooks move its rows to make room, draw the extra rows after its own with its
 // draw state, and keep a selection of their own past its last row by holding the pad back from it.
 #pragma once

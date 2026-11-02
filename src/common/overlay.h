@@ -47,6 +47,9 @@ struct SettingRow {
 std::vector<SettingRow> SettingRows();
 void StepSetting(int index, int step);  // index into SettingRows, step -1 or 1
 void ResetSettings();                   // the panel's Defaults
+// the settings with these labels (as SettingRows gives them) back to their defaults, the others kept: the pause
+// menu's PC Settings page
+void ResetSettings(const std::vector<std::string>& labels);
 
 // what the current value of a setting does, for the line under its row (PC Settings, the pause menu's OPTIONS):
 // a line for the value chosen, not one listing them all

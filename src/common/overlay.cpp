@@ -105,6 +105,7 @@ bool Message(void*, uint32_t, uintptr_t, intptr_t, intptr_t*) { return false; }
 std::vector<SettingRow> SettingRows() { return {}; }
 void StepSetting(int, int) {}
 void ResetSettings() {}
+void ResetSettings(const std::vector<std::string>&) {}
 }  // namespace overlay
 #else
 
@@ -281,6 +282,40 @@ std::string MenuPackDesc() {
     return g_hd_menus ? "Upscaled menus, HUD, medals and loading screens" : "The game's own menu, HUD and loading screen art";
 }
 
+std::string FpsCapDesc() {
+    uint32_t cap = kFpsCaps[Nearest(kFpsCaps, app::Get().fps_cap)];
+    if (cap == app::kFpsCapRefresh) return "The game runs at most as many frames a second as the monitor shows";
+    if (cap == 0) return "No limit: the game runs as many frames a second as the PC can draw";
+    return "The game runs at most " + std::to_string(cap) + " frames a second";
+}
+std::string FpsCounterDesc() {
+    return g_fps_counter ? "The frames a second shown in the top left corner" : "No frame counter on the screen";
+}
+std::string AnisoDesc() {
+    uint32_t a = kAniso[Nearest(kAniso, app::Get().aniso)];
+    if (a == 0) return "Textures filtered as the game asks";
+    return "Floors and walls seen at an angle stay sharp further away (" + std::to_string(a) + "x)";
+}
+std::string AntiAliasingDesc() {
+    constexpr const char* kDescs[] = {
+        "No smoothing of jagged edges",
+        "Jagged edges smoothed by a quick filter over the finished picture",
+        "Drawn with twice the pixels and scaled down: smoother edges, more work for the GPU",
+        "Drawn with four times the pixels and scaled down: the smoothest edges, the most work for the GPU",
+    };
+    return kDescs[std::min<uint32_t>(uint32_t(app::Get().anti_aliasing), 3)];
+}
+
+// one setting back to its default (the panel's Defaults does them all)
+template <typename T>
+void Default(T& value, T def) {
+    value = def;
+    Changed(false);
+}
+void DefaultPack(bool& on) {
+    if (!on) TogglePack(on);
+}
+
 // one setting: shown by the F10 panel and the PC Settings page alike
 struct Entry {
     const char* section;
@@ -291,6 +326,8 @@ struct Entry {
     // optional: a line saying what the current value does, shown under the row on the PC Settings page while it is
     // selected
     std::string (*desc)() = nullptr;
+    // optional: the setting alone back to its default (the pause menu's PC Settings page resets only its own rows)
+    void (*reset)() = nullptr;
 };
 
 std::string Percent(uint32_t v) {
@@ -354,13 +391,13 @@ const Entry kEntries[] = {
          StepTable(kFpsCaps, app::Get().fps_cap, st);
          Changed(false);
      },
-     [] { return true; }},
+     [] { return true; }, FpsCapDesc, [] { Default(app::Get().fps_cap, Settings{}.fps_cap); }},
     {"DISPLAY", "FPS COUNTER", [] { return std::string(OnOff(g_fps_counter)); },
      [](int) {
          g_fps_counter = !g_fps_counter;
          Changed(false);
      },
-     [] { return true; }},
+     [] { return true; }, FpsCounterDesc, [] { Default(g_fps_counter, false); }},
     {"GRAPHICS", "MENUS IN 4:3", [] { return std::string(OnOff(app::g_menus_4x3)); },
      [](int) {
          app::g_menus_4x3 = !app::g_menus_4x3;
@@ -372,7 +409,7 @@ const Entry kEntries[] = {
          StepTable(kAniso, app::Get().aniso, st);
          Changed(false);
      },
-     [] { return true; }},
+     [] { return true; }, AnisoDesc, [] { Default(app::Get().aniso, Settings{}.aniso); }},
     {"GRAPHICS", "ANTI-ALIASING",
      [] { return std::string(kAntiAliasingNames[std::min<uint32_t>(uint32_t(app::Get().anti_aliasing), 3)]); },
      [](int st) {
@@ -380,7 +417,7 @@ const Entry kEntries[] = {
          s.anti_aliasing = app::AntiAliasing(Step(int(s.anti_aliasing), st, 4));
          Changed(false);
      },
-     [] { return true; }},
+     [] { return true; }, AntiAliasingDesc, [] { Default(app::Get().anti_aliasing, Settings{}.anti_aliasing); }},
     {"GENERAL", "SKIP INTROS", [] { return std::string(OnOff(g_skip_intros)); },
      [](int) {
          g_skip_intros = !g_skip_intros;
@@ -401,7 +438,10 @@ const Entry kEntries[] = {
          fov::Step(st);
          Changed(false);
      },
-     [] { return true; }, FovDesc},
+     [] { return true; }, FovDesc, [] {
+         fov::g_offset = 0;
+         Changed(false);
+     }},
     // every upscaled texture in the pack; the three rows under it each leave one part of the pack out
     {"TEXTURES", "UPSCALED TEXTURE REPLACEMENT", [] { return std::string(OnOff(app::Get().custom_textures)); },
      [](int) {
@@ -410,11 +450,14 @@ const Entry kEntries[] = {
      },
      [] { return true; }, PackDesc},
     {"TEXTURES", "CHARACTER TEXTURES", [] { return std::string(OnOff(g_hd_characters)); },
-     [](int) { TogglePack(g_hd_characters); }, [] { return app::Get().custom_textures; }, CharacterPackDesc},
+     [](int) { TogglePack(g_hd_characters); }, [] { return app::Get().custom_textures; }, CharacterPackDesc,
+     [] { DefaultPack(g_hd_characters); }},
     {"TEXTURES", "WEAPON TEXTURES", [] { return std::string(OnOff(g_hd_weapons)); },
-     [](int) { TogglePack(g_hd_weapons); }, [] { return app::Get().custom_textures; }, WeaponPackDesc},
+     [](int) { TogglePack(g_hd_weapons); }, [] { return app::Get().custom_textures; }, WeaponPackDesc,
+     [] { DefaultPack(g_hd_weapons); }},
     {"TEXTURES", "MENU AND HUD TEXTURES", [] { return std::string(OnOff(g_hd_menus)); },
-     [](int) { TogglePack(g_hd_menus); }, [] { return app::Get().custom_textures; }, MenuPackDesc},
+     [](int) { TogglePack(g_hd_menus); }, [] { return app::Get().custom_textures; }, MenuPackDesc,
+     [] { DefaultPack(g_hd_menus); }},
     {"TEXTURES", "TEXTURE DUMPING", [] { return std::string(OnOff(app::Get().dump_textures)); },
      [](int) {
          app::Get().dump_textures = !app::Get().dump_textures;
@@ -434,13 +477,13 @@ const Entry kEntries[] = {
          damage_fx::g_level = uint32_t(Step(int(damage_fx::Current()), st, int(damage_fx::kLevels)));
          Changed(false);
      },
-     [] { return true; }, DamageEffectsDesc},
+     [] { return true; }, DamageEffectsDesc, [] { Default(damage_fx::g_level, uint32_t(damage_fx::kDefault)); }},
     {"ACCESSIBILITY", "DAMAGE FLASH COLOUR", [] { return std::string(damage_fx::g_flash_black ? "BLACK" : "WHITE"); },
      [](int) {
          damage_fx::g_flash_black = !damage_fx::g_flash_black;
          Changed(false);
      },
-     [] { return damage_fx::Current() != damage_fx::kOff; }, DamageFlashDesc},
+     [] { return damage_fx::Current() != damage_fx::kOff; }, DamageFlashDesc, [] { Default(damage_fx::g_flash_black, false); }},
 };
 
 void Rows() {
@@ -484,6 +527,11 @@ void StepSetting(int index, int step) {
 }
 
 void ResetSettings() { Defaults(); }
+
+void ResetSettings(const std::vector<std::string>& labels) {
+    for (const Entry& e : kEntries)
+        if (e.reset && std::find(labels.begin(), labels.end(), e.label) != labels.end()) e.reset();
+}
 
 namespace {
 

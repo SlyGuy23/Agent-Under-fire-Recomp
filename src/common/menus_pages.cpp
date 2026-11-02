@@ -168,6 +168,89 @@ bool PcSettingsPage(const PageContext& c, const std::vector<PageNav>& nav) {
     return true;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// the pause menu's PC SETTINGS: the PC Settings rows that make sense in a mission, found by their labels so their
+// values, steps and descriptions are the main menu's own; then a reset of these rows alone
+
+namespace {
+
+constexpr const char* kPauseSettings[] = {"CHARACTER TEXTURES",    "WEAPON TEXTURES", "MENU AND HUD TEXTURES",
+                                          "ANTI-ALIASING",         "ANISOTROPIC FILTERING", "MAX FRAME RATE",
+                                          "FPS COUNTER",           "FIELD OF VIEW",   "DAMAGE EFFECTS",
+                                          "DAMAGE FLASH COLOUR"};
+constexpr const char* kPauseContextNames[] = {"On Foot", "Driving", "On Rails"};
+int g_pause_pc_sel = 0, g_pause_pc_scroll = 0;
+ImVec2 g_pause_pc_mouse{-1, -1};
+
+}  // namespace
+
+bool PausePcSettingsPage(const PageContext& c, const std::vector<PageNav>& nav, controls::Context context, bool opened) {
+    std::vector<overlay::SettingRow> settings = overlay::SettingRows();
+    std::vector<Row> rows;
+    std::vector<int> index;  // the setting's index in SettingRows, -2 the reset
+    std::vector<std::string> labels;
+    for (const char* want : kPauseSettings)
+        for (size_t i = 0; i < settings.size(); i++) {
+            const overlay::SettingRow& st = settings[i];
+            if (st.label != want) continue;
+            Row r{st.label, st.value, st.enabled, false, st.desc};
+            // the texture pack's parts can only change while the pack is on (a main menu PC Settings row)
+            if (!st.enabled && st.section == "TEXTURES")
+                r.desc = "Upscaled Texture Replacement is off: it is turned on in the main menu's PC Settings";
+            rows.push_back(r);
+            index.push_back(int(i));
+            labels.push_back(st.label);
+            break;
+        }
+    rows.push_back({"RESET TO DEFAULTS", "", true, false, "The settings on this page back to the defaults, the others kept"});
+    index.push_back(-2);
+    ImGuiIO& io = ImGui::GetIO();
+    if (opened) {
+        g_pause_pc_sel = 0, g_pause_pc_scroll = 0;
+        g_pause_pc_mouse = io.MousePos;  // the cursor resting over a row does not pick it
+    }
+    g_pause_pc_sel = std::clamp(g_pause_pc_sel, 0, int(rows.size()) - 1);
+    auto act = [&](int row, int step) {
+        int k = index[size_t(row)];
+        if (k >= 0) overlay::StepSetting(k, step);
+        else if (k == -2 && step > 0) overlay::ResetSettings(labels);
+    };
+    for (PageNav n : nav) {
+        switch (n) {
+            case PageNav::Up: g_pause_pc_sel = NextRow(rows, g_pause_pc_sel, -1); break;
+            case PageNav::Down: g_pause_pc_sel = NextRow(rows, g_pause_pc_sel, 1); break;
+            case PageNav::Left: act(g_pause_pc_sel, -1); break;
+            case PageNav::Right:
+            case PageNav::Accept: act(g_pause_pc_sel, 1); break;
+            case PageNav::Back: return false;
+            default: break;
+        }
+    }
+    // again, with the values just changed
+    settings = overlay::SettingRows();
+    for (size_t r = 0; r < rows.size(); r++) {
+        int k = index[r];
+        if (k < 0 || k >= int(settings.size())) continue;
+        const overlay::SettingRow& st = settings[size_t(k)];
+        rows[r].value = st.value, rows[r].enabled = st.enabled, rows[r].desc = st.desc;
+        if (!st.enabled && st.section == "TEXTURES")
+            rows[r].desc = "Upscaled Texture Replacement is off: it is turned on in the main menu's PC Settings";
+    }
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    c.title(dl, kLabelX - 30, 80, 15, c.lit, "PC Settings", 0);
+    c.title(dl, 570, 82, 13, Dim(c.lit), kPauseContextNames[std::clamp(int(context), 0, 2)], 1);
+    MouseHit hit = DrawList(c, "PC SETTINGS", rows, g_pause_pc_sel, g_pause_pc_scroll, nullptr);
+    ImVec2 m = io.MousePos;
+    bool moved = m.x != g_pause_pc_mouse.x || m.y != g_pause_pc_mouse.y;
+    g_pause_pc_mouse = m;
+    if (hit.row >= 0) {
+        if (moved) g_pause_pc_sel = hit.row;
+        if (hit.step) g_pause_pc_sel = hit.row, act(hit.row, hit.step);
+    }
+    if (hit.wheel != 0) g_pause_pc_scroll = std::max(0, g_pause_pc_scroll - int(hit.wheel));
+    return true;
+}
+
 }  // namespace menus
 #endif
 
@@ -213,7 +296,8 @@ int TabOf(Context c, Device d) {
 
 // Reset: the pause page's whole OPTIONS tab; ResetControls / ResetOptions: a Controller Setup tab's bindings or its
 // options. Note: small text under the row before it
-enum class RowKind { Action, Option, Reset, ResetControls, ResetOptions, Heading, Note };
+// Layout: the pause page's CONTROLLER LAYOUT, opening the grid of its controls
+enum class RowKind { Action, Option, Reset, ResetControls, ResetOptions, Heading, Note, Layout };
 enum class Opt { LeftSens, LeftDead, LeftOuter, RightSens, RightDead, RightOuter, MouseSens, MouseInvert, MouseLook,
                  CrouchToggle, AimToggle, SmartFire, KbmAutoAim, Fov, DamageFx, DamageFlash };
 
@@ -731,9 +815,11 @@ void DrawTable(const PageContext& c, ImDrawList* dl, controls::Context context, 
     }
 }
 
-// the pause page's OPTIONS tab: what can be changed in a mission, for this context
+// the pause page's list: CONTROLLER LAYOUT, then what can be changed in a mission, for this context
 std::vector<CRow> PauseOptions(controls::Context context) {
     std::vector<CRow> rows;
+    rows.push_back({RowKind::Layout, Action::None, Opt::LeftSens, "CONTROLLER LAYOUT", ""});
+    rows.back().desc = "The buttons, keys and mouse for this mission";
     controls::Options o = controls::GetOptions(context);
     auto opt = [&](Opt k, const char* label, std::string value) {
         CRow r{RowKind::Option};
@@ -755,19 +841,7 @@ std::vector<CRow> PauseOptions(controls::Context context) {
         opt(Opt::KbmAutoAim, "AUTO LOCK-ON (KEYBOARD & MOUSE)", o.kbm_auto_aim ? "ON" : "OFF");
         rows.back().desc = AutoAimDesc(o);
     }
-    // the view and what being hit does, as in PC Settings (the on-rails missions keep the game's view and have no
-    // damage flash, the driving ones only the view)
-    if (context != Context::OnRails) {
-        heading("DISPLAY");
-        opt(Opt::Fov, "FIELD OF VIEW", fov::Label());
-        rows.back().desc = overlay::FovDesc();
-    }
-    if (context == Context::OnFoot) {
-        opt(Opt::DamageFx, "DAMAGE EFFECTS", damage_fx::Name());
-        rows.back().desc = overlay::DamageEffectsDesc();
-        opt(Opt::DamageFlash, "DAMAGE FLASH COLOUR", damage_fx::g_flash_black ? "BLACK" : "WHITE");
-        rows.back().desc = overlay::DamageFlashDesc();
-    }
+    // (the field of view and the damage effects are on the pause menu's PC Settings page)
     heading("CONTROLLER");
     opt(Opt::LeftSens, "LEFT STICK SENSITIVITY", Pct(o.left.sensitivity));
     opt(Opt::LeftDead, "LEFT STICK DEADZONE", Pct(o.left.deadzone));
@@ -785,8 +859,8 @@ std::vector<CRow> PauseOptions(controls::Context context) {
     return rows;
 }
 
-// the pause page's RESET TO DEFAULTS: what its OPTIONS tab shows for this context, back to the defaults (the
-// context's general, stick and mouse options; the field of view; the damage effects)
+// the pause page's RESET TO DEFAULTS: what its list shows for this context, back to the defaults (the context's
+// general, stick and mouse options)
 void ResetPauseOptions(Context context) {
     controls::Options o = controls::GetOptions(context), d = controls::DefaultOptions(context);
     o.crouch_toggle = d.crouch_toggle;
@@ -798,11 +872,6 @@ void ResetPauseOptions(Context context) {
     o.mouse_sensitivity = d.mouse_sensitivity;
     o.mouse_invert_y = d.mouse_invert_y;
     controls::SetOptions(context, o);
-    if (context != Context::OnRails) fov::g_offset = 0;
-    if (context == Context::OnFoot) {
-        damage_fx::g_level = damage_fx::kDefault;
-        damage_fx::g_flash_black = false;
-    }
     app::Save();
 }
 
@@ -813,67 +882,99 @@ void ActivatePause(Context context, const CRow& r, int step) {
 }
 
 int g_pause_sel = -1, g_pause_scroll = 0;
+int g_view_mode = 0;  // the pause page shows 0 its list, 1 the controller layout (CONTROLLER LAYOUT chosen)
+ImVec2 g_view_mouse{-1, -1};
+
+bool Selectable(const CRow& r) { return r.kind == RowKind::Option || r.kind == RowKind::Reset || r.kind == RowKind::Layout; }
 
 }  // namespace
 
-// the pause menu's page: tabs CONTROLLER and KEYBOARD & MOUSE show the context's controls as a table, OPTIONS the
-// toggles, sensitivities and deadzones to change. LT / RT (Q / E) or a click changes the tab.
+// the pause menu's Controls page: the list (CONTROLLER LAYOUT, then the toggles, sensitivities and deadzones to
+// change). CONTROLLER LAYOUT opens the context's controls as a table, tabs CONTROLLER and KEYBOARD & MOUSE (LT / RT,
+// Q / E, Left / Right or a click change the tab); Back from there returns to the list, Back from the list closes.
 bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, controls::Context context, bool opened) {
-    constexpr const char* kNames[] = {"CONTROLLER", "KEYBOARD & MOUSE", "OPTIONS"};
-    if (opened) g_view_tab = controls::ActiveDevice() == Device::Controller ? 0 : 1, g_pause_sel = -1, g_pause_scroll = 0;
-    g_view_tab = std::clamp(g_view_tab, 0, 2);
+    constexpr const char* kNames[] = {"CONTROLLER", "KEYBOARD & MOUSE"};
+    ImGuiIO& io = ImGui::GetIO();
+    if (opened) {
+        g_view_tab = controls::ActiveDevice() == Device::Controller ? 0 : 1;
+        g_view_mode = 0, g_pause_sel = -1, g_pause_scroll = 0;
+        g_view_mouse = io.MousePos;  // the cursor resting over a row does not pick it
+    }
+    g_view_tab = std::clamp(g_view_tab, 0, 1);
     std::vector<CRow> rows = PauseOptions(context);
-    if (g_pause_sel < 0 || g_pause_sel >= int(rows.size()) ||
-        (rows[size_t(g_pause_sel)].kind != RowKind::Option && rows[size_t(g_pause_sel)].kind != RowKind::Reset))
-        g_pause_sel = Next(rows, -1, 1);
+    if (g_pause_sel < 0 || g_pause_sel >= int(rows.size()) || !Selectable(rows[size_t(g_pause_sel)])) g_pause_sel = Next(rows, -1, 1);
     for (PageNav n : nav) {
+        if (g_view_mode == 1) {
+            switch (n) {
+                case PageNav::PrevTab:
+                case PageNav::NextTab:
+                case PageNav::Left:
+                case PageNav::Right: g_view_tab = 1 - g_view_tab; break;
+                case PageNav::Back: g_view_mode = 0; break;
+                default: break;
+            }
+            continue;
+        }
         switch (n) {
-            case PageNav::PrevTab: g_view_tab = (g_view_tab + 2) % 3; break;
-            case PageNav::NextTab: g_view_tab = (g_view_tab + 1) % 3; break;
             case PageNav::Back: return false;
-            case PageNav::Up:
-                if (g_view_tab == 2) g_pause_sel = Next(rows, g_pause_sel, -1);
-                break;
-            case PageNav::Down:
-                if (g_view_tab == 2) g_pause_sel = Next(rows, g_pause_sel, 1);
-                break;
+            case PageNav::Up: g_pause_sel = Next(rows, g_pause_sel, -1); break;
+            case PageNav::Down: g_pause_sel = Next(rows, g_pause_sel, 1); break;
             case PageNav::Left:
             case PageNav::Right:
-            case PageNav::Accept:
-                if (g_view_tab == 2) ActivatePause(context, rows[size_t(g_pause_sel)], n == PageNav::Left ? -1 : 1);
-                else if (n != PageNav::Accept) g_view_tab = n == PageNav::Left ? (g_view_tab + 2) % 3 : (g_view_tab + 1) % 3;
+            case PageNav::Accept: {
+                const CRow& r = rows[size_t(g_pause_sel)];
+                if (r.kind == RowKind::Layout) {
+                    if (n == PageNav::Accept) g_view_mode = 1;
+                } else {
+                    ActivatePause(context, r, n == PageNav::Left ? -1 : 1);
+                    rows = PauseOptions(context);
+                }
                 break;
+            }
             default: break;
         }
     }
     rows = PauseOptions(context);
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-    // the tabs, and the context's name
-    float x = kLabelX - 30;
-    for (int i = 0; i < 3; i++) {
-        std::string name = Titled(kNames[i]);
-        c.title(dl, x, 80, 15, i == g_view_tab ? c.lit : Dim(c.unlit), name.c_str(), 0);
-        float w = c.title_width(15, name.c_str());
-        if (ImGui::IsMouseHoveringRect(c.guest(x - 3, 78), c.guest(x + w + 3, 96), false) && ImGui::IsMouseClicked(0)) g_view_tab = i;
-        x += w + 22;
-    }
+    ImVec2 m = io.MousePos;
+    bool moved = m.x != g_view_mouse.x || m.y != g_view_mouse.y;
+    g_view_mouse = m;
     c.title(dl, 570, 82, 13, Dim(c.lit), Titled(kContextNames[int(context)]).c_str(), 1);
-    if (g_view_tab < 2) {
+    if (g_view_mode == 1) {
+        // CONTROLLER LAYOUT: the tabs, the table, and Back to the list
+        float x = kLabelX - 30;
+        for (int i = 0; i < 2; i++) {
+            std::string name = Titled(kNames[i]);
+            c.title(dl, x, 80, 15, i == g_view_tab ? c.lit : Dim(c.unlit), name.c_str(), 0);
+            float w = c.title_width(15, name.c_str());
+            if (ImGui::IsMouseHoveringRect(c.guest(x - 3, 78), c.guest(x + w + 3, 96), false) && ImGui::IsMouseClicked(0)) g_view_tab = i;
+            x += w + 22;
+        }
         DrawTable(c, dl, context, g_view_tab == 0 ? Device::Controller : Device::KeyboardMouse, 112, 14);
+        float bw = c.title_width(13, "Back");
+        bool over = ImGui::IsMouseHoveringRect(c.guest(kLabelX - 33, 394), c.guest(kLabelX - 27 + bw, 412), false);
+        c.title(dl, kLabelX - 30, 396, 13, over ? c.lit : Dim(c.unlit), "Back", 0);
+        if ((over && ImGui::IsMouseClicked(0)) || ImGui::IsMouseClicked(1)) g_view_mode = 0;
         return true;
     }
-    // OPTIONS: the list, left and right (or a click) to change
+    // the list: left and right (or a click) to change, CONTROLLER LAYOUT accepted (or clicked) to open
+    c.title(dl, kLabelX - 30, 80, 15, c.lit, "Controls", 0);
     g_rows_y = 116;
     int hover = -1;
     g_pause_scroll = Clamp(g_pause_scroll, g_pause_sel, int(rows.size()));
     DrawRows(c, dl, rows, g_pause_sel, g_pause_scroll, false, "", &hover, kValueX + 40);
-    if (hover >= 0 && (rows[size_t(hover)].kind == RowKind::Option || rows[size_t(hover)].kind == RowKind::Reset)) {
-        ImVec2 m = ImGui::GetIO().MouseDelta;
-        if (m.x != 0 || m.y != 0) g_pause_sel = hover;
-        if (ImGui::IsMouseClicked(0)) ActivatePause(context, rows[size_t(hover)], 1);
-        else if (ImGui::IsMouseClicked(1)) ActivatePause(context, rows[size_t(hover)], -1);
+    if (hover >= 0 && Selectable(rows[size_t(hover)])) {
+        if (moved) g_pause_sel = hover;
+        const CRow& r = rows[size_t(hover)];
+        if (r.kind == RowKind::Layout) {
+            if (ImGui::IsMouseClicked(0)) g_pause_sel = hover, g_view_mode = 1;
+        } else if (ImGui::IsMouseClicked(0)) {
+            g_pause_sel = hover, ActivatePause(context, r, 1);
+        } else if (ImGui::IsMouseClicked(1)) {
+            g_pause_sel = hover, ActivatePause(context, r, -1);
+        }
     }
-    if (ImGui::GetIO().MouseWheel != 0) g_pause_scroll = std::max(0, g_pause_scroll - int(ImGui::GetIO().MouseWheel));
+    if (io.MouseWheel != 0) g_pause_scroll = std::max(0, g_pause_scroll - int(io.MouseWheel));
     return true;
 }
 

@@ -28,8 +28,11 @@ struct PageContext {
 // each returns false once the page closes
 bool PcSettingsPage(const PageContext& c, const std::vector<PageNav>& nav);
 bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav);
-// the pause menu's view of the controls (nothing to rebind); opened: the first frame since it was opened
+// the pause menu's Controls page: its options list, CONTROLLER LAYOUT at the top opening the controls grid (nothing
+// to rebind); opened: the first frame since it was opened
 bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, controls::Context context, bool opened);
+// the pause menu's PC Settings page: the PC Settings that can change in a mission (the same settings, by label)
+bool PausePcSettingsPage(const PageContext& c, const std::vector<PageNav>& nav, controls::Context context, bool opened);
 // the list of a context's controls drawn from console y down, over the game's pre-mission Controller Setup
 void ControlsList(const PageContext& c, controls::Context context, float y, int max_rows);
 // window messages while a page is up (a key being bound); true when taken

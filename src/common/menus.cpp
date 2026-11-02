@@ -122,8 +122,13 @@ void Hide(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count) {
     }
 }
 
-enum class Page { None, Quit, PcSettings, Controls, PauseControls };
+enum class Page { None, Quit, PcSettings, Controls, PauseControls, PausePcSettings };
 std::atomic<Page> g_page{Page::None};
+// one of the pause menu's pages (Controls, PC Settings) is up
+bool PausePage() {
+    Page p = g_page.load();
+    return p == Page::PauseControls || p == Page::PausePcSettings;
+}
 
 bool TextureSize(const gpu::State& s, uint32_t w, uint32_t h) {
     gpu::TextureDesc d;
@@ -327,13 +332,17 @@ std::vector<uint8_t> Text(uint64_t key, std::string_view text, const uint8_t* tm
 // ---------------------------------------------------------------------------------------------------------------
 // the pause menu's MISSION page: Continue Mission, Restart Mission and Quit Mission in the italic lettering, rows 26
 // apart from y 173 at x 111 (a black shadow a pixel down and right first), the >> marker (a 64x64 sheet) 3 above the
-// selected row. Controls goes under Quit Mission.
+// selected row. Controls and PC Settings go under Quit Mission.
 
 constexpr float kPauseX = 111, kPauseTop = 173, kPauseStep = 26, kMarkerX = 87, kMarkerAbove = 3;
 constexpr int kPauseRows = 3;
+// the rows added under the game's, in order (the pause menus of bond_eng.xbe and driving.xbe alike)
+constexpr const char* kPauseExtra[] = {"Controls", "PC Settings"};
+constexpr int kPauseExtraRows = int(sizeof(kPauseExtra) / sizeof(kPauseExtra[0]));
 std::atomic<uint64_t> g_pause_seen{0};
 std::atomic<int> g_pause_lit{-1};
-std::atomic<bool> g_pause_selected{false};
+// the added row selected (an index of kPauseExtra), -1 while the game's own selection holds
+std::atomic<int> g_pause_extra{-1};
 std::array<float, 4> g_pause_lit_color{0.83f, 0.93f, 1.0f, 1.0f}, g_pause_unlit_color{0.45f, 0.54f, 0.62f, 1.0f};
 
 bool Paused() { return controls::CurrentGameState() == controls::GameState::Paused; }
@@ -412,8 +421,8 @@ bool SetupTitle(const gpu::State& s, const Box& b, uint32_t count) {
 // 256x256 sheet (a triangle fan of 4: float4 positions in stream 0, a colour in stream 1, coordinates in stream 2),
 // in 640x480 space: Continue, Restart and Quit Mission with tops 178, 204 and 230 (shadows, 2 below and right of
 // the letters), bottoms of the letters on the line at 195, 221 and 247; the >> marker a 10x13 quad at x 88 of
-// another 256x256 sheet, at 178 + 25.5 a row. Controls goes under Quit Mission, drawn by the pages (Ui) in the
-// italic lettering; the game's own rows and marker are moved and recoloured here.
+// another 256x256 sheet, at 178 + 25.5 a row. Controls and PC Settings go under Quit Mission, drawn by the pages (Ui)
+// in the italic lettering; the game's own rows and marker are moved and recoloured here.
 
 constexpr float kDriveBase = 195, kDriveStep = 26, kDriveMarkerTop = 178, kDriveMarkerStep = 25.5f;
 std::atomic<uint64_t> g_drive_seen{0};
@@ -455,7 +464,7 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
         const float* p = At(v, stride, i, 0);
         x0 = std::min(x0, p[0]), x1 = std::max(x1, p[0]), y0 = std::min(y0, p[1]), y1 = std::max(y1, p[1]);
     }
-    bool page = g_page.load() == Page::PauseControls;
+    bool page = PausePage();
     auto collapse = [&] {
         for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[0] = x0, At(v, stride, i, 0)[1] = y0;
     };
@@ -524,8 +533,8 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
     if (Near(x0, 88, 2) && Near(x1 - x0, 10, 1.5f) && Near(y1 - y0, 13, 1.5f)) {
         g_drive_marker_seen.store(Frame() + 1);
         if (page) collapse();
-        else if (g_pause_selected.load()) {
-            float dy = kDriveMarkerTop + kDriveMarkerStep * 3 - y0;
+        else if (int extra = g_pause_extra.load(); extra >= 0) {
+            float dy = kDriveMarkerTop + kDriveMarkerStep * float(kPauseRows + extra) - y0;
             for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[1] += dy;
         }
         return;
@@ -569,7 +578,7 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
             left = 1e9f;
         }
         left = std::min(left, x0);
-        if (g_pause_selected.load() && Channels(c) > 600) {
+        if (g_pause_extra.load() >= 0 && Channels(c) > 600) {
             uint32_t ut = g_drive_unlit_top.load(), ub = g_drive_unlit_bottom.load();
             for (uint32_t i = 0; i < 4; i++) {
                 uint32_t u = At(v, stride, i, 0)[1] < (y0 + y1) / 2 ? ut : ub;
@@ -907,10 +916,11 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
 
     // the pause menu
     if (Paused()) {
-        bool page = g_page.load() == Page::PauseControls;
+        bool page = PausePage();
         if (count == 6 && TextureSize(s, 64, 64) && Near(b.x0, kMarkerX, 3)) {
+            int extra = g_pause_extra.load();
             if (page) Hide(v, stride, l, count);
-            else if (g_pause_selected.load()) MoveY(v, stride, l, count, kPauseTop + kPauseStep * kPauseRows - kMarkerAbove - b.y0);
+            else if (extra >= 0) MoveY(v, stride, l, count, kPauseTop + kPauseStep * float(kPauseRows + extra) - kMarkerAbove - b.y0);
             return;
         }
         int row = PauseRow(s, b);
@@ -924,7 +934,7 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
                 } else {
                     g_pause_unlit_color = color;
                 }
-                if (g_pause_selected.load() && row == g_pause_lit.load()) SetColor(v, stride, l, count, g_pause_unlit_color);
+                if (g_pause_extra.load() >= 0 && row == g_pause_lit.load()) SetColor(v, stride, l, count, g_pause_unlit_color);
             }
             if (page) Hide(v, stride, l, count);
             return;
@@ -998,13 +1008,19 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
         return;
     }
 
-    // Controls under Quit Mission, shadow and letters each after the game's own
-    if (count >= 6 && Paused() && PauseRow(s, b) == kPauseRows - 1 && g_page.load() != Page::PauseControls) {
+    // Controls and PC Settings under Quit Mission, shadow and letters each after the game's own
+    if (count >= 6 && Paused() && PauseRow(s, b) == kPauseRows - 1 && !PausePage()) {
         auto color = ColorOf(v, stride, l);
-        if (!IsShadow(color)) color = g_pause_selected.load() ? g_pause_lit_color : g_pause_unlit_color;
+        bool shadow = IsShadow(color);
         Box first = BoxOf(v, stride, l, 0, 6);
-        std::vector<uint8_t> text = ItalicText("Controls", v, stride, l, first.x0, first.y0 + kPauseStep, color);
-        if (!text.empty()) emit(prim, text.data(), uint32_t(text.size() / stride));
+        int extra = g_pause_extra.load();
+        std::vector<uint8_t> all;
+        for (int i = 0; i < kPauseExtraRows; i++) {
+            auto c = shadow ? color : (extra == i ? g_pause_lit_color : g_pause_unlit_color);
+            std::vector<uint8_t> text = ItalicText(kPauseExtra[i], v, stride, l, first.x0, first.y0 + kPauseStep * float(i + 1), c);
+            all.insert(all.end(), text.begin(), text.end());
+        }
+        if (!all.empty()) emit(prim, all.data(), uint32_t(all.size() / stride));
         return;
     }
 
@@ -1084,7 +1100,7 @@ void PadInner(int, input::Pad& pad, const Held& h) {
     if (Paused() && own) {
         if (start || esc) {
             g_page.store(Page::None);
-            g_pause_selected.store(false);
+            g_pause_extra.store(-1);
             input::Pad out = Neutral(pad);
             if (kDrivingImage) out.buttons |= 0x10;
             else g_close_pause_at.store(NowMs());
@@ -1092,9 +1108,9 @@ void PadInner(int, input::Pad& pad, const Held& h) {
             return;
         }
         if (!kDrivingImage) pad.buttons &= uint16_t(~0x10u);
-    } else if (g_page.load() == Page::PauseControls && (start || esc)) {
+    } else if (PausePage() && (start || esc)) {
         g_page.store(Page::None);
-        g_pause_selected.store(false);
+        g_pause_extra.store(-1);
         input::Pad out = Neutral(pad);
         out.buttons |= 0x10;
         pad = out;
@@ -1114,20 +1130,23 @@ void PadInner(int, input::Pad& pad, const Held& h) {
         return;
     }
 
-    // the pause menu: Controls past Quit Mission
+    // the pause menu: Controls and PC Settings past Quit Mission
     bool pause = (kDrivingImage ? DriveMissionPage() : Recent(g_pause_seen.load())) && Paused();
     int lit = kDrivingImage ? g_drive_lit.load() : g_pause_lit.load();
-    if (!pause) g_pause_selected.store(false);
+    if (!pause) g_pause_extra.store(-1);
     if (pause) {
-        if (!g_pause_selected.load()) {
+        int extra = g_pause_extra.load();
+        if (extra < 0) {
             if (dirs[1] && lit == kPauseRows - 1) {
-                g_pause_selected.store(true);
+                g_pause_extra.store(0);
                 Take(pad, 1);
             }
         } else {
+            // the game keeps Quit Mission lit underneath: up from the first added row hands the selection back to it
             input::Pad out = Neutral(pad);
-            if (dirs[0]) g_pause_selected.store(false);
-            else if (a && !start) Open(Page::PauseControls);
+            if (dirs[0]) g_pause_extra.store(extra - 1);
+            else if (dirs[1]) g_pause_extra.store(std::min(extra + 1, kPauseExtraRows - 1));
+            else if (a && !start) Open(extra == 0 ? Page::PauseControls : Page::PausePcSettings);
             out.analog[1] = pad.analog[1];      // B and START still close the pause menu
             out.buttons |= pad.buttons & 0x10;
             pad = out;
@@ -1754,7 +1773,7 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
         case VK_RETURN:
         case VK_SPACE: Push(Nav::Accept); break;
         case VK_ESCAPE:
-            if (g_page.load() == Page::PauseControls) {
+            if (PausePage()) {
                 g_escape_close.store(true);
                 break;
             }
@@ -1771,39 +1790,44 @@ bool Message(void*, uint32_t msg, uintptr_t wp, intptr_t, intptr_t* result) {
     return true;
 }
 
-// driving.xbe's pause menu: Controls under Quit Mission, in the italic lettering at the game's size and colours
-void DrivingPauseRow() {
+// driving.xbe's pause menu: Controls and PC Settings under Quit Mission, in the italic lettering at the game's size
+// and colours
+void DrivingPauseRows() {
     if (!DriveMissionPage() || !Paused()) return;
     // gone the frame the page changes (DriveMissionPage holds a few frames for the pad's sake)
     if (Frame() + 1 - g_drive_marker_seen.load() > 1 || Frame() + 1 - g_drive_seen.load() > 1) return;
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     // D3DCOLOR (ARGB) to ImGui's ABGR, alpha kept: the rows are see-through
     auto im = [](uint32_t c) { return IM_COL32((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24); };
-    bool lit = g_pause_selected.load();
     // the game's unlit rows read greyer than their vertex colour (their shadow and the panel under them): the same
-    // greying here, measured from the game's rows, so Controls matches Restart and Quit Mission
+    // greying here, measured from the game's rows, so the added rows match Restart and Quit Mission
     auto grey = [](uint32_t c) {
         float r = float((c >> 16) & 0xFF), g = float((c >> 8) & 0xFF), b = float(c & 0xFF), m = (r + g + b) / 3;
         auto f = [&](float v) { return uint32_t(std::clamp((v * 0.55f + m * 0.45f) * 0.96f, 0.0f, 255.0f)); };
         return (c & 0xFF000000u) | f(r) << 16 | f(g) << 8 | f(b);
     };
-    ImU32 top = im(lit ? g_drive_lit_top.load() : grey(g_drive_unlit_top.load()));
-    ImU32 bottom = im(lit ? g_drive_lit_bottom.load() : grey(g_drive_unlit_bottom.load()));
-    float x = g_drive_x.load() + 4, y = kDriveBase - 2 + kDriveStep * 3 - 18;
     ImFont* f = g_title_font ? g_title_font : g_font;
     float px = 18 * GuestScale();
-    ImVec2 p = Guest(x, y), sh = Guest(x + 0.6f, y + 0.6f);
-    // the game's shadow as it is now drawn (tucked under the letters, fainter)
-    dl->AddText(f, px, sh, IM_COL32(0, 0, 0, 90), "Controls");
-    int first = dl->VtxBuffer.Size;
-    dl->AddText(f, px, p, top, "Controls");
-    // the game's shading, top to bottom over the line
-    for (int i = first; i < dl->VtxBuffer.Size; i++) {
-        ImDrawVert& vx = dl->VtxBuffer[i];
-        float t = std::clamp((vx.pos.y - p.y) / px, 0.0f, 1.0f);
-        ImVec4 a = ImGui::ColorConvertU32ToFloat4(top), b = ImGui::ColorConvertU32ToFloat4(bottom);
-        vx.col = ImGui::ColorConvertFloat4ToU32(ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t,
-                                                       a.w + (b.w - a.w) * t));
+    int extra = g_pause_extra.load();
+    for (int row = 0; row < kPauseExtraRows; row++) {
+        bool lit = extra == row;
+        const char* text = kPauseExtra[row];
+        ImU32 top = im(lit ? g_drive_lit_top.load() : grey(g_drive_unlit_top.load()));
+        ImU32 bottom = im(lit ? g_drive_lit_bottom.load() : grey(g_drive_unlit_bottom.load()));
+        float x = g_drive_x.load() + 4, y = kDriveBase - 2 + kDriveStep * float(kPauseRows + row) - 18;
+        ImVec2 p = Guest(x, y), sh = Guest(x + 0.6f, y + 0.6f);
+        // the game's shadow as it is now drawn (tucked under the letters, fainter)
+        dl->AddText(f, px, sh, IM_COL32(0, 0, 0, 90), text);
+        int first = dl->VtxBuffer.Size;
+        dl->AddText(f, px, p, top, text);
+        // the game's shading, top to bottom over the line
+        for (int i = first; i < dl->VtxBuffer.Size; i++) {
+            ImDrawVert& vx = dl->VtxBuffer[i];
+            float t = std::clamp((vx.pos.y - p.y) / px, 0.0f, 1.0f);
+            ImVec4 a = ImGui::ColorConvertU32ToFloat4(top), b = ImGui::ColorConvertU32ToFloat4(bottom);
+            vx.col = ImGui::ColorConvertFloat4ToU32(ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
+                                                           a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t));
+        }
     }
 }
 
@@ -1835,7 +1859,7 @@ void Ui() {
     if (kMenus || kDrivingImage) DrawPrompts();
     if (kDrivingImage) {
         if (g_page.load() == Page::None) {
-            DrivingPauseRow();
+            DrivingPauseRows();
             return;
         }
     } else if (!kMenus) {
@@ -1860,13 +1884,15 @@ void Ui() {
         return;
     }
     bool opened = g_opened.exchange(false);
-    if (page == Page::PauseControls) {
+    if (page == Page::PauseControls || page == Page::PausePcSettings) {
         // over the pause menu's panel
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         dl->AddRectFilled(Guest(32, 66), Guest(608, 420), IM_COL32(6, 12, 34, 238));
         std::vector<PageNav> pn;
         for (Nav n : nav) pn.push_back(PageNav(int(n)));
-        if (!ControlsViewPage(Context(), pn, controls::CurrentContext(), opened)) g_page.store(Page::None);
+        bool open = page == Page::PauseControls ? ControlsViewPage(Context(), pn, controls::CurrentContext(), opened)
+                                                : PausePcSettingsPage(Context(), pn, controls::CurrentContext(), opened);
+        if (!open) g_page.store(Page::None);
         return;
     }
     std::vector<PageNav> pn;
