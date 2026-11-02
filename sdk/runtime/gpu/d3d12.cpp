@@ -47,6 +47,8 @@ namespace gpu {
 
 namespace {
 
+float FrameScale(uint32_t guest_w, uint32_t guest_h, uint32_t bb_w, uint32_t bb_h);
+
 constexpr int kFrames = 3;
 constexpr uint64_t kStaleFrames = 8;  // frames a target may go unused and still be read back
 constexpr uint64_t kUploadSize = 64ull << 20;
@@ -659,7 +661,7 @@ private:
     void CreatePackTexture(Tex& r, const texturedumper::Image& img);
     void SwapFigure(Tex& tx, const TextureDesc& d, const FormatInfo& fi, bool fresh);
     const Tex* SurfacePackImage(const TextureDesc& d);
-    void ReleasePackTextures();
+    void ReleasePackTextures(const std::vector<uint64_t>& keys);
     void EnsurePixelShader(const PixelKey& pk, DrawShaders& sh);
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
     void KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k);
@@ -1072,7 +1074,7 @@ void D3D12Backend::CreateGammaLut() {
 }
 
 void D3D12Backend::LoadSettings() {
-    scale_ = app::RenderScale(guest_w_, guest_h_, bb_w_, bb_h_);
+    scale_ = FrameScale(guest_w_, guest_h_, bb_w_, bb_h_);
     aniso_ = app::Get().aniso;
     texturedumper::Update();
     ext_ = g_extension.get();
@@ -2128,11 +2130,15 @@ void D3D12Backend::CreatePackTexture(Tex& r, const texturedumper::Image& img) {
     Transition(r.res.Get(), st, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }
 
-// the pack's files changed: each image is made again when next drawn; Generation moved on, so every texture lets
-// go of its old copy before it draws
-void D3D12Backend::ReleasePackTextures() {
-    for (auto& entry : pack_textures_) CurrentFrame().garbage.push_back(entry.second.res);
-    pack_textures_.clear();
+// the pack was listed again: the images of keys it changed are made again when next drawn, the rest kept (Generation
+// moved on, so every texture looks its image up again before it draws)
+void D3D12Backend::ReleasePackTextures(const std::vector<uint64_t>& keys) {
+    for (uint64_t key : keys) {
+        auto it = pack_textures_.find(key);
+        if (it == pack_textures_.end()) continue;
+        CurrentFrame().garbage.push_back(it->second.res);
+        pack_textures_.erase(it);
+    }
 }
 
 ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTextures& stages) {
@@ -2171,6 +2177,14 @@ constexpr uint32_t kTexfAnisotropic = 3;
 // D3DTADDRESS values the samplers test
 constexpr uint32_t kTaddressWrap = 1;
 constexpr uint32_t kTaddressClamp = 3;
+
+// app::RenderScale for the window's back buffer; fullscreen at a set resolution draws the frame at that size, scaled to
+// the screen (the monitor's own mode is left alone)
+float FrameScale(uint32_t guest_w, uint32_t guest_h, uint32_t bb_w, uint32_t bb_h) {
+    const app::Settings& s = app::Get();
+    if (s.display_mode == app::DisplayMode::Fullscreen && s.width && s.height) bb_w = s.width, bb_h = s.height;
+    return app::RenderScale(guest_w, guest_h, bb_w, bb_h);
+}
 
 D3D12_SAMPLER_DESC StageSampler(const State& s, int i, const DrawTextures& stages, bool clamp, uint32_t aniso) {
     D3D12_SAMPLER_DESC sd = {};
@@ -3758,7 +3772,7 @@ void D3D12Backend::WaitGpuFrame(uint64_t n) {
 
 // render_percent and anti_aliasing (app::RenderScale) take effect here, from the next frame
 void D3D12Backend::ApplySettings() {
-    if (texturedumper::Update()) ReleasePackTextures();
+    if (texturedumper::Update()) ReleasePackTextures(texturedumper::ChangedKeys());
     // anisotropic filtering: each draw's samplers are looked up by their description, so a new level makes new ones
     // from the next draw; the old ones are let go once the GPU is past them, so the heap does not fill up and start
     // over under draws still in flight
@@ -3769,7 +3783,7 @@ void D3D12Backend::ApplySettings() {
         smp_used_ = 0;
         aniso_ = aniso;
     }
-    float want = app::RenderScale(guest_w_, guest_h_, bb_w_, bb_h_);
+    float want = FrameScale(guest_w_, guest_h_, bb_w_, bb_h_);
     bool remake = ext_ && ext_->Settings();
     if (std::fabs(want - scale_) > 1e-4f || remake) {
         Flush();

@@ -66,6 +66,8 @@ struct Pack {
     fs::path pack_dir;
     fs::path dump_dir;
     std::unordered_map<uint64_t, fs::path> files;  // by the key in their names; written by Update alone
+    std::unordered_map<uint64_t, fs::file_time_type> stamps;  // each file's last write when listed
+    std::vector<uint64_t> changed_keys;            // keys listed differently by the last listing (ChangedKeys)
     HANDLE watch = INVALID_HANDLE_VALUE;           // changes under pack_dir
     uint32_t watch_tries = 0;
     std::optional<Clock::time_point> changed;      // the last change seen, not listed yet
@@ -175,7 +177,10 @@ std::string Utf8(const fs::path& p) {
 }
 
 void ListPack(const fs::path& dir) {
+    auto old_files = std::move(g.files);
+    auto old_stamps = std::move(g.stamps);
     g.files.clear();
+    g.stamps.clear();
     std::vector<fs::path> off;  // folders the game has turned off
     std::error_code ec;
     fs::recursive_directory_iterator it(dir, ec);
@@ -203,6 +208,17 @@ void ListPack(const fs::path& dir) {
             bool image = _wcsicmp(q.extension().c_str(), L".dds") == 0 || _wcsicmp(q.extension().c_str(), L".png") == 0;
             if (uint64_t key = image ? KeyInName(q.stem().wstring()) : 0) g.files.erase(key);
         }
+    }
+    // what this listing changed: keys gone, or now from another file or a file written since; the images of the rest
+    // stay drawn, so turning one part of the pack on or off does not flash the whole pack away while it loads again
+    g.changed_keys.clear();
+    for (auto& [key, path] : g.files) {
+        std::error_code st_ec;
+        g.stamps[key] = fs::last_write_time(path, st_ec);
+    }
+    for (auto& [key, path] : old_files) {
+        auto now = g.files.find(key);
+        if (now == g.files.end() || now->second != path || g.stamps[key] != old_stamps[key]) g.changed_keys.push_back(key);
     }
     LOGR("texture pack: %zu images in %s", g.files.size(), Utf8(dir).c_str());
 }
@@ -573,6 +589,8 @@ bool Update() {
 }
 
 uint32_t Generation() { return g.generation; }
+
+std::vector<uint64_t> ChangedKeys() { return std::move(g.changed_keys); }
 
 bool Replacing() { return g.set.replacing && !g.files.empty(); }
 

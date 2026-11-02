@@ -90,20 +90,8 @@ void ApplyNow() {
     }
     Mode out = Output();
     LONG_PTR visible = IsWindowVisible(g_hwnd) ? WS_VISIBLE : 0;  // a window held back for a splash or handover stays so
-    DEVMODEW desktop{};
-    desktop.dmSize = sizeof(desktop);
-    EnumDisplaySettingsW(mi.szDevice, ENUM_REGISTRY_SETTINGS, &desktop);
-    // the desktop's own size is no mode change: switching to it anyway blanks the screen for nothing
-    if (s.display_mode == DisplayMode::Fullscreen && s.width && s.height &&
-        (s.width != desktop.dmPelsWidth || s.height != desktop.dmPelsHeight)) {
-        DEVMODEW dm{};
-        dm.dmSize = sizeof(dm);
-        dm.dmPelsWidth = s.width;
-        dm.dmPelsHeight = s.height;
-        dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT;
-        g_mode_changed = ChangeDisplaySettingsExW(mi.szDevice, &dm, nullptr, CDS_FULLSCREEN, nullptr) == DISP_CHANGE_SUCCESSFUL;
-        GetMonitorInfoW(mon, &mi);
-    }
+    // fullscreen never changes the monitor's own mode: the window covers the monitor and a resolution set here is
+    // the size the game draws its frame at (app::RenderScale), shown scaled to the screen
     if (s.display_mode == DisplayMode::Windowed) {
         RECT r{0, 0, LONG(out.width), LONG(out.height)};
         AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);

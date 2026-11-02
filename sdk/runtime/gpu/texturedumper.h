@@ -32,6 +32,8 @@ enum class Lookup { None, Loading, Ready };
 bool Update();
 // changes with any texture setting: every texture's key and pack image are looked up again
 uint32_t Generation();
+// after Update listed the pack again: the keys whose images changed or went (each listing's, once)
+std::vector<uint64_t> ChangedKeys();
 // replacement on and the pack holds images
 bool Replacing();
 
