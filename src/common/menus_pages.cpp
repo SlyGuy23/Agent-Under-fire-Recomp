@@ -810,7 +810,8 @@ namespace {
 
 // a table of a context's controls for a device: halves side by side, each an ACTION and a CONTROL column, a row a
 // control, on a dark panel so the text stands off whatever is behind it
-void DrawTable(const PageContext& c, ImDrawList* dl, controls::Context context, Device device, float top, int max_rows) {
+void DrawTable(const PageContext& c, ImDrawList* dl, controls::Context context, Device device, float top, int max_rows,
+               float centre = 320, bool panel = true) {
     const Tab& t = kTabs[TabOf(context, device)];
     std::vector<CRow> rows = Rows(t, true);
     rows.erase(std::remove_if(rows.begin(), rows.end(), [](const CRow& r) { return r.kind != RowKind::Action; }), rows.end());
@@ -818,9 +819,9 @@ void DrawTable(const PageContext& c, ImDrawList* dl, controls::Context context, 
     if (int(rows.size()) <= max_rows / 2) per = int(rows.size());
     constexpr float kRow = 17, kHalf = 262, kGap = 12, kText = 14;  // inside the pause page's panel (40 to 600)
     int halves = (int(rows.size()) + per - 1) / per;
-    float x0 = 320 - (kHalf * float(halves) + kGap * float(halves - 1)) / 2;
+    float x0 = centre - (kHalf * float(halves) + kGap * float(halves - 1)) / 2;
     float height = 18 + kRow * float(per) + 2;
-    dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kHalf * float(halves) + kGap * float(halves - 1) + 6, top + height),
+    if (panel) dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kHalf * float(halves) + kGap * float(halves - 1) + 6, top + height),
                       IM_COL32(4, 8, 24, 225), 4 * c.scale());
     for (int h = 0; h < halves; h++) {
         float x = x0 + float(h) * (kHalf + kGap);
@@ -978,7 +979,8 @@ bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, con
             if (ImGui::IsMouseHoveringRect(c.guest(x - 3, ty - 2), c.guest(x + w + 3, ty + 16), false) && ImGui::IsMouseClicked(0)) g_view_tab = i;
             x += w + 22;
         }
-        DrawTable(c, dl, context, g_view_tab == 0 ? Device::Controller : Device::KeyboardMouse, c.pause_top, 13);
+        // centred on the pause panel (its left edge curves in), straight on its moving background
+        DrawTable(c, dl, context, g_view_tab == 0 ? Device::Controller : Device::KeyboardMouse, c.pause_top, 13, 346, false);
         float bw = c.title_width(13, "Back"), by = c.pause_bar_y, bx = c.pause_x;
         bool over = ImGui::IsMouseHoveringRect(c.guest(bx - 3, by - 2), c.guest(bx + 3 + bw, by + 16), false);
         c.title(dl, bx, by, 13, over ? c.lit : Dim(c.unlit), "Back", 0);

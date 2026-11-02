@@ -2228,8 +2228,17 @@ void Ui() {
         // hidden meanwhile (Draw, DrivingPauseDraw)
         std::vector<PageNav> pn;
         for (Nav n : nav) pn.push_back(PageNav(int(n)));
-        bool open = page == Page::PauseControls ? ControlsViewPage(Context(), pn, controls::CurrentContext(), opened)
-                                                : PausePcSettingsPage(Context(), pn, controls::CurrentContext(), opened);
+        // the rows not selected a good deal lighter than the game's own unlit colour: over the panel's bright moving
+        // background that one was hard to read
+        PageContext pc = Context();
+        auto lighten = [](ImU32 col, float t) {
+            ImVec4 v = ImGui::ColorConvertU32ToFloat4(col);
+            v.x += (1 - v.x) * t, v.y += (1 - v.y) * t, v.z += (1 - v.z) * t;
+            return ImGui::ColorConvertFloat4ToU32(v);
+        };
+        pc.unlit = lighten(pc.unlit, 0.45f), pc.value = lighten(pc.value, 0.45f);
+        bool open = page == Page::PauseControls ? ControlsViewPage(pc, pn, controls::CurrentContext(), opened)
+                                                : PausePcSettingsPage(pc, pn, controls::CurrentContext(), opened);
         if (!open) g_page.store(Page::None);
         return;
     }
