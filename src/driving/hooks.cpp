@@ -223,8 +223,7 @@ void CopySurface(X86Context& ctx, uint32_t header, uint32_t from, uint32_t to) {
 X86_EXTERN_FUNC(__imp__sub_00100690);
 X86_FUNC(sub_00100690) {
     const gpu::Surface rt = d3d::State().rt;
-    // quitting: the pause screen's prompts are no longer drawn but its picture stays up while the screen fades, the
-    // keyboard's keys over them kept with it (menus::HoldPrompts, the fade in 0xBDD20 below)
+    // quitting: the keyboard's keys over the pause screen's prompts go from the answer on (menus::HoldPrompts)
     if (kernel::R32(0x1E0780) == 1) menus::HoldPrompts();
     if (kernel::R32(0x1E0780) == 1 && kernel::R32(0x1BEB1C) == 3 && rt.header && g_shown[0].header == rt.header &&
         g_shown[0].data && g_shown[0].data != rt.data) {
@@ -266,13 +265,4 @@ X86_FUNC(sub_00102990) {
         g_rails_view.oy = F(view + 0x64);
         g_rails_view.known = g_rails_view.kx > 0 && g_rails_view.ky > 0;
     }
-}
-
-// The fade to black (0xB7B60, the mission's teardown after Quit Mission): each frame 0xBDD20(left) draws a black quad
-// of opacity 1 - left over the picture, left going from 1 to 0. The keyboard's keys kept over the pause screen's
-// prompts fade with it (menus::ScreenFade).
-X86_EXTERN_FUNC(__imp__sub_000BDD20);
-X86_FUNC(sub_000BDD20) {
-    menus::ScreenFade(F(ctx.esp + 4));
-    __imp__sub_000BDD20(ctx, base);
 }

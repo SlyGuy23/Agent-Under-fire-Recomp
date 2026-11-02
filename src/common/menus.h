@@ -55,9 +55,8 @@ int PauseExtraRows();
 const char* PauseExtraLabel(int row);
 // how far driving.xbe's pause rows and marker are moved up, in console pixels (640x480)
 float DrivingPauseLift();
-// driving.xbe quitting a mission: the screen fading to black (left: what still shows, 1 to 0), and the prompts of the
-// pause screen kept over the picture it leaves up meanwhile (src/driving/hooks.cpp)
-void ScreenFade(float left);
+// driving.xbe quitting a mission (src/driving/hooks.cpp, each frame from the answer on): the keyboard's keys over the
+// pause screen's prompts are not drawn from then on
 void HoldPrompts();
 
 }  // namespace menus

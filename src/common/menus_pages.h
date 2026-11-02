@@ -29,6 +29,12 @@ struct PageContext {
     // a panel behind a grid of controls in the pause menu's look (its moving light-blue background over a dark base),
     // console coordinates; null: a plain dark panel
     void (*panel)(ImDrawList* dl, float x0, float y0, float x1, float y1) = nullptr;
+    // the pause Controls page's controller layout grid: its middle and its size (1 the main menu grid's), so it stays
+    // clear of the panel's curved left column and of the bar at its bottom
+    float pause_grid_centre = 346, pause_grid_scale = 1;
+    // the layout's selected tab (Controller or Keyboard & Mouse) spans x0 to x1 in the tabs' bar (console pixels): the
+    // game's light tab box is drawn there (menus.cpp); called each frame the layout is up
+    void (*layout_tab)(float x0, float x1) = nullptr;
 };
 
 // each returns false once the page closes

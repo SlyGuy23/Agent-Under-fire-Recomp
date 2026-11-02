@@ -129,7 +129,9 @@ X86_FUNC(sub_000B4560) {
     int lit = int(kernel::R32(menu + kLitRow));
     const bool question = kernel::R32(menu + kQuestion) != 0;
     menus::DrivingPauseShown(question ? -1 : lit);
-    if (menus::PausePageUp()) {
+    // a page up, or "Are you sure?" up: then only Continue Mission and the question (the game leaves out the question's
+    // own row; the other of Restart and Quit Mission goes too)
+    if (menus::PausePageUp() || (question && row != 0)) {
         ctx.esp += 4;  // not drawn (the page is drawn on the panel instead): the call's return
         return;
     }

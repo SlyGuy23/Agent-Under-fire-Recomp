@@ -298,6 +298,13 @@ void Loaded() {
         constexpr char kNow[] = "Please don't turn off your system.";
         char* text = static_cast<char*>(kernel::HostPtr(kTurnOff));
         if (std::memcmp(text, kWas, sizeof(kWas)) == 0) std::memcpy(text, kNow, sizeof(kNow));
+        // the Save and Load screens' device name (0x1D5138, 15 bytes with its end, read through the device name
+        // table at 0x20E260): no Xbox here either
+        constexpr uint32_t kHardDisk = 0x1D5138;
+        constexpr char kDiskWas[] = "Xbox Hard Disk";
+        constexpr char kDiskNow[] = "Hard Disk";
+        char* disk = static_cast<char*>(kernel::HostPtr(kHardDisk));
+        if (std::memcmp(disk, kDiskWas, sizeof(kDiskWas)) == 0) std::memcpy(disk, kDiskNow, sizeof(kDiskNow));
     }
     if (std::string_view(IMAGE_XBE) != "driving.xbe") return;
     LOGR("Driving: image loaded, starting");
