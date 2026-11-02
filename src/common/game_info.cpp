@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
+#include <string>
 #include <string_view>
 
 #ifdef _WIN32
@@ -82,12 +83,50 @@ void DrivingOptions(const std::filesystem::path& launch) {
     std::fclose(f);
 }
 
+// the folder the kernel boots with as the hard disk (main.cpp): hdd, or hddN for a second copy on this PC
+std::filesystem::path HddDir() {
+    return app::ExeDir() / (app::Instance() > 1 ? "hdd" + std::to_string(app::Instance()) : std::string("hdd"));
+}
+
+// bond_eng.xbe expects to be started by default.xbe, whose launch data (0x22380 in default.xbe: its 0x1A4-byte object
+// at 0x2252D0) says so: +4 "LOADER PRESENT", +0x94 2, +0xA4 the language file "IDL_ENG.LOC", +0x16C 1 (launches made).
+// At boot (0x268F0) the game takes +4 as "driving.xbe is there" ([0x2A5D38]); with no launch data it is 0 and every
+// driving and on-rails mission (Precious Cargo mis02a, Dangerous Pursuit mis02b, Streets of Bucharest mis07a, Forbidden
+// Depths mis09, 0x4AB04) plays the Night of the Jackal level m6_1 in their place. The game is started without it when
+// Skip Intros or a press during the films relaunches straight into it, or when AgentUnderFireGame.exe is run on its
+// own: it then gets the same launch data the launcher hands over (read and removed by kernel::Boot after this).
+// A launch.bin already there (the return from driving.xbe) is left as it is.
+void LauncherLaunchData() {
+    namespace fs = std::filesystem;
+    fs::path hdd = HddDir(), launch = hdd / "launch.bin";
+    std::error_code ec;
+    if (fs::exists(launch, ec)) return;
+    uint8_t page[0x1000] = {};
+    auto put = [&](uint32_t at, uint32_t x) { std::memcpy(page + at, &x, 4); };
+    auto str = [&](uint32_t at, const char* s) { std::memcpy(page + at, s, std::strlen(s) + 1); };
+    put(0, 0);                     // LDT_TITLE
+    put(4, 0x4541000D);            // the title
+    str(8, "\\Device\\CdRom0;BOND_ENG.XBE");
+    constexpr uint32_t kData = 0x400;
+    str(kData + 4, "LOADER PRESENT");
+    put(kData + 0x94, 2);
+    str(kData + 0xA4, "IDL_ENG.LOC");
+    put(kData + 0x16C, 1);
+    fs::create_directories(hdd, ec);
+    bool written = false;
+    if (std::FILE* f = std::fopen(launch.string().c_str(), "wb")) {
+        written = std::fwrite(page, 1, sizeof(page), f) == sizeof(page);
+        std::fclose(f);
+    }
+    LOGR("Game: started without the launcher's launch data, given it%s", written ? "" : " (not written)");
+}
+
 // A driving mission is a separate executable the game relaunches into, with the mission in its launch data
 // (hdd\launch.bin, read once at boot). That data is kept as hdd\driving_launch.bin, so starting
 // AgentUnderFireDriving.exe on its own plays the last driving mission again without the on-foot mission before it.
 void KeepDrivingLaunch(bool relaunched) {
     namespace fs = std::filesystem;
-    fs::path hdd = app::ExeDir() / "hdd", launch = hdd / "launch.bin", kept = hdd / "driving_launch.bin";
+    fs::path hdd = HddDir(), launch = hdd / "launch.bin", kept = hdd / "driving_launch.bin";
     std::error_code ec;
     if (relaunched) {
         if (fs::exists(launch, ec)) fs::copy_file(launch, kept, fs::copy_options::overwrite_existing, ec);
@@ -161,6 +200,7 @@ void Init() {
     if (launcher && overlay::g_skip_intros && !relaunched) kernel::Relaunch(kGameExe);
     if (launcher && !relaunched) SkipIntrosOnPress();
     if (std::string_view(IMAGE_XBE) == "driving.xbe") KeepDrivingLaunch(relaunched);
+    if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") LauncherLaunchData();
 }
 
 // The driving missions cannot be run where this port is built (their data is too big to copy), so the log gets where
