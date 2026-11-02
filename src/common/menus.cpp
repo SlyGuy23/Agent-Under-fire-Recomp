@@ -367,7 +367,8 @@ std::vector<uint8_t> ItalicText(std::string_view text, const uint8_t* tmpl, uint
         const float* p = At(tmpl, stride, i, l.pos);
         corners[i] = {std::fabs(p[0] - first.x1) < std::fabs(p[0] - first.x0), std::fabs(p[1] - first.y1) < std::fabs(p[1] - first.y0)};
     }
-    for (char ch : text) {
+    for (size_t k = 0; k < text.size(); k++) {
+        char ch = text[k];
         const MenuGlyph* g = FindGlyph(kTitleFont, ch);
         if (!g) {
             x += kTitleFont.space;
@@ -387,7 +388,8 @@ std::vector<uint8_t> ItalicText(std::string_view text, const uint8_t* tmpl, uint
             t[1] = float(bottom ? g->y1 : g->y0) / 128.0f;
             std::memcpy(d + l.color, color.data(), 16);
         }
-        x += g->advance;
+        // even gaps between the letters (menu_font.h): the table's advances leave "Settin gs"
+        x += k + 1 < text.size() ? float(ItalicAdvance(ch, text[k + 1])) : float(g->advance);
     }
     return out;
 }
@@ -918,6 +920,24 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     if (Paused()) {
         bool page = PausePage();
         if (count == 6 && TextureSize(s, 64, 64) && Near(b.x0, kMarkerX, 3)) {
+            // the marker is the << of a 64x64 sheet (drawn mirrored) whose quad starts on the texel row right under
+            // the sheet's blue picture and ends at its right edge: the filtering took in a row of that picture (a
+            // line along the marker's top) and, wrapping, the sheet's left edge. Each edge of the part drawn goes
+            // half a texel in, the same way however often the game draws it (as the driving HUD's sheet).
+            for (int c = 0; c < 2; c++) {
+                float lo = 1e9f, hi = -1e9f;
+                for (uint32_t i = 0; i < 6; i++) {
+                    float x = At(v, stride, i, l.tc)[c] * 64;
+                    lo = std::min(lo, x), hi = std::max(hi, x);
+                }
+                if (hi - lo < 4) continue;
+                float base_lo = std::floor(lo + 0.25f), base_hi = std::ceil(hi - 0.25f);
+                for (uint32_t i = 0; i < 6; i++) {
+                    float* q = At(v, stride, i, l.tc);
+                    float x = q[c] * 64;
+                    q[c] = (x - lo < hi - x ? base_lo + 0.5f : base_hi - 0.5f) / 64;
+                }
+            }
             int extra = g_pause_extra.load();
             if (page) Hide(v, stride, l, count);
             else if (extra >= 0) MoveY(v, stride, l, count, kPauseTop + kPauseStep * float(kPauseRows + extra) - kMarkerAbove - b.y0);
@@ -1304,13 +1324,30 @@ ImU32 Rgb(const std::array<float, 4>& c, float a = 1) {
 }
 
 // text at console coordinates, with the list's shadow a pixel down and right
+// a line in the italic lettering's ImGui font, a letter at a time with ItalicAdvance's even gaps between the letters
+// (ImGui's own layout has only each letter's advance); characters the table lacks keep the font's advance. Its width
+// in window pixels when dl is null.
+float ItalicLine(ImFont* f, ImDrawList* dl, float px, ImVec2 p, ImU32 col, const char* text) {
+    float s = px / float(kTitleFont.line_height), x0 = p.x;
+    char one[2] = {0, 0};
+    for (const char* c = text; *c; c++) {
+        one[0] = *c;
+        if (dl) dl->AddText(f, px, p, col, one);
+        if (FindGlyph(kTitleFont, *c) || *c == ' ') p.x += float(ItalicAdvance(*c, c[1])) * s;
+        else p.x += f->GetCharAdvance(ImWchar(static_cast<unsigned char>(*c))) * px / f->FontSize;
+    }
+    return p.x - x0;
+}
+
 void SayIn(ImFont* f, ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align) {
     if (!f) f = g_font ? g_font : ImGui::GetFont();
     float px = size * GuestScale();
     ImVec2 p = Guest(x, y);
-    if (align != 0) p.x -= f->CalcTextSizeA(px, FLT_MAX, 0, text).x * align;
+    bool italic = f == g_title_font && g_title_font;
+    if (align != 0) p.x -= (italic ? ItalicLine(f, nullptr, px, p, col, text) : f->CalcTextSizeA(px, FLT_MAX, 0, text).x) * align;
     // no shadow copy: at PC resolutions its offset edge reads as a line along every letter
-    dl->AddText(f, px, p, col, text);
+    if (italic) ItalicLine(f, dl, px, p, col, text);
+    else dl->AddText(f, px, p, col, text);
 }
 
 void Say(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align = 0) {
@@ -1322,6 +1359,7 @@ void Title(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* 
 float WidthIn(ImFont* f, float size, const char* text) {
     if (!f) f = g_font ? g_font : ImGui::GetFont();
     float px = size * GuestScale();
+    if (f == g_title_font && g_title_font) return ItalicLine(f, nullptr, px, ImVec2(0, 0), 0, text) / GuestScale();
     return f->CalcTextSizeA(px, FLT_MAX, 0, text).x / GuestScale();
 }
 float TitleWidth(float size, const char* text) { return WidthIn(g_title_font, size, text); }
@@ -1881,9 +1919,13 @@ void DrivingPauseRows() {
         float x = g_drive_x.load() + 4, y = kDriveBase - 2 + kDriveStep * float(kPauseRows + row) - 18;
         ImVec2 p = Guest(x, y), sh = Guest(x + 0.6f, y + 0.6f);
         // the game's shadow as it is now drawn (tucked under the letters, fainter)
-        dl->AddText(f, px, sh, IM_COL32(0, 0, 0, 90), text);
+        auto line = [&](ImVec2 at, ImU32 col) {
+            if (f == g_title_font) ItalicLine(f, dl, px, at, col, text);
+            else dl->AddText(f, px, at, col, text);
+        };
+        line(sh, IM_COL32(0, 0, 0, 90));
         int first = dl->VtxBuffer.Size;
-        dl->AddText(f, px, p, top, text);
+        line(p, top);
         // the game's shading, top to bottom over the line
         for (int i = first; i < dl->VtxBuffer.Size; i++) {
             ImDrawVert& vx = dl->VtxBuffer[i];

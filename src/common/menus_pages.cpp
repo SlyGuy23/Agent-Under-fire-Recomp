@@ -59,6 +59,17 @@ struct MouseHit {
 
 ImU32 Dim(ImU32 c) { return (c & 0x00FFFFFF) | (uint32_t(0x78) << 24); }
 
+// a scroll arrow (more rows above: up, below: down) in the body lettering's look: a chevron of the list's stroke
+// weight (two console pixels at the rows' size) and colour, square-ended, centred on x, in the 11 px cell from y
+void Chevron(const PageContext& c, ImDrawList* dl, float x, float y, bool up, ImU32 col) {
+    constexpr float kHalfW = 6, kTall = 5.5f, kStroke = 1.9f;
+    float top = y + (up ? 1.5f : 3.5f), bottom = top + kTall;
+    ImVec2 pts[3];
+    if (up) pts[0] = c.guest(x - kHalfW, bottom), pts[1] = c.guest(x, top), pts[2] = c.guest(x + kHalfW, bottom);
+    else pts[0] = c.guest(x - kHalfW, top), pts[1] = c.guest(x, bottom), pts[2] = c.guest(x + kHalfW, top);
+    dl->AddPolyline(pts, 3, col, ImDrawFlags_None, kStroke * c.scale());
+}
+
 // a list in the options screen's style: title, rows with values, scrolled to keep sel in view
 MouseHit DrawList(const PageContext& c, const char* title, const std::vector<Row>& rows, int sel, int& scroll,
                   const char* hint) {
@@ -91,8 +102,8 @@ MouseHit DrawList(const PageContext& c, const char* title, const std::vector<Row
             if (ImGui::IsMouseClicked(1)) hit.step = -1;
         }
     }
-    if (scroll > 0) c.title(dl, 320, kTopY - 12, 11, c.unlit, "^", 0.5f);
-    if (scroll + kVisibleRows < int(rows.size())) c.title(dl, 320, kTopY + kRowStep * kVisibleRows - 2 + extra, 11, c.unlit, "v", 0.5f);
+    if (scroll > 0) Chevron(c, dl, 320, kTopY - 12, true, c.unlit);
+    if (scroll + kVisibleRows < int(rows.size())) Chevron(c, dl, 320, kTopY + kRowStep * kVisibleRows - 2 + extra, false, c.unlit);
     if (hint) c.say(dl, 320, kTopY + kRowStep * kVisibleRows + 6 + extra, kTextSize - 4, Dim(c.unlit), hint, 0.5f);
     hit.wheel = io.MouseWheel;
     return hit;
@@ -566,8 +577,8 @@ void DrawRows(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& row
         if (hover && ImGui::IsMouseHoveringRect(a, b, false)) *hover = i;
     }
     (void)keyboard;
-    if (scroll > 0) c.title(dl, 320, g_rows_y - 12, 11, c.unlit, "^", 0.5f);
-    if (scroll + kControlRows < int(rows.size())) c.title(dl, 320, g_rows_y + kStep * kControlRows - 2, 11, c.unlit, "v", 0.5f);
+    if (scroll > 0) Chevron(c, dl, 320, g_rows_y - 12, true, c.unlit);
+    if (scroll + kControlRows < int(rows.size())) Chevron(c, dl, 320, g_rows_y + kStep * kControlRows - 2, false, c.unlit);
 }
 
 int Clamp(int scroll, int sel, int n) {
@@ -760,7 +771,9 @@ bool ControlsPage(const PageContext& c, const std::vector<PageNav>& nav) {
         if (idle && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) g_section = 1;
         if (idle && ImGui::GetIO().MouseWheel < 0) g_section = 1;
     } else {
-        c.title(dl, 320, 146, 11, Dim(c.unlit), "^  Controls  ^", 0.5f);
+        c.title(dl, 320, 146, 11, Dim(c.unlit), "Controls", 0.5f);
+        float half = c.title_width(11, "Controls") / 2 + 14;
+        Chevron(c, dl, 320 - half, 146, true, Dim(c.unlit)), Chevron(c, dl, 320 + half, 146, true, Dim(c.unlit));
         ImVec2 a = c.guest(220, 144), b = c.guest(420, 160);
         if (idle && ImGui::IsMouseHoveringRect(a, b, false) && ImGui::IsMouseClicked(0)) g_section = 0;
         g_rows_y = 166;
