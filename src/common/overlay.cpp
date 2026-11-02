@@ -65,6 +65,7 @@ bool PackFolderOff(const std::wstring& folder) {
                });
     };
     if (is(kCharacterPack)) return !g_hd_characters;
+    if (is(kEvilSummitPack)) return !g_hd_characters || !g_mission || g_mission() != kEvilSummit;
     if (is(kWeaponPack)) return !g_hd_weapons;
     for (const wchar_t* m : kMenuPacks)
         if (is(m)) return !g_hd_menus;
@@ -587,6 +588,15 @@ void FpsCounter(double fps) {
 
 void Draw(double fps) {
     g_frames++;
+    // the mission-only pack folder follows the mission played: the pack is listed again when it changes
+    if (g_mission) {
+        static uint32_t last = ~0u;
+        uint32_t now = g_mission();
+        if (now != last) {
+            last = now;
+            app::g_pack_folders++;
+        }
+    }
     ImGuiIO& io = ImGui::GetIO();
     io.KeyRepeatRate = 0.1f;  // held arrows step ten times a second
     io.FontGlobalScale = std::max(1.0f, io.DisplaySize.y / 720.0f);

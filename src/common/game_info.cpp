@@ -228,6 +228,8 @@ void SkipIntrosOnPress() {
 
 void Init() {
     overlay::ApplyVolume();
+    if (std::string_view(IMAGE_XBE) == "bond_eng.xbe")
+        overlay::g_mission = [] { return kernel::R32(0x2A88B8) ? kernel::R32(0x2A9F98) : ~0u; };  // in a mission only
     app::g_pack_folder_off = overlay::PackFolderOff;  // the Character / Weapon / Menu and HUD Textures settings
     if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
         controls::SetGameStateQuery(OnFootState);

@@ -24,6 +24,11 @@ inline bool g_hd_menus = true;
 inline constexpr const wchar_t* kCharacterPack = L"AUF Characters 4x";
 inline constexpr const wchar_t* kWeaponPack = L"AUF Weapons 4x";
 inline constexpr const wchar_t* kMenuPacks[] = {L"AUF Menus and HUD 4x", L"AUF Driving HUD 4x", L"AUF Loading Screens 4x"};
+// a pack folder named "AUF Evil Summit Only 4x" is drawn only while that mission (front end index 11) is played, and
+// only with the character part on: the Harrier in its last cutscene, which other missions show as the game drew it
+inline constexpr const wchar_t* kEvilSummitPack = L"AUF Evil Summit Only 4x";
+inline constexpr uint32_t kEvilSummit = 11;
+inline uint32_t (*g_mission)() = nullptr;  // the mission being played, ~0u when none (set by the game)
 bool PackFolderOff(const std::wstring& folder);  // app::g_pack_folder_off
 
 inline std::atomic<uint64_t> g_frames{0};  // frames the game presented, counted in Draw
