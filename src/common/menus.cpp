@@ -1685,9 +1685,16 @@ void DrawPrompts() {
         bool arrows = p.prompt == Prompt::UpDown || p.prompt == Prompt::LeftRight;
         float h, w;
         if (arrows) {
-            h = (p.y1 - p.y0) * 0.7f * k, w = h * key.aspect;
-            float most = (p.x1 - p.x0) * 1.3f * k;
-            if (w > most) w = most, h = w / key.aspect;
+            // the size they had, then a sixth smaller; the right end stays where it was, the same gap from the words
+            auto size = [&](float f, float& hh, float& ww) {
+                hh = (p.y1 - p.y0) * f * k, ww = hh * key.aspect;
+                float most = (p.x1 - p.x0) * 1.3f * k * f / 0.7f;
+                if (ww > most) ww = most, hh = ww / key.aspect;
+            };
+            float h0, w0;
+            size(0.7f, h0, w0);
+            size(0.58f, h, w);
+            cx += (w0 - w) / 2;
         } else {
             // ENTER and BACKSPACE: as wide as the button, its right end at the button's, close to the words
             h = (p.y1 - p.y0) * 0.56f * k, w = h * key.aspect;

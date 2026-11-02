@@ -504,6 +504,7 @@ struct DrawTextures {
     float wide[4] = {};         // host texels per console texel of a target read into a smaller one, 0 otherwise
     float uvrect[4][4] = {};    // kTexRect stages' bounds
     uint64_t key[4] = {};       // texture pack keys, for captures
+    bool pack[4] = {};          // stage draws a texture pack image (its own full mip chain)
 };
 
 // what the last draw set on the command list, so the next one sets only what differs; anything else that sets them
@@ -2041,6 +2042,7 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
         tx.swap = nullptr;
     }
     const Tex& drawn = tx.swap ? *tx.swap : tx;
+    stages.pack[stage] = tx.swap && !tx.figure;
     stages.key[stage] = tx.dump_key;
     FillTextureView(drawn, d, stages.sv[stage]);
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
@@ -2139,6 +2141,7 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
     info = {};
     sv = {};
     stages.rt[stage] = false;
+    stages.pack[stage] = false;
     stages.k[stage] = 1;
     stages.wide[stage] = 0;
     sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -2178,12 +2181,16 @@ D3D12_SAMPLER_DESC StageSampler(const State& s, int i, const DrawTextures& stage
     auto lin = [](uint32_t f) { return f >= kTexfLinear; };
     D3D12_FILTER_TYPE fmin = lin(min) ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
     D3D12_FILTER_TYPE fmag = lin(mag) ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
-    D3D12_FILTER_TYPE fmip = mip == kTexfLinear ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
+    // mip levels: where the title reads them, and also from a texture pack image (made from its 4x picture, the
+    // console's texel size far off; its top level alone shimmers) or any texture with levels while anisotropic
+    // filtering is forced, which needs them. The title often turns them off for textures it gave no levels
+    bool levels = lin(min) && stages.sv[i].Texture2D.MipLevels > 1 && !stages.info[i].shadow;
+    bool mips = mip || (levels && (stages.pack[i] || aniso));
+    D3D12_FILTER_TYPE fmip = mip == kTexfLinear || (mips && !mip) ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
     sd.Filter = D3D12_FILTER(fmin << 4 | fmag << 2 | fmip);
     bool anisotropic = min == kTexfAnisotropic || mag == kTexfAnisotropic;
     uint32_t an = anisotropic ? std::max<uint32_t>(t[kTssMaxAnisotropy], 1) : 1;
-    // forced only where the title filters across mip levels and the texture has them
-    if (aniso && lin(min) && mip && stages.sv[i].Texture2D.MipLevels > 1 && !stages.info[i].shadow) an = aniso;
+    if (aniso && levels && mips) an = aniso;
     if (an > 1) {
         sd.Filter = D3D12_FILTER_ANISOTROPIC;
         sd.MaxAnisotropy = std::min<uint32_t>(an, 16);
@@ -2194,7 +2201,7 @@ D3D12_SAMPLER_DESC StageSampler(const State& s, int i, const DrawTextures& stage
     sd.AddressW = Address(t[kTssAddressW]);
     sd.MipLODBias = Bits(t[kTssMipLodBias]);
     sd.MinLOD = float(t[kTssMaxMipLevel]);
-    sd.MaxLOD = mip ? D3D12_FLOAT32_MAX : sd.MinLOD;
+    sd.MaxLOD = mips ? D3D12_FLOAT32_MAX : sd.MinLOD;
     Color(t[kTssBorderColor], sd.BorderColor);
     if (stages.info[i].shadow) {
         // the console tests texel OP r, D3D12 tests r OP texel; with both reversed (g_reversed_depth) it is the same OP
@@ -3766,6 +3773,9 @@ void D3D12Backend::ApplySettings() {
     bool remake = ext_ && ext_->Settings();
     if (std::fabs(want - scale_) > 1e-4f || remake) {
         Flush();
+        LOGI("d3d12: render scale %.2f (a 640x480 target drawn at %ux%u), anti-aliasing %u, anisotropic %u", want,
+             uint32_t(std::lround(640 * want)), uint32_t(std::lround(480 * want)), uint32_t(app::Get().anti_aliasing),
+             aniso);
         scale_ = want;
         if (ext_) {
             // the extension's targets are its own: all made again

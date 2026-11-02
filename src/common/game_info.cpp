@@ -227,8 +227,7 @@ void SkipIntrosOnPress() {
 
 void Init() {
     overlay::ApplyVolume();
-    app::g_pack_folder_off = overlay::PackFolderOff;  // the old HD Character Textures setting, now always on
-    overlay::g_hd_characters = true;
+    app::g_pack_folder_off = overlay::PackFolderOff;  // the Character / Weapon / Menu and HUD Textures settings
     if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
         controls::SetGameStateQuery(OnFootState);
         controls::SetFireRedirect(FireRedirect);
@@ -548,14 +547,15 @@ const app::GameInfo app::kGame = {
     .log = "aufire",
     .settings = "settings.toml",
     .splash = L"splash",
-    .missing = L"Put the game in the assets folder: its disc image (.iso), or default.xbe, bond_eng.xbe and DRIVING.XBE "
-               L"with the game's folders beside them.",
+    .missing = L"Put your disc image of the game (PAL, .iso) in the ROM folder beside AgentUnderFire.exe, then start "
+               L"AgentUnderFire.exe again.",
     .images = {{"default.xbe", "AgentUnderFire"}, {"bond_eng.xbe", "AgentUnderFireGame"},
                {"driving.xbe", "AgentUnderFireDriving"}},
     .options = {{"skip_intros", &overlay::g_skip_intros, nullptr}, {"fps_counter", &overlay::g_fps_counter, nullptr},
                 {"master_volume", nullptr, &overlay::g_master_volume}, {"modern_sticks", &sticks::g_modern, nullptr},
                 {"stick_deadzone", nullptr, &sticks::g_deadzone},
                 {"menus_4x3", &app::g_menus_4x3, nullptr}, {"hd_character_textures", &overlay::g_hd_characters, nullptr},
+                {"hd_weapon_textures", &overlay::g_hd_weapons, nullptr}, {"hd_menu_textures", &overlay::g_hd_menus, nullptr},
                 {"autosave", &autosave::g_enabled, nullptr},
                 {"damage_effects", nullptr, &damage_fx::g_level},
                 {"damage_flash_black", &damage_fx::g_flash_black, nullptr}},

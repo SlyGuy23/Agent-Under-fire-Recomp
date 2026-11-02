@@ -15,9 +15,15 @@ namespace overlay {
 inline bool g_skip_intros = false;
 inline bool g_fps_counter = false;
 inline uint32_t g_master_volume = 100;  // percent
-// the character pack, textures\replacement\AUF Characters 4x: drawn while on, left out of the pack while off
+// parts of the texture pack (folders under textures\replacement\), each drawn while on and left out while off:
+// the characters (props they handle too: keycards, the business card), the weapons, the menus and HUD (with the
+// driving HUD and the loading screens)
 inline bool g_hd_characters = true;
+inline bool g_hd_weapons = true;
+inline bool g_hd_menus = true;
 inline constexpr const wchar_t* kCharacterPack = L"AUF Characters 4x";
+inline constexpr const wchar_t* kWeaponPack = L"AUF Weapons 4x";
+inline constexpr const wchar_t* kMenuPacks[] = {L"AUF Menus and HUD 4x", L"AUF Driving HUD 4x", L"AUF Loading Screens 4x"};
 bool PackFolderOff(const std::wstring& folder);  // app::g_pack_folder_off
 
 inline std::atomic<uint64_t> g_frames{0};  // frames the game presented, counted in Draw

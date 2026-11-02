@@ -76,10 +76,16 @@ bool OpenSplash() {
 
     HINSTANCE inst = GetModuleHandleW(nullptr);
     WNDCLASSEXW wc{sizeof(wc)};
-    wc.lpfnWndProc = DefWindowProcW;
+    // no cursor over the loading picture: it is no menu
+    wc.lpfnWndProc = [](HWND h, UINT m, WPARAM w, LPARAM l) -> LRESULT {
+        if (m == WM_SETCURSOR && LOWORD(l) == HTCLIENT) {
+            SetCursor(nullptr);
+            return TRUE;
+        }
+        return DefWindowProcW(h, m, w, l);
+    };
     wc.hInstance = inst;
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
-    wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32514));  // IDC_WAIT
     std::wstring cls = std::wstring(kGame.name) + L"Splash";
     wc.lpszClassName = cls.c_str();
     RegisterClassExW(&wc);

@@ -176,6 +176,7 @@ std::string Utf8(const fs::path& p) {
 
 void ListPack(const fs::path& dir) {
     g.files.clear();
+    std::vector<fs::path> off;  // folders the game has turned off
     std::error_code ec;
     fs::recursive_directory_iterator it(dir, ec);
     for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
@@ -186,11 +187,22 @@ void ListPack(const fs::path& dir) {
             app::g_pack_folder_off(p.filename().wstring())) {
             LOGR("texture pack: %s left out", Utf8(p.filename()).c_str());
             it.disable_recursion_pending();
+            off.push_back(p);
             continue;
         }
         bool image = _wcsicmp(p.extension().c_str(), L".dds") == 0 || _wcsicmp(p.extension().c_str(), L".png") == 0;
         uint64_t key = image ? KeyInName(p.stem().wstring()) : 0;
         if (key) g.files.emplace(key, p);
+    }
+    // a texture in a part turned off stays the game's, though another folder has a copy of it too
+    for (const fs::path& d : off) {
+        std::error_code off_ec;
+        for (fs::recursive_directory_iterator o(d, off_ec); !off_ec && o != fs::recursive_directory_iterator();
+             o.increment(off_ec)) {
+            const fs::path& q = o->path();
+            bool image = _wcsicmp(q.extension().c_str(), L".dds") == 0 || _wcsicmp(q.extension().c_str(), L".png") == 0;
+            if (uint64_t key = image ? KeyInName(q.stem().wstring()) : 0) g.files.erase(key);
+        }
     }
     LOGR("texture pack: %zu images in %s", g.files.size(), Utf8(dir).c_str());
 }

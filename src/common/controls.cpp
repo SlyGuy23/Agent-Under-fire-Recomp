@@ -1440,7 +1440,12 @@ void UpdateCursor(HWND hwnd) {
     bool focused = GetForegroundWindow() == hwnd && !IsIconic(hwnd);
     bool capture = g_device == Device::KeyboardMouse && !g_cursor_wanted.load(std::memory_order_relaxed) &&
                    !overlay::Open() && !PageOpen() && focused;
-    bool hide = capture || (g_device == Device::Controller && focused);
+    // over the game's window and no menu wanting it: hidden too, though the window is not (yet) the focused one, as
+    // while a mission's window comes up
+    POINT at{};
+    bool over = GetCursorPos(&at) && WindowFromPoint(at) == hwnd;
+    bool free_cursor = g_cursor_wanted.load(std::memory_order_relaxed) || overlay::Open() || PageOpen();
+    bool hide = capture || (g_device == Device::Controller && focused) || (over && !free_cursor);
     if (capture) {
         RECT r;
         GetClientRect(hwnd, &r);
@@ -1453,10 +1458,13 @@ void UpdateCursor(HWND hwnd) {
         g_clipped = false;
         ClipCursor(nullptr);
     }
-    if (hide && !g_hidden) {
+    if (hide) {
+        // again each time while it should be hidden: a window shown over ours (the loading splash, a new mission's
+        // window coming up while the old one goes, a film) puts the arrow back without the mouse moving, so no
+        // WM_SETCURSOR comes to hide it again
         g_hidden = true;
-        SetCursor(nullptr);
-    } else if (!hide && g_hidden) {
+        if (GetCursor()) SetCursor(nullptr);
+    } else if (g_hidden) {
         g_hidden = false;
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
     }

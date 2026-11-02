@@ -178,7 +178,8 @@ float RenderScale(uint32_t guest_width, uint32_t guest_height, uint32_t window_w
     float ss = 1.0f;
     if (s.anti_aliasing == AntiAliasing::Ssaa2x) ss = 1.41421356f;
     if (s.anti_aliasing == AntiAliasing::Ssaa4x) ss = 2.0f;
-    float scale = native * (std::clamp(s.render_percent, 25u, 400u) / 100.0f) * ss;
+    // render_percent is no longer offered: the frame is drawn at the window's own pixels, times the supersampling
+    float scale = native * ss;
     // inside D3D12's 16384 texel limit, and at most about four times a 4K screen's pixels a target
     constexpr float kMaxSide = 16384.0f;
     constexpr float kMaxPixels = 15360.0f * 8640.0f;

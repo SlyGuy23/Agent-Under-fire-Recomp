@@ -9,20 +9,21 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 
 ## Installation
 
-- Put your game files in the `assets` folder. This can be an ISO, or the extracted data files.
-- Run `AgentUnderFire.exe`. It plays the intro films (`default.xbe`), then switches to `AgentUnderFireGame.exe` (`bond_eng.xbe`), which switches to `AgentUnderFireDriving.exe` (`DRIVING.XBE`) for the driving missions and back. Keep all three beside each other.
-- The game is also found in a `game` folder beside the exe.
-- Recomp settings can be adjusted in `settings.toml` beside the exe.
+1. Unzip the release into a folder of its own.
+2. Put your disc image of the game (PAL, `.iso`) in the `ROM` folder.
+3. Run `AgentUnderFire.exe`.
+
+That's all. Keep `AgentUnderFireGame.exe` and `AgentUnderFireDriving.exe` beside it: the game switches to them for the missions and the driving levels on its own. Settings are kept in `settings.toml`, created on first start. Upscaled texture packs go in `textures\replacement` (each pack in a folder of its own).
 
 ## Features
 
 ### Settings panel
 Press **F10**, or click **both sticks** on a controller, to open the settings panel. Left and Right change a setting; B, Escape or F10 closes it.
-- **Display** - Display mode, resolution (Fullscreen and Windowed; Borderless always uses the desktop), render resolution, max frame rate, vertical sync and an FPS counter.
-- **Graphics** - Anisotropic filtering.
+- **Display** - Display mode, resolution (Fullscreen and Windowed; Borderless always uses the desktop), max frame rate, vertical sync and an FPS counter.
+- **Graphics** - Anisotropic filtering and anti-aliasing (FXAA, 2x or 4x supersampling).
 - **General** - Skip Intros starts straight at the game; master volume.
 - **Controls** - Modern Stick Response gives both sticks a round deadzone that keeps the stick's exact angle, in place of the game's per axis deadzone that snaps movement to eight directions; Stick Deadzone sets its size. The driving missions get the same, steering from the first movement past it.
-- **Textures** - Texture replacement and dumping.
+- **Textures** - Upscaled texture replacement, with the character, weapon and menu/HUD parts each on or off, and texture dumping.
 
 ### Display
 

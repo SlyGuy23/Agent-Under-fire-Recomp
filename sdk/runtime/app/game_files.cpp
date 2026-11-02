@@ -33,12 +33,16 @@ fs::path FindAssets() {
     // a folder holding the game (its xbe or an .iso) first: assets, or game as earlier builds of this port used
     auto holds = [&](const fs::path& d) {
         if (fs::exists(d / IMAGE_XBE, ec)) return true;
-        for (auto& e : fs::directory_iterator(d, ec))
-            if (e.path().extension() == ".iso" || e.path().extension() == ".ISO") return true;
+        for (auto& e : fs::directory_iterator(d, ec)) {
+            std::wstring ext = e.path().extension().wstring();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return wchar_t(std::towlower(c)); });
+            if (ext == L".iso") return true;
+        }
         return false;
     };
+    // ROM: where the release tells players to put their disc image
     for (auto d = dir; ; d = d.parent_path()) {
-        for (const char* name : {"assets", "game"})
+        for (const char* name : {"ROM", "ROMs", "assets", "game"})
             if (fs::is_directory(d / name, ec) && holds(d / name)) return d / name;
         if (!d.has_parent_path() || d.parent_path() == d) break;
     }

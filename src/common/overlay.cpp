@@ -58,11 +58,17 @@ std::string DamageFlashDesc() {
 }
 
 bool PackFolderOff(const std::wstring& folder) {
-    if (g_hd_characters) return false;
-    std::wstring want = kCharacterPack;
-    return folder.size() == want.size() && std::equal(folder.begin(), folder.end(), want.begin(), [](wchar_t a, wchar_t b) {
-               return std::towlower(a) == std::towlower(b);
-           });
+    auto is = [&](const wchar_t* want) {
+        std::wstring w = want;
+        return folder.size() == w.size() && std::equal(folder.begin(), folder.end(), w.begin(), [](wchar_t a, wchar_t b) {
+                   return std::towlower(a) == std::towlower(b);
+               });
+    };
+    if (is(kCharacterPack)) return !g_hd_characters;
+    if (is(kWeaponPack)) return !g_hd_weapons;
+    for (const wchar_t* m : kMenuPacks)
+        if (is(m)) return !g_hd_menus;
+    return false;
 }
 
 void Toggle() {
@@ -241,7 +247,6 @@ bool FlipRow(const char* label, bool& on, bool enabled = true) {
     return true;
 }
 
-constexpr uint32_t kRenderPercents[] = {50, 75, 100, 125, 150, 200};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, app::kFpsCapRefresh, 0};
 constexpr uint32_t kAniso[] = {0, 2, 4, 8, 16};
 const char* const kAnisoNames[] = {"GAME DEFAULT", "2x", "4x", "8x", "16x"};
@@ -252,6 +257,28 @@ const char* const kDumpNames[] = {"PNG", "DDS"};
 void Changed(bool display) {
     if (display) app::ApplyDisplay();
     app::Save();
+}
+
+// one part of the texture pack on or off: the pack is listed again at the next frame
+void TogglePack(bool& on) {
+    on = !on;
+    app::g_pack_folders++;
+    Changed(false);
+}
+
+std::string PackDesc() {
+    return app::Get().custom_textures ? "The upscaled textures replace the game's, in the parts turned on below"
+                                      : "The game's own textures everywhere";
+}
+std::string CharacterPackDesc() {
+    return g_hd_characters ? "Upscaled characters, and the keycards and business card they handle"
+                           : "The game's own character textures";
+}
+std::string WeaponPackDesc() {
+    return g_hd_weapons ? "Upscaled weapons and gadgets" : "The game's own weapon and gadget textures";
+}
+std::string MenuPackDesc() {
+    return g_hd_menus ? "Upscaled menus, HUD, medals and loading screens" : "The game's own menu, HUD and loading screen art";
 }
 
 // one setting: shown by the F10 panel and the PC Settings page alike
@@ -308,23 +335,6 @@ const Entry kEntries[] = {
      },
      // borderless always covers the monitor at its desktop mode
      [] { return app::Get().display_mode != DisplayMode::Borderless; }},
-    {"DISPLAY", "RENDER RESOLUTION",
-     [] {
-         // with the size the frame is drawn at, which follows from the next frame; the front end's menus are 640 x 480
-         // art at any size, so the difference shows in the missions
-         std::string text = Percent(kRenderPercents[Nearest(kRenderPercents, app::Get().render_percent)]);
-         if (app::g_render_size[0]) {
-             char size[32];
-             std::snprintf(size, sizeof(size), " (%ux%u)", app::g_render_size[0], app::g_render_size[1]);
-             text += size;
-         }
-         return text;
-     },
-     [](int st) {
-         StepTable(kRenderPercents, app::Get().render_percent, st);
-         Changed(false);
-     },
-     [] { return true; }},
     {"DISPLAY", "VERTICAL SYNC", [] { return std::string(OnOff(app::Get().vsync)); },
      [](int) {
          app::Get().vsync = !app::Get().vsync;
@@ -392,17 +402,19 @@ const Entry kEntries[] = {
          Changed(false);
      },
      [] { return true; }, FovDesc},
-    // every upscaled texture in the pack, the characters' too (their folder is no longer a setting of its own)
+    // every upscaled texture in the pack; the three rows under it each leave one part of the pack out
     {"TEXTURES", "UPSCALED TEXTURE REPLACEMENT", [] { return std::string(OnOff(app::Get().custom_textures)); },
      [](int) {
          app::Get().custom_textures = !app::Get().custom_textures;
-         if (!g_hd_characters) {
-             g_hd_characters = true;
-             app::g_pack_folders++;  // the pack is listed again at the next frame
-         }
          Changed(false);
      },
-     [] { return true; }},
+     [] { return true; }, PackDesc},
+    {"TEXTURES", "CHARACTER TEXTURES", [] { return std::string(OnOff(g_hd_characters)); },
+     [](int) { TogglePack(g_hd_characters); }, [] { return app::Get().custom_textures; }, CharacterPackDesc},
+    {"TEXTURES", "WEAPON TEXTURES", [] { return std::string(OnOff(g_hd_weapons)); },
+     [](int) { TogglePack(g_hd_weapons); }, [] { return app::Get().custom_textures; }, WeaponPackDesc},
+    {"TEXTURES", "MENU AND HUD TEXTURES", [] { return std::string(OnOff(g_hd_menus)); },
+     [](int) { TogglePack(g_hd_menus); }, [] { return app::Get().custom_textures; }, MenuPackDesc},
     {"TEXTURES", "TEXTURE DUMPING", [] { return std::string(OnOff(app::Get().dump_textures)); },
      [](int) {
          app::Get().dump_textures = !app::Get().dump_textures;
@@ -448,8 +460,8 @@ void Defaults() {
     g_skip_intros = false;
     g_fps_counter = false;
     app::g_menus_4x3 = true;
-    if (!g_hd_characters) app::g_pack_folders++;
-    g_hd_characters = true;
+    if (!g_hd_characters || !g_hd_weapons || !g_hd_menus) app::g_pack_folders++;
+    g_hd_characters = g_hd_weapons = g_hd_menus = true;
     g_master_volume = 100;
     fov::g_offset = 0;
     damage_fx::g_level = damage_fx::kDefault;
