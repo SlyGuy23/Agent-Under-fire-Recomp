@@ -1438,7 +1438,14 @@ struct SheetFont {
     ImFont* im = nullptr;
     std::vector<int> ids;
     int space = -1;
+    bool outline = false;  // the sheet's letters have a dark outline (FillSheetFont draws one round them)
 };
+
+// the sheet's white coverage at a pixel (0-255): an outline drawn dark round the letters is not part of them
+inline int WhiteAt(const SheetFont& sf, size_t i) {
+    const uint8_t* p = &sf.px[i * 4];
+    return p[3] * std::max({p[0], p[1], p[2]}) / 255;
+}
 
 bool AddSheetFont(ImGuiIO& io, const MenuFont& mf, const char* name, SheetFont& sf) {
     sf.font = &mf;
@@ -1453,13 +1460,23 @@ bool AddSheetFont(ImGuiIO& io, const MenuFont& mf, const char* name, SheetFont& 
     cfg.GlyphRanges = io.Fonts->GetGlyphRangesDefault();
     std::snprintf(cfg.Name, sizeof(cfg.Name), "%s", name);
     sf.im = io.Fonts->AddFontDefault(&cfg);  // the rest of its characters, should any be drawn
+    // a dark outline in the sheet (opaque, dark pixels): the atlas's letters get one of their own (FillSheetFont)
+    size_t dark = 0;
+    for (size_t i = 0; i < size_t(sf.w) * sf.h; i++) {
+        const uint8_t* p = &sf.px[i * 4];
+        dark += p[3] > 160 && std::max({p[0], p[1], p[2]}) < 64;
+    }
+    sf.outline = dark > size_t(sf.w) * sf.h / 200;
     for (int gi = 0; gi < mf.count; gi++) {
         const MenuGlyph& g = mf.glyphs[gi];
-        // a transparent pixel round each letter in the atlas: drawn smaller than the atlas holds it, the filtering
-        // otherwise reached the next letter's edge row or column, a thin line over or beside the letter
-        int gw = int(std::lround((g.x1 - g.x0 + 1) * k)) + 2, gh = int(std::lround((g.y1 - g.y0 + 1) * k)) + 2;
+        // Each letter's rectangle of the sheet and a texel more round it (room for its outline), then two
+        // transparent pixels round that. The glyph is drawn from all but the outer one of those (FillSheetFont pulls
+        // it in after the build): ImGui packs the next rectangle right against this one, and a glyph drawn to the
+        // rectangle's very edge took in a little of it through the filtering, a faint line under or beside the
+        // letter wherever it landed between pixels.
+        int gw = int(std::lround((g.x1 - g.x0 + 3) * k)) + 4, gh = int(std::lround((g.y1 - g.y0 + 3) * k)) + 4;
         sf.ids.push_back(io.Fonts->AddCustomRectFontGlyph(sf.im, ImWchar(static_cast<unsigned char>(g.c)), gw, gh,
-                                                          g.advance * k, ImVec2(-1, (g.dy + 2) * k - 1)));
+                                                          g.advance * k, ImVec2(-k - 2, (g.dy + 1) * k - 2)));
     }
     sf.space = io.Fonts->AddCustomRectFontGlyph(sf.im, ImWchar(' '), 1, 1, mf.space * k, ImVec2(0, 0));
     return true;
@@ -1485,7 +1502,7 @@ SheetShapes Shapes(const SheetFont& sf) {
             for (int dy = 0; dy < k; dy++)
                 for (int dx = 0; dx < k; dx++) {
                     int sx = std::min(int(sf.w) - 1, x * k + dx), sy = std::min(int(sf.h) - 1, y * k + dy);
-                    sum += sf.px[(size_t(sy) * sf.w + sx) * 4 + 3];
+                    sum += WhiteAt(sf, size_t(sy) * sf.w + sx);
                 }
             on[size_t(y) * w + x] = sum / (k * k) > 40;
         }
@@ -1514,14 +1531,15 @@ SheetShapes Shapes(const SheetFont& sf) {
     return sh;
 }
 
-// the texels a glyph keeps: its shapes and one texel round them that no other shape has
+// the texels a glyph keeps: its shapes and one texel round them that no other shape has (over its rectangle and a
+// texel round it)
 std::vector<uint8_t> GlyphMask(const SheetShapes& sh, const MenuGlyph& g) {
     int x0 = g.x0, x1 = g.x1, y0 = g.y0, y1 = g.y1;
     std::vector<int> inside(sh.size.size() + 1, 0);
     for (int y = y0; y < y1 && y < sh.h; y++)
         for (int x = x0; x < x1 && x < sh.w; x++) inside[size_t(sh.label[size_t(y) * sh.w + x])]++;
     auto own = [&](int l) { return l > 0 && inside[size_t(l)] * 2 >= sh.size[size_t(l - 1)]; };
-    int w = x1 - x0 + 2, h = y1 - y0 + 2;  // a texel of margin round the rectangle
+    int w = x1 - x0 + 3, h = y1 - y0 + 3;  // a texel of margin round the rectangle
     std::vector<uint8_t> m(size_t(w) * h, 0);
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) {
@@ -1530,7 +1548,10 @@ std::vector<uint8_t> GlyphMask(const SheetShapes& sh, const MenuGlyph& g) {
             int l = sh.label[size_t(sy) * sh.w + sx];
             if (l && !own(l)) continue;
             bool keep = own(l);
-            for (int dy = -1; dy <= 1 && !keep; dy++)
+            // outside the letter's own rectangle (the margin for its outline) only its own shapes: the faint edge of
+            // the letter above or beside it in the sheet is not taken in
+            bool in_rect = sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1;
+            for (int dy = -1; dy <= 1 && !keep && in_rect; dy++)
                 for (int dx = -1; dx <= 1 && !keep; dx++) {
                     if (dx != 0 && dy != 0) continue;
                     int qx = sx + dx, qy = sy + dy;
@@ -1541,45 +1562,88 @@ std::vector<uint8_t> GlyphMask(const SheetShapes& sh, const MenuGlyph& g) {
     return m;
 }
 
-// after the atlas is built: the glyphs' pixels from the sheet, white with the sheet's coverage
+// after the atlas is built: the glyphs' pixels from the sheet, white with the sheet's coverage (and a dark outline
+// round them when the sheet has one)
 void FillSheetFont(ImGuiIO& io, const SheetFont& sf) {
     unsigned char* atlas = nullptr;
     int aw = 0, ah = 0;
     io.Fonts->GetTexDataAsRGBA32(&atlas, &aw, &ah);
     SheetShapes shapes = Shapes(sf);
+    constexpr int kBorder = 2;  // transparent pixels round each rectangle (AddSheetFont)
     auto put = [&](const ImFontAtlasCustomRect* r, const MenuGlyph* g) {
-        std::vector<uint8_t> mask;
-        if (g) mask = GlyphMask(shapes, *g);
-        int mw = g ? g->x1 - g->x0 + 2 : 0;
-        for (int y = 0; y < r->Height; y++)
-            for (int x = 0; x < r->Width; x++) {
-                uint8_t a = 0;
-                bool border = x == 0 || y == 0 || x == r->Width - 1 || y == r->Height - 1;
-                if (g && !border) {
-                    // the sheet's pixels under the glyph's rectangle, one for one (a resampling here made the edges
-                    // jagged)
-                    int ix = std::clamp(int(std::lround(g->x0 * sf.k)) + x - 1, 0, int(sf.w) - 1);
-                    int iy = std::clamp(int(std::lround(g->y0 * sf.k)) + y - 1, 0, int(sf.h) - 1);
+        int W = r->Width, H = r->Height;
+        std::vector<float> cov(size_t(W) * H, 0.0f);  // the letter's coverage, 0-1
+        if (g) {
+            std::vector<uint8_t> mask = GlyphMask(shapes, *g);
+            int mw = g->x1 - g->x0 + 3, mh = g->y1 - g->y0 + 3;
+            for (int y = kBorder; y < H - kBorder; y++)
+                for (int x = kBorder; x < W - kBorder; x++) {
+                    // the sheet's pixels under the glyph's rectangle and a texel round it, one for one (a resampling
+                    // here made the edges jagged)
+                    int ix = int(std::lround((g->x0 - 1) * sf.k)) + x - kBorder, iy = int(std::lround((g->y0 - 1) * sf.k)) + y - kBorder;
+                    if (ix < 0 || iy < 0 || ix >= int(sf.w) || iy >= int(sf.h)) continue;
                     // the mask between its texels' centres, so its edge is a slope and not steps
-                    int mh = g->y1 - g->y0 + 2;
                     float fx = std::clamp((ix + 0.5f) / sf.k - 0.5f - float(g->x0 - 1), 0.0f, float(mw - 1));
                     float fy = std::clamp((iy + 0.5f) / sf.k - 0.5f - float(g->y0 - 1), 0.0f, float(mh - 1));
                     int jx = int(fx), jy = int(fy), jx1 = std::min(jx + 1, mw - 1), jy1 = std::min(jy + 1, mh - 1);
                     float ax = fx - jx, ay = fy - jy;
                     auto m = [&](int mx, int my) { return mask[size_t(my) * mw + mx] ? 1.0f : 0.0f; };
                     float mv = (m(jx, jy) * (1 - ax) + m(jx1, jy) * ax) * (1 - ay) + (m(jx, jy1) * (1 - ax) + m(jx1, jy1) * ax) * ay;
-                    float cov = sf.px[(size_t(iy) * sf.w + ix) * 4 + 3] * std::min(1.0f, mv * 1.5f);
+                    // in the margin round the rectangle, a texel not kept is not taken at all (its pixels may be the
+                    // next letter's)
+                    int tx = int(ix / sf.k), ty = int(iy / sf.k);
+                    if ((tx < g->x0 || tx > g->x1 || ty < g->y0 || ty > g->y1) && !m(tx - (g->x0 - 1), ty - (g->y0 - 1))) mv = 0;
+                    float c = float(WhiteAt(sf, size_t(iy) * sf.w + ix)) * std::min(1.0f, mv * 1.5f);
                     // the upscaled sheet's faint haze (its blur of neighbouring letters) goes, the edges stay smooth
-                    a = uint8_t(std::clamp((cov - 20.0f) * 255.0f / 235.0f, 0.0f, 255.0f));
+                    cov[size_t(y) * W + x] = std::clamp((c - 20.0f) / 235.0f, 0.0f, 1.0f);
                 }
+        }
+        // the outline: the letter's own coverage spread a little over half a texel, dark (made here from the letter
+        // alone, so no part of a neighbour's outline comes with it)
+        std::vector<float> ring(cov.size(), 0.0f);
+        if (g && sf.outline) {
+            float rr = 0.55f * sf.k;
+            int ri = int(std::ceil(rr + 0.5f));
+            for (int y = kBorder; y < H - kBorder; y++)
+                for (int x = kBorder; x < W - kBorder; x++) {
+                    float best = 0;
+                    for (int dy = -ri; dy <= ri; dy++)
+                        for (int dx = -ri; dx <= ri; dx++) {
+                            int qx = x + dx, qy = y + dy;
+                            if (qx < 0 || qy < 0 || qx >= W || qy >= H) continue;
+                            float c = cov[size_t(qy) * W + qx];
+                            if (c <= best) continue;
+                            float reach = std::clamp(rr + 0.5f - std::sqrt(float(dx * dx + dy * dy)), 0.0f, 1.0f);
+                            best = std::max(best, c * reach);
+                        }
+                    ring[size_t(y) * W + x] = best * 0.85f;
+                }
+        }
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                float c = cov[size_t(y) * W + x], o = ring[size_t(y) * W + x];
+                float a = c + o * (1 - c);
                 unsigned char* d = atlas + (size_t(r->Y + y) * aw + r->X + x) * 4;
-                d[0] = d[1] = d[2] = 255;
-                d[3] = a;
+                // straight alpha: white over the dark outline (an outlined sheet's clear pixels dark too, so the
+                // filtering does not lighten its edge)
+                uint8_t v = a > 0.0f ? uint8_t(std::clamp(c / a * 255.0f + 0.5f, 0.0f, 255.0f)) : (sf.outline ? 0 : 255);
+                d[0] = d[1] = d[2] = v;
+                d[3] = uint8_t(std::clamp(a * 255.0f + 0.5f, 0.0f, 255.0f));
             }
     };
     for (size_t i = 0; i < sf.ids.size(); i++) put(io.Fonts->GetCustomRectByIndex(sf.ids[i]), &sf.font->glyphs[i]);
     put(io.Fonts->GetCustomRectByIndex(sf.space), nullptr);
-    LOGI("menus: the pages use the game's lettering %s (%ux%u sheet)", sf.font->key, sf.w, sf.h);
+    // each glyph drawn from all but its rectangle's outer pixel (AddSheetFont): the filtering stays inside it
+    float pu = 1.0f / float(aw), pv = 1.0f / float(ah);
+    for (int gi = 0; gi < sf.font->count; gi++) {
+        auto* glyph = const_cast<ImFontGlyph*>(sf.im->FindGlyphNoFallback(ImWchar(static_cast<unsigned char>(sf.font->glyphs[gi].c))));
+        if (!glyph) continue;
+        glyph->X0 += 1, glyph->Y0 += 1, glyph->X1 -= 1, glyph->Y1 -= 1;
+        glyph->U0 += pu, glyph->V0 += pv, glyph->U1 -= pu, glyph->V1 -= pv;
+    }
+    // the space: nothing drawn (its 1x1 picture, drawn, took in its neighbours through the filtering)
+    if (auto* sp = const_cast<ImFontGlyph*>(sf.im->FindGlyphNoFallback(ImWchar(' ')))) sp->Visible = 0;
+    LOGI("menus: the pages use the game's lettering %s (%ux%u sheet%s)", sf.font->key, sf.w, sf.h, sf.outline ? ", outlined" : "");
 }
 
 // The keyboard's keys for the button prompts: pictures in the texture pack's folders (kb_enter.png and so on), put
