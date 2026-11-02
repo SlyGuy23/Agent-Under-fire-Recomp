@@ -622,8 +622,11 @@ GridHit DrawGrid(const PageContext& c, ImDrawList* dl, const std::vector<CRow>& 
     int n = int(rows.size());
     int per = std::max(1, (n + 1) / 2);
     float x0 = 320 - (kGridHalf * 2 + kGridGap) / 2;
-    dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kGridHalf * 2 + kGridGap + 6, top + 20 + kGridRow * float(per)),
-                      IM_COL32(4, 8, 24, 225), 4 * c.scale());
+    // on the pause menu's moving background, as the pause menu's controls grid is
+    if (c.panel) c.panel(dl, x0 - 6, top - 4, x0 + kGridHalf * 2 + kGridGap + 6, top + 20 + kGridRow * float(per));
+    else
+        dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kGridHalf * 2 + kGridGap + 6, top + 20 + kGridRow * float(per)),
+                          IM_COL32(4, 8, 24, 225), 4 * c.scale());
     for (int h = 0; h < 2; h++) {
         float x = x0 + float(h) * (kGridHalf + kGridGap);
         c.title(dl, x + 6, top, 11, Dim(c.lit), "Action", 0);
@@ -821,8 +824,10 @@ void DrawTable(const PageContext& c, ImDrawList* dl, controls::Context context, 
     int halves = (int(rows.size()) + per - 1) / per;
     float x0 = centre - (kHalf * float(halves) + kGap * float(halves - 1)) / 2;
     float height = 18 + kRow * float(per) + 2;
-    if (panel) dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kHalf * float(halves) + kGap * float(halves - 1) + 6, top + height),
-                      IM_COL32(4, 8, 24, 225), 4 * c.scale());
+    if (panel && c.panel) c.panel(dl, x0 - 6, top - 4, x0 + kHalf * float(halves) + kGap * float(halves - 1) + 6, top + height);
+    else if (panel)
+        dl->AddRectFilled(c.guest(x0 - 6, top - 4), c.guest(x0 + kHalf * float(halves) + kGap * float(halves - 1) + 6, top + height),
+                          IM_COL32(4, 8, 24, 225), 4 * c.scale());
     for (int h = 0; h < halves; h++) {
         float x = x0 + float(h) * (kHalf + kGap);
         c.title(dl, x + 6, top, 10, Dim(c.lit), "ACTION", 0);

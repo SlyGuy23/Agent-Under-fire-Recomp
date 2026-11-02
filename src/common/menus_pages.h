@@ -26,6 +26,9 @@ struct PageContext {
     // the pause pages' places on the pause menu's panel as drawn under them (taller, menus.cpp PanelStretch): the
     // title's line (in the tabs' bar), the rows' left edge and first row, and the prompts' bar at the bottom
     float pause_title_y = 80, pause_x = 116, pause_top = 112, pause_bar_y = 378;
+    // a panel behind a grid of controls in the pause menu's look (its moving light-blue background over a dark base),
+    // console coordinates; null: a plain dark panel
+    void (*panel)(ImDrawList* dl, float x0, float y0, float x1, float y1) = nullptr;
 };
 
 // each returns false once the page closes

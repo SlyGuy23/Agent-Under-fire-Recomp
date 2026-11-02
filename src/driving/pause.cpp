@@ -44,6 +44,11 @@ X86_FUNC(sub_000B5B00) {
 // The marker is one sprite a row (+0x1B0, +0x1B4, +0x1B8), the lit row's drawn by 0xB2BE0(sprite) from 0xBB2DE at the
 // sprite's own +0 x, +4 y (made whole numbers there).
 //
+// The "Are you sure?" question (+0x428 non-zero while it is up, +0x42C 1 for Restart Mission, 2 for Quit Mission)
+// takes the place of its row: that row is not drawn, its band (sprites +0x1F8..+0x20C for Restart, +0x210..+0x224 for
+// Quit, each 0xB2510 then 0xB3BD0) and its three words ("Are you sure?", Yes, No: text objects +0xDC/+0xE4/+0xEC or
+// +0xE0/+0xE8/+0xF0, 0xB4560 from 0xBB5AF.. / 0xBB695..) are drawn after the rows. The marker is not drawn meanwhile.
+//
 // Here: each row is drawn kLift console pixels higher (the block of five rows nearer the panel's middle), the game's
 // lit row drawn unlit while one of the added rows is selected, Controls and PC Settings drawn after Quit Mission a row
 // apart, and the marker beside the selected row. While a pause page is up none of them is drawn (the page is drawn
@@ -55,6 +60,9 @@ constexpr uint32_t kColour = 0x16B910, kShadowOffset = 0x143458, kInText = 0x1C9
 constexpr uint32_t kLit = 0xFFC4E6FFu, kUnlit = 0xFF65839Fu, kShadow = 0x40000000u;
 constexpr uint32_t kDrawText = 0xB4100;
 constexpr uint32_t kRetContinue = 0xBB1F6, kRetQuit = 0xBB240, kRetRestart = 0xBB281, kRetMarker = 0xBB2E3;
+// the question's words and its band's sprites (the calls' return addresses)
+constexpr uint32_t kRetQuestionText[] = {0xBB5B4, 0xBB5D9, 0xBB5FE, 0xBB69A, 0xBB6BE, 0xBB6E2};
+constexpr uint32_t kRetQuestionBand[] = {0xBB546, 0xBB563, 0xBB586, 0xBB62C, 0xBB649, 0xBB66C};
 constexpr uint32_t kRows = 0x150, kMarkers = 0x1B0, kLitRow = 0x424, kQuestion = 0x428;
 
 float& F(uint32_t va) { return kernel::G<float>(va); }
@@ -94,16 +102,33 @@ void DrawText(X86Context& ctx, uint32_t text, uint32_t colour, float x, float y)
 
 }  // namespace
 
+bool OneOf(uint32_t ret, const uint32_t (&list)[6]) {
+    for (uint32_t r : list)
+        if (r == ret) return true;
+    return false;
+}
+
 X86_EXTERN_FUNC(__imp__sub_000B4560);
 X86_FUNC(sub_000B4560) {
     const uint32_t ret = kernel::R32(ctx.esp), menu = ctx.esi;
     int row = ret == kRetContinue ? 0 : ret == kRetRestart ? 1 : ret == kRetQuit ? 2 : -1;
+    // the question's words: moved up with the rows, so they sit where the game puts them against the rows
+    if (row < 0 && menu && OneOf(ret, kRetQuestionText)) {
+        if (menus::PausePageUp()) {
+            ctx.esp += 4;
+            return;
+        }
+        F(kTextY) -= Lift(menu);
+        __imp__sub_000B4560(ctx, base);
+        return;
+    }
     if (row < 0 || !menu) {
         __imp__sub_000B4560(ctx, base);
         return;
     }
     int lit = int(kernel::R32(menu + kLitRow));
-    menus::DrivingPauseShown(kernel::R32(menu + kQuestion) ? -1 : lit);
+    const bool question = kernel::R32(menu + kQuestion) != 0;
+    menus::DrivingPauseShown(question ? -1 : lit);
     if (menus::PausePageUp()) {
         ctx.esp += 4;  // not drawn (the page is drawn on the panel instead): the call's return
         return;
@@ -113,7 +138,9 @@ X86_FUNC(sub_000B4560) {
     F(kTextY) -= Lift(menu);
     const uint32_t object = kernel::R32(ctx.esp + 4);
     __imp__sub_000B4560(ctx, base);
-    if (row != 2) return;
+    // while a question is up the menu is the game's alone: no added rows (as the game hides nothing else, the
+    // question's band and words are the only thing below its row)
+    if (row != 2 || question) return;
     // Controls and PC Settings under Quit Mission, a row apart, its shadow first as the game draws it
     float x = F(kTextX), y = F(kTextY), step = RowStep(menu), off = F(kShadowOffset);
     bool shadow = kernel::G<uint8_t>(object + 0x14) & 1;
@@ -146,4 +173,20 @@ X86_FUNC(sub_000B2BE0) {
     F(sprite + 4) = y0 + (y1 - y0) * float(row) - Lift(menu);
     __imp__sub_000B2BE0(ctx, base);
     F(sprite + 4) = was;  // the menu's own layout kept
+}
+
+// the question's band: its sprites moved up with the rows (their position is the text position 0xB2510 set)
+X86_EXTERN_FUNC(__imp__sub_000B3BD0);
+X86_FUNC(sub_000B3BD0) {
+    const uint32_t ret = kernel::R32(ctx.esp), menu = ctx.esi;
+    if (!menu || !OneOf(ret, kRetQuestionBand)) {
+        __imp__sub_000B3BD0(ctx, base);
+        return;
+    }
+    if (menus::PausePageUp()) {
+        ctx.esp += 4;  // not drawn: the call's return
+        return;
+    }
+    F(kTextY) -= Lift(menu);
+    __imp__sub_000B3BD0(ctx, base);
 }
