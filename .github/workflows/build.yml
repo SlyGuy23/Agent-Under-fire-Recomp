@@ -52,19 +52,22 @@ jobs:
           $out = 'out/build/release'
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
           $crt = Get-ChildItem "$vs\VC\Redist\MSVC\1*\x64\Microsoft.VC*.CRT" -Directory | Select-Object -Last 1
+          # the top folder: AgentUnderFire.exe, which starts the game, and ROM, where the player's disc image goes;
+          # everything else in Game Files
           $pkg = 'pkg'
-          New-Item -ItemType Directory -Force $pkg | Out-Null
+          $files = "$pkg/Game Files"
+          New-Item -ItemType Directory -Force $files | Out-Null
           $images = 'AgentUnderFire', 'AgentUnderFireGame', 'AgentUnderFireDriving'
-          foreach ($i in $images) { Copy-Item "$out/$i.exe", "$out/$i.dll" $pkg }
-          Copy-Item README.md, sdk/THIRD_PARTY.txt $pkg
-          # the folder players put their disc image in
+          foreach ($i in $images) { Copy-Item "$out/$i.exe", "$out/$i.dll" $files }
+          Copy-Item "$out/start/AgentUnderFire.exe" $pkg
+          Copy-Item README.md, sdk/THIRD_PARTY.txt $files
+          foreach ($f in 'msvcp140', 'vcruntime140', 'vcruntime140_1') { Copy-Item "$($crt.FullName)\$f.dll" $files }
           New-Item -ItemType Directory -Force "$pkg/ROM" | Out-Null
           Set-Content "$pkg/ROM/Put your Agent Under Fire ISO here.txt" 'Put your disc image of 007: Agent Under Fire (PAL, .iso) in this folder, then run AgentUnderFire.exe.'
-          foreach ($f in 'msvcp140', 'vcruntime140', 'vcruntime140_1') { Copy-Item "$($crt.FullName)\$f.dll" $pkg }
           # each DLL must stay newer than its exe or the first start rebuilds it
-          foreach ($i in $images) { (Get-Item "$pkg/$i.dll").LastWriteTime = (Get-Date).AddMinutes(1) }
+          foreach ($i in $images) { (Get-Item "$files/$i.dll").LastWriteTime = (Get-Date).AddMinutes(1) }
           Compress-Archive -Path "$pkg/*" -DestinationPath AgentUnderFire.zip -CompressionLevel Optimal
-          Get-ChildItem $pkg | Format-Table Name, Length
+          Get-ChildItem -Recurse $pkg | Format-Table FullName, Length
 
       - uses: actions/upload-artifact@v4
         with:

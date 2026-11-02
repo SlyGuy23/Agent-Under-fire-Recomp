@@ -127,7 +127,10 @@ bool FindGame(GameFiles& game) {
     }
 
     if (other_name.empty()) {
-        fs::create_directories(ExeDir() / "ROM", ec);  // the folder the message points to
+        // the folder the message points to: beside the release's AgentUnderFire.exe, above Game Files
+        fs::path top = ExeDir();
+        if (_wcsicmp(top.filename().c_str(), L"Game Files") == 0) top = top.parent_path();
+        fs::create_directories(top / "ROM", ec);
         MessageBoxW(nullptr, kGame.missing, kGame.short_title, MB_ICONERROR);
         return false;
     }

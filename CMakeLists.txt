@@ -44,3 +44,13 @@ add_xbe_image(AgentUnderFireGame bond_eng.xbe game.toml ${GAME_PARTITIONS} game)
 # driving.xbe: the driving missions
 config_partitions(driving.toml DRIVING_PARTITIONS)
 add_xbe_image(AgentUnderFireDriving driving.xbe driving.toml ${DRIVING_PARTITIONS} driving)
+
+# AgentUnderFire.exe for the release's top folder (start/main.cpp): runs the game from Game Files beside it. Built into
+# its own folder, as the launcher image has the same name; no C runtime, so it needs nothing beside it
+add_executable(AgentUnderFireStart WIN32 start/main.cpp)
+set_target_properties(AgentUnderFireStart PROPERTIES OUTPUT_NAME AgentUnderFire
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/start)
+target_compile_definitions(AgentUnderFireStart PRIVATE UNICODE _UNICODE)
+target_compile_options(AgentUnderFireStart PRIVATE -fno-exceptions -fno-rtti -fno-stack-protector -fno-builtin -O2)
+target_link_options(AgentUnderFireStart PRIVATE -fuse-ld=lld -nostdlib -Wl,/entry:Start,/subsystem:windows,/nodefaultlib)
+target_link_libraries(AgentUnderFireStart PRIVATE kernel32 user32)

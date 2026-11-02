@@ -13,7 +13,7 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 2. Put your disc image of the game (PAL, `.iso`) in the `ROM` folder.
 3. Run `AgentUnderFire.exe`.
 
-That's all. Keep `AgentUnderFireGame.exe` and `AgentUnderFireDriving.exe` beside it: the game switches to them for the missions and the driving levels on its own. Settings are kept in `settings.toml`, created on first start. Upscaled texture packs go in `textures\replacement` (each pack in a folder of its own).
+That's all. Everything else lives in the `Game Files` folder: the game itself, `settings.toml`, your saves (`hdd`), logs, frame captures and upscaled texture packs (`textures\replacement`, each pack in a folder of its own).
 
 ## Features
 
