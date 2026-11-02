@@ -59,6 +59,9 @@ inline bool g_smooth_figures = false;
 // the game, which bumps g_pack_folders whenever an answer may have changed: the pack is listed again at the next
 // present and every texture looks its image up again (gpu::texturedumper)
 inline bool (*g_pack_folder_off)(const std::wstring& folder) = nullptr;
+// a folder right under textures\replacement\ whose images replace the same keys of every other folder while it is on
+// (g_pack_folder_off says no); while it is off it is only left out, and the keys it shares stay with the other folders
+inline bool (*g_pack_folder_overrides)(const std::wstring& folder) = nullptr;
 inline std::atomic<uint32_t> g_pack_folders{0};
 // frames the game has swapped (D3DDevice_Swap), for hooks that look at a whole frame's draws
 inline std::atomic<uint64_t> g_swaps{0};

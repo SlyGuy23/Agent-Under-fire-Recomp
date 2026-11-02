@@ -10,6 +10,7 @@
 #include <cwctype>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "app/app.h"
@@ -57,6 +58,16 @@ std::string DamageFlashDesc() {
                                     : "The flash when you are hit is white, as the game draws it";
 }
 
+// the cutscenes of Evil Summit's last part, where the pack's "AUF Evil Summit Only 4x" folder is drawn
+bool EvilSummitFinale() { return g_level_is && g_level_is(kEvilSummitLevel) && g_in_cutscene && g_in_cutscene(); }
+
+bool PackFolderOverrides(const std::wstring& folder) {
+    constexpr std::wstring_view kTail = L"Only 4x";
+    return folder.size() >= kTail.size() &&
+           std::equal(kTail.begin(), kTail.end(), folder.end() - kTail.size(),
+                      [](wchar_t a, wchar_t b) { return std::towlower(a) == std::towlower(b); });
+}
+
 bool PackFolderOff(const std::wstring& folder) {
     auto is = [&](const wchar_t* want) {
         std::wstring w = want;
@@ -65,7 +76,7 @@ bool PackFolderOff(const std::wstring& folder) {
                });
     };
     if (is(kCharacterPack)) return !g_hd_characters;
-    if (is(kEvilSummitPack)) return !g_hd_characters || !g_mission || g_mission() != kEvilSummit;
+    if (is(kEvilSummitPack)) return !g_hd_characters || !EvilSummitFinale();
     if (is(kWeaponPack)) return !g_hd_weapons;
     for (const wchar_t* m : kMenuPacks)
         if (is(m)) return !g_hd_menus;
@@ -588,10 +599,10 @@ void FpsCounter(double fps) {
 
 void Draw(double fps) {
     g_frames++;
-    // the mission-only pack folder follows the mission played: the pack is listed again when it changes
-    if (g_mission) {
-        static uint32_t last = ~0u;
-        uint32_t now = g_mission();
+    // the Evil Summit pack folder follows the level and its cutscenes: the pack is listed again when that changes
+    if (g_level_is) {
+        static int last = -1;
+        int now = EvilSummitFinale();
         if (now != last) {
             last = now;
             app::g_pack_folders++;

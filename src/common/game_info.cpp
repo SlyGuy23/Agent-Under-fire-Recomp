@@ -226,11 +226,30 @@ void SkipIntrosOnPress() {
 #endif
 }
 
+// bond_eng.xbe's level state machine (the states of the game's state file: main_menu, orc_1 ... alp2_1, alp2_2,
+// alp2_3, each a record whose +0 is its name; Evil Summit runs alp2_1 -> alp2_2 -> alp2_3 through their next_state).
+// [0x3B2414] is the state being played, [0x3B2408] the one asked for (the switch at 0x26960 / 0x269F1 copies it over
+// and loads that level). Checked in the harness: main_menu in the front end, alp2_1 in Evil Summit, alp2_3 after a
+// switch to it (the control room and its cutscenes)
+bool LevelIs(const char* name) {
+    constexpr uint32_t kStateNow = 0x3B2414;
+    uint32_t state = kernel::R32(kStateNow);
+    if (!GuestPointer(state)) return false;
+    uint32_t text = kernel::R32(state);
+    if (!GuestPointer(text)) return false;
+    return std::strncmp(static_cast<const char*>(kernel::HostPtr(text)), name, std::strlen(name) + 1) == 0;
+}
+
 void Init() {
     overlay::ApplyVolume();
-    if (std::string_view(IMAGE_XBE) == "bond_eng.xbe")
-        overlay::g_mission = [] { return kernel::R32(0x2A88B8) ? kernel::R32(0x2A9F98) : ~0u; };  // in a mission only
+    if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
+        overlay::g_level_is = LevelIs;
+        // the game's cinematic flag, as Cutscene() but also while a cutscene is paused, so pausing one does not
+        // list the pack again
+        overlay::g_in_cutscene = [] { return kernel::R32(0x2A88B8) != 0 && kernel::R32(0x329600) != 0; };
+    }
     app::g_pack_folder_off = overlay::PackFolderOff;  // the Character / Weapon / Menu and HUD Textures settings
+    app::g_pack_folder_overrides = overlay::PackFolderOverrides;
     if (std::string_view(IMAGE_XBE) == "bond_eng.xbe") {
         controls::SetGameStateQuery(OnFootState);
         controls::SetFireRedirect(FireRedirect);

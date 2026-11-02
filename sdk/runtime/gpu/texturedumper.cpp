@@ -181,33 +181,47 @@ void ListPack(const fs::path& dir) {
     auto old_stamps = std::move(g.stamps);
     g.files.clear();
     g.stamps.clear();
-    std::vector<fs::path> off;  // folders the game has turned off
+    std::vector<fs::path> off;   // folders the game has turned off
+    std::vector<fs::path> over;  // overriding folders turned on (app::g_pack_folder_overrides)
+    auto image_key = [](const fs::path& q) -> uint64_t {
+        bool image = _wcsicmp(q.extension().c_str(), L".dds") == 0 || _wcsicmp(q.extension().c_str(), L".png") == 0;
+        return image ? KeyInName(q.stem().wstring()) : 0;
+    };
     std::error_code ec;
     fs::recursive_directory_iterator it(dir, ec);
     for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         const fs::path& p = it->path();
-        // a folder the game has turned off (app::g_pack_folder_off), with everything under it
         std::error_code dir_ec;
-        if (it.depth() == 0 && app::g_pack_folder_off && it->is_directory(dir_ec) &&
-            app::g_pack_folder_off(p.filename().wstring())) {
+        bool top_folder = it.depth() == 0 && it->is_directory(dir_ec);
+        bool overrides = top_folder && app::g_pack_folder_overrides && app::g_pack_folder_overrides(p.filename().wstring());
+        // a folder the game has turned off (app::g_pack_folder_off), with everything under it
+        if (top_folder && app::g_pack_folder_off && app::g_pack_folder_off(p.filename().wstring())) {
             LOGR("texture pack: %s left out", Utf8(p.filename()).c_str());
             it.disable_recursion_pending();
-            off.push_back(p);
+            if (!overrides) off.push_back(p);
             continue;
         }
-        bool image = _wcsicmp(p.extension().c_str(), L".dds") == 0 || _wcsicmp(p.extension().c_str(), L".png") == 0;
-        uint64_t key = image ? KeyInName(p.stem().wstring()) : 0;
-        if (key) g.files.emplace(key, p);
+        if (overrides) {  // listed last, over the other folders
+            it.disable_recursion_pending();
+            over.push_back(p);
+            continue;
+        }
+        if (uint64_t key = image_key(p)) g.files.emplace(key, p);
     }
     // a texture in a part turned off stays the game's, though another folder has a copy of it too
     for (const fs::path& d : off) {
         std::error_code off_ec;
         for (fs::recursive_directory_iterator o(d, off_ec); !off_ec && o != fs::recursive_directory_iterator();
-             o.increment(off_ec)) {
-            const fs::path& q = o->path();
-            bool image = _wcsicmp(q.extension().c_str(), L".dds") == 0 || _wcsicmp(q.extension().c_str(), L".png") == 0;
-            if (uint64_t key = image ? KeyInName(q.stem().wstring()) : 0) g.files.erase(key);
-        }
+             o.increment(off_ec))
+            if (uint64_t key = image_key(o->path())) g.files.erase(key);
+    }
+    // an overriding folder that is on: its images win over every other folder's copy
+    for (const fs::path& d : over) {
+        LOGR("texture pack: %s over the other folders", Utf8(d.filename()).c_str());
+        std::error_code over_ec;
+        for (fs::recursive_directory_iterator o(d, over_ec); !over_ec && o != fs::recursive_directory_iterator();
+             o.increment(over_ec))
+            if (uint64_t key = image_key(o->path())) g.files.insert_or_assign(key, o->path());
     }
     // what this listing changed: keys gone, or now from another file or a file written since; the images of the rest
     // stay drawn, so turning one part of the pack on or off does not flash the whole pack away while it loads again
