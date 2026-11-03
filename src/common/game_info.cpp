@@ -158,6 +158,7 @@ bool MountedGun(int port);
 void ReloadRequest(int port);
 int LocalPlayer(int port);
 int SplitPauseMenu(int port, bool* first_page);
+int MultiplayerPhase();
 bool Cutscene();
 bool DrivingCutscene();
 controls::Context PickedMission();
@@ -263,6 +264,7 @@ void Init() {
         controls::SetFireRedirect(FireRedirect);
         controls::SetMountedGunQuery(MountedGun);
         controls::SetSplitPauseQuery(SplitPauseMenu);
+        controls::SetMultiplayerQuery(MultiplayerPhase);
         controls::SetReloadRequest(ReloadRequest);
         // Enter, Space and a left click give A in a cutscene, and on a match's respawn screen (Press A to Join) shown
         // for the keyboard's player
@@ -366,11 +368,12 @@ void Loaded() {
 // Mouse look on foot, straight into the game's view angles (bond_eng.xbe keeps them like Quake III's client: float
 // degrees it packs into each tick's command, the movement code clamping pitch at about 85 degrees). Written when the
 // game polls the pad, just before it builds the frame's command, and only while a level is being played.
-// In multiplayer split screen it is the view of the local player on port 0 (the keyboard and mouse's port), each
-// local player p having its own client block at +p*0x30 and playerState at +p*[0x2A88BC].
+// In multiplayer split screen it is the view of the local player on the keyboard and mouse's port (port 0, or its own
+// port with the devices apart), each local player p having its own client block at +p*0x30 and playerState at
+// +p*[0x2A88BC].
 void MouseLook(int port) {
     static const bool kOnFoot = std::string_view(IMAGE_XBE) == "bond_eng.xbe";
-    if (!kOnFoot || port != 0) return;
+    if (!kOnFoot || port != controls::KeyboardPort()) return;
     float yaw = 0, pitch = 0;
     bool direct = controls::TakeMouseLook(yaw, pitch);
     constexpr uint32_t kPitch = 0x2A8124, kYaw = 0x2A8128;              // the local player's view: + is down, + is left
@@ -380,7 +383,7 @@ void MouseLook(int port) {
     if (!direct || (yaw == 0 && pitch == 0)) return;
     uint32_t ps = kernel::R32(kPlayerState);
     if (!ps || kernel::R32(kPaused) || kernel::R32(kCommandsOff)) return;
-    const int p = LocalPlayer(0);
+    const int p = LocalPlayer(port);
     if (p < 0) return;
     const uint32_t client = uint32_t(p) * 0x30;
     ps += uint32_t(p) * kernel::R32(kStateSize);
@@ -409,6 +412,22 @@ int SplitPauseMenu(int port, bool* first_page) {
         *first_page = GuestPointer(m) && (kernel::R32(m + 0x44) - kernel::R32(m + 0x14)) / 0x3F8 == 1;
     }
     return p;
+}
+
+// Multiplayer for controls::SetMultiplayerQuery. The front end's 4-player screens (Press A to Join, then each player's
+// game menu) set [0x2A9CCC] (0x49872, with [0x207330] = 4 panels; 0x41510 and 0x4AAC8 clear it) and start with no
+// port joined ([0x218464 + p*4] all -1, 0x137940). The main menu (menus.cpp sees its bars) ends it; so does a level
+// with one local player and no port joined: a mission. Anything else (the setup screens, a match, its results)
+// keeps it as it is.
+int MultiplayerPhase() {
+    if (menus::MainMenuUp()) return 0;
+    if (kernel::R32(0x2A9CCC)) return 1;
+    if (kernel::R32(0x2A88B8) && int32_t(kernel::R32(0x205408)) <= 1) {
+        bool joined = false;
+        for (uint32_t p = 0; p < 4; p++) joined = joined || int32_t(kernel::R32(0x218464 + p * 4)) >= 0;
+        if (!joined) return 0;
+    }
+    return 2;
 }
 
 int LocalPlayer(int port) {
@@ -514,8 +533,10 @@ void ReloadExpiry() {
     }
 }
 
-// the controller does not shake while the keyboard and mouse play
+// the controller does not shake while the keyboard and mouse play (with the devices apart each port's controller is
+// its own player's: it shakes as the game has it)
 void GameRumble(int, uint16_t& left, uint16_t& right) {
+    if (controls::SeparateDevices()) return;
     if (controls::ActiveDevice() == controls::Device::KeyboardMouse) left = right = 0;
 }
 
@@ -688,4 +709,5 @@ const app::GameInfo app::kGame = {
     .rumble = GameRumble,
     .draw = Draw,
     .after_draw = menus::AfterDraw,
+    .pad_device = controls::PortDevice,
 };

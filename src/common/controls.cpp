@@ -295,7 +295,7 @@ int64_t g_motion_start = 0;
 int g_motion = 0;
 double g_look_dx = 0, g_look_dy = 0;
 int64_t g_last_take = -1000000;
-uint32_t g_prev_active = 0;  // port 0's controller inputs past kActive at the last poll, a bit per input and stick
+uint32_t g_prev_active[4] = {};  // a port's controller inputs past kActive at the last poll, a bit per input and stick
 uint32_t g_pad_suppressed[4] = {};
 CaptureRequest g_capture;
 std::atomic<bool> g_blocked{false}, g_cursor_wanted{false};
@@ -319,6 +319,16 @@ struct Toggle {
 };
 Toggle g_crouch[4], g_aim[4];  // per port
 GameState g_last_state = GameState::Menu;
+// multiplayer, the devices apart (SetMultiplayerQuery): the device on each console port (a controller's slot 0 to 3,
+// kKeyboardDevice, -1 none), whether it joined there (it keeps the port) or is only shown there, and each device's
+// join press held at the last look
+constexpr int kKeyboardDevice = 4, kDevices = 5;
+int (*g_mp_query)() = nullptr;
+std::atomic<bool> g_sep{false};
+int g_port_dev[4] = {-1, -1, -1, -1};
+bool g_port_joined[4] = {};
+bool g_join_held[kDevices] = {};
+int g_mp_phase = 0;  // the query's answer at the last poll
 constexpr int kLayout = 6;  // 6: mouse as a stick, the old defaults' axes given way; 5: on foot the game setup 1, new keys; 4:  // 4: RB cycles weapons;  // 3: reload on its own, X with the gadget, B crouching  // settings written before 2 had the game's stick layout as the on-foot default
 
 int64_t Now() {
@@ -438,10 +448,22 @@ MouseLook LookMode(int64_t now) {
     return now - g_last_take < kDirectConsumerMs ? MouseLook::Direct : MouseLook::Stick;
 }
 
+// the keyboard and mouse drive their port: the active device, or always while the devices are apart
+bool KbLive() { return g_sep || g_device == Device::KeyboardMouse; }
+
+// the console port the keyboard plays on
+int KbPort() {
+    if (!g_sep) return 0;
+    for (int p = 0; p < 4; p++)
+        if (g_port_dev[p] == kKeyboardDevice) return p;
+    return -1;
+}
+
 void Switch(Device d) {
     if (g_device.exchange(d) == d) return;
     LOGI("controls: %s", d == Device::Controller ? "controller" : "keyboard and mouse");
-    if (d == Device::Controller) {
+    // apart, a controller used only changes the pictures the shared screens show: the keyboard's player goes on
+    if (d == Device::Controller && !g_sep) {
         g_look_dx = g_look_dy = 0;
         g_samples.clear();
         g_menu_cursor = false;
@@ -791,8 +813,8 @@ input::Pad MenuKeyboardPad(GameState st, int64_t now) {
     return Build(out, false, true);
 }
 
-// port 0's controller became the active device when one of its inputs went past the line since the last poll
-void ControllerActivity(const input::Pad& raw, const Inputs& in, const Options& o) {
+// the port's controller became the active device when one of its inputs went past the line since the last poll
+void ControllerActivity(int port, const input::Pad& raw, const Inputs& in, const Options& o) {
     uint32_t bits = 0;
     for (int i = 0; i < int(A::LSUp); i++)
         if (in.v[i] >= kActive) bits |= 1u << i;
@@ -803,9 +825,97 @@ void ControllerActivity(const input::Pad& raw, const Inputs& in, const Options& 
     if (raw.connected && stick(raw.lx, raw.ly, o.left.deadzone)) bits |= 1u << 30;
     if (raw.connected && stick(raw.rx, raw.ry, o.right.deadzone)) bits |= 1u << 31;
     if (!raw.connected) bits = 0;
-    uint32_t pressed = bits & ~g_prev_active;
-    g_prev_active = bits;
+    uint32_t pressed = bits & ~g_prev_active[port & 3];
+    g_prev_active[port & 3] = bits;
     if (pressed) Switch(Device::Controller);
+}
+
+// ---- multiplayer: each device a player of its own ----
+
+// the device's join press held: A or START on a controller; Enter, Space or the left button on the keyboard (what
+// the menus take as A, and the title screen's START)
+bool JoinHeld(int dev, const input::Pad& d) {
+    if (dev == kKeyboardDevice) return g_held[kEnter] || g_held[kSpace] || g_held[kMouseLeft];
+    return d.connected && (d.analog[0] > 0x80 || (d.buttons & 0x10));
+}
+
+// the devices not joined on the ports left free, controllers (in slot order) then the keyboard
+void ShowFree(const bool (&present)[kDevices]) {
+    bool placed[kDevices] = {};
+    for (int p = 0; p < 4; p++) {
+        if (g_port_joined[p] && g_port_dev[p] >= 0) placed[g_port_dev[p]] = true;
+        else g_port_joined[p] = false, g_port_dev[p] = -1;
+    }
+    int next = 0;
+    for (int dev = 0; dev < kDevices; dev++) {
+        if (placed[dev] || !present[dev]) continue;
+        while (next < 4 && g_port_joined[next]) next++;
+        if (next >= 4) break;
+        g_port_dev[next++] = dev;
+    }
+}
+
+void Apart(bool on) {
+    if (g_sep == on) return;
+    g_sep = on;
+    for (int p = 0; p < 4; p++) g_port_dev[p] = -1, g_port_joined[p] = false;
+    g_mp_phase = on ? 1 : 0;
+    // what is held now (the press that got here) joins nothing and stays away from the game until let go
+    for (bool& h : g_join_held) h = true;
+    g_suppressed |= g_held;
+    for (Wheel& w : g_wheels) w = {};
+    g_samples.clear();
+    g_look_dx = g_look_dy = 0;
+    for (int i = 0; i < 4; i++) {
+        g_prev_active[i] = 0;
+        g_pad_suppressed[i] = (1u << int(A::LSUp)) - 1;  // the buttons and triggers, each until let go
+        g_crouch[i] = g_aim[i] = {};
+    }
+    LOGI("controls: %s", on ? "multiplayer, the keyboard and mouse a player of their own" : "the keyboard and mouse on port 0 again");
+}
+
+// Each poll, before its pad is built: in or out of multiplayer, joins, and the devices shown on the free ports. True
+// when the device on this port is not the one the pad was read from (the pad is read again).
+bool UpdatePorts(int port) {
+    const int before = g_sep ? g_port_dev[port & 3] : port;
+    const int phase = g_mp_query ? g_mp_query() : 0;
+    input::Pad dev[4];
+    bool present[kDevices] = {};
+    bool any_pad = false;
+    if ((phase == 1 || g_sep) && g_keyboard)
+        for (int i = 0; i < 4; i++) {
+            dev[i] = input::Device(i);
+            present[i] = dev[i].connected;
+            any_pad = any_pad || present[i];
+        }
+    present[kKeyboardDevice] = g_keyboard;
+    if (phase == 0 || !g_keyboard) Apart(false);
+    else if (phase == 1 && any_pad) Apart(true);
+    // back on the 4-player screen (the game has let every port go, 0x49849): everyone joins again, in a new order
+    if (g_sep && phase == 1 && g_mp_phase != 1)
+        for (int p = 0; p < 4; p++) g_port_joined[p] = false;
+    g_mp_phase = phase;
+    if (g_sep) {
+        for (int d = 0; d < kDevices; d++) {
+            const bool held = JoinHeld(d, dev[d < 4 ? d : 0]);
+            const bool pressed = held && !g_join_held[d];
+            g_join_held[d] = held;
+            if (!pressed || phase != 1 || !present[d]) continue;
+            bool joined = false;
+            for (int p = 0; p < 4; p++) joined = joined || (g_port_joined[p] && g_port_dev[p] == d);
+            if (joined) continue;
+            for (int p = 0; p < 4; p++) {
+                if (g_port_joined[p]) continue;
+                g_port_joined[p] = true;
+                g_port_dev[p] = d;
+                LOGI("controls: %s joins on port %d", d == kKeyboardDevice ? "the keyboard and mouse" : "a controller", p + 1);
+                break;
+            }
+        }
+        ShowFree(present);
+    }
+    const int after = g_sep ? g_port_dev[port & 3] : port;
+    return after != before;
 }
 
 // a controller input pressed for a capture; true when it bound one
@@ -868,7 +978,7 @@ void OnMotion(int dx, int dy) {
     }
     g_motion += std::abs(dx) + std::abs(dy);
     if (g_motion >= kMouseSwitchCounts) KeyboardMouseUsed();
-    if (g_device != Device::KeyboardMouse || Blocked()) return;
+    if (!KbLive() || Blocked()) return;
     // on a menu the mouse moves the cursor, and looks nowhere (the view does not jump when play comes back)
     if (g_last_state != GameState::Playing) {
         g_menu_cursor = true;
@@ -903,8 +1013,8 @@ Context CurrentContext() {
 
 Device ActiveDevice() { return g_device.load(); }
 bool AimAssistOff() {
-    if (g_device.load() != Device::KeyboardMouse) return false;
     std::lock_guard lock(g_lock);
+    if (!KbLive()) return false;
     return !g_state[int(Ctx())].options.kbm_auto_aim;
 }
 
@@ -940,6 +1050,30 @@ bool SeparateReload() {
 void SetFireRedirect(Action (*query)(int port)) {
     std::lock_guard lock(g_lock);
     g_fire_redirect = query;
+}
+
+void SetMultiplayerQuery(int (*query)()) {
+    std::lock_guard lock(g_lock);
+    g_mp_query = query;
+}
+
+bool SeparateDevices() { return g_sep.load(); }
+
+int PortDevice(int port) {
+    if (port < 0 || port > 3) return -1;
+    std::lock_guard lock(g_lock);
+    if (!g_sep) return port;
+    return g_port_dev[port] < 4 ? g_port_dev[port] : -1;
+}
+
+int KeyboardPort() {
+    std::lock_guard lock(g_lock);
+    return KbPort();
+}
+
+bool KeyboardPlaying() {
+    std::lock_guard lock(g_lock);
+    return g_keyboard && KbLive();
 }
 
 void SetSplitPauseQuery(int (*query)(int port, bool* first_page)) {
@@ -1078,7 +1212,7 @@ void EndCapture() {
 
 void SetGameInputBlocked(bool blocked) { g_blocked.store(blocked, std::memory_order_relaxed); }
 void SetCursorWanted(bool wanted) { g_cursor_wanted.store(wanted, std::memory_order_relaxed); }
-bool MenuCursor() { return g_menu_up.load() && g_menu_cursor.load() && g_device.load() == Device::KeyboardMouse; }
+bool MenuCursor() { return g_menu_up.load() && g_menu_cursor.load() && (g_sep || g_device.load() == Device::KeyboardMouse); }
 
 bool TakeMouseLook(float& yaw_degrees, float& pitch_degrees) {
     std::lock_guard lock(g_lock);
@@ -1090,7 +1224,7 @@ bool TakeMouseLook(float& yaw_degrees, float& pitch_degrees) {
     g_last_take = now;
     double dx = g_look_dx, dy = g_look_dy;
     g_look_dx = g_look_dy = 0;
-    if (!was_direct || g_device != Device::KeyboardMouse || Blocked() || PageOpen()) return false;
+    if (!was_direct || !KbLive() || Blocked() || PageOpen()) return false;
     float k = kDegreesPerCount * o.mouse_sensitivity / 100.0f;
     yaw_degrees = float(dx) * k;
     pitch_degrees = float(-dy) * k * (o.mouse_invert_y ? -1 : 1);
@@ -1100,6 +1234,16 @@ bool TakeMouseLook(float& yaw_degrees, float& pitch_degrees) {
 void Pad(int port, input::Pad& pad) {
     std::lock_guard lock(g_lock);
     int64_t now = Now();
+    // multiplayer: the device this port reads now (the pad again when it changed since it was read)
+    if (UpdatePorts(port) || g_sep) {
+        const int dev = g_sep ? g_port_dev[port & 3] : port;
+        pad = dev >= 0 && dev < 4 ? input::Device(dev) : input::Pad{};
+    }
+    // the keyboard and mouse reach this port (single player: port 0, with controller 1), and drive it now; the port the
+    // menu-play changes are followed on (the keyboard's)
+    const bool kb_here = g_keyboard && port == KbPort();
+    const bool kb_plays = kb_here && KbLive();
+    const bool main_port = g_sep ? kb_here : port == 0;
     // first: in driving.xbe the query also tells driving from on rails, whose options this poll then uses
     GameState st = State();
     // a split screen player's own pause menu: this port is in a menu while the match goes on
@@ -1110,16 +1254,16 @@ void Pad(int port, input::Pad& pad) {
     NoTurn(port);  // until play builds the pad
     Inputs phys = Physical(pad);
     if (!pad.connected) phys = Inputs{};
-    if (port == 0) ControllerActivity(pad, phys, s.options);
+    if (g_sep ? pad.connected : port == 0) ControllerActivity(port, pad, phys, s.options);
     bool bound = g_capture.state == CaptureState::Waiting && g_capture.device == Device::Controller && pad.connected &&
                  CaptureController(port, phys);
-    bool connected = pad.connected || (port == 0 && g_keyboard);
+    bool connected = pad.connected || kb_here;
     if (Blocked() || bound) {
         // what is held now stays away from the game until let go
         uint32_t& sup = g_pad_suppressed[port & 3];
         for (int i = 0; i < int(A::LSUp); i++)
             if (phys.v[i] >= kReleased) sup |= 1u << i;
-        if (port == 0) {
+        if (main_port) {
             g_suppressed |= g_held;
             for (Wheel& w : g_wheels) w = {};
             g_samples.clear();
@@ -1128,12 +1272,12 @@ void Pad(int port, input::Pad& pad) {
         pad.connected = connected;
         return;
     }
-    if (port == 0 && PageOpen()) {
+    if (main_port && PageOpen()) {
         g_suppressed |= g_held;
         for (Wheel& w : g_wheels) w = {};
         g_samples.clear();
     }
-    if (port == 0 && st != g_last_state) {
+    if (main_port && st != g_last_state) {
         // from a menu into play or back: what is held now stays away from the game until let go (Escape closing
         // the pause menu must not open it again, the click on Continue Mission must not fire). The cursor goes
         // until the mouse moves on the new menu, and the mouse's motion so far is dropped.
@@ -1144,7 +1288,7 @@ void Pad(int port, input::Pad& pad) {
         g_samples.clear();
         g_suppressed |= g_held;
         for (Wheel& w : g_wheels) w = {};
-        uint32_t& sup = g_pad_suppressed[0];
+        uint32_t& sup = g_pad_suppressed[port & 3];
         for (int i = 0; i < int(A::LSUp); i++)
             if (phys.v[i] >= kReleased) sup |= 1u << i;
     }
@@ -1166,14 +1310,14 @@ void Pad(int port, input::Pad& pad) {
             g_split_close[split_player].store(now);
             p.analog[1] = 0;
             g_pad_suppressed[pi] |= 1u << int(A::Start) | 1u << int(A::B);
-            if (port == 0) g_suppressed |= g_held;
+            if (kb_here) g_suppressed |= g_held;
         }
     };
     if (st != GameState::Playing) {
         // the menus: the controller as it is, the menu keys
         if (st == GameState::Menu)
             for (int i = 0; i < 4; i++) g_crouch[i] = g_aim[i] = {};
-        if (port == 0 && g_keyboard && g_device == Device::KeyboardMouse) {
+        if (kb_plays) {
             pad = MenuKeyboardPad(st, now);
             split(pad);
             return;
@@ -1198,15 +1342,15 @@ void Pad(int port, input::Pad& pad) {
         return;
     }
     split(pad);  // play: its menu is not up
-    if (port == 0 && g_keyboard && g_device == Device::KeyboardMouse) {
+    if (kb_plays) {
         Inputs out = KeyboardInputs(s, now);
-        PlayExtras(0, out, s.options, true, LookMode(now) == MouseLook::Stick);
+        PlayExtras(port, out, s.options, true, LookMode(now) == MouseLook::Stick);
         // the game skips a cutscene on A alone (its raw A bit): Enter, Space and left click do it too
         if (g_cutscene && g_cutscene() && (KeyHeld(kEnter, now) || KeyHeld(kSpace, now) || KeyHeld(kMouseLeft, now)))
             out.v[int(A::A)] = 1;
         float turn[4];
         pad = Build(out, kThisImage, true, &turn);
-        SetTurn(0, turn);
+        SetTurn(port, turn);
         return;
     }
     if (!pad.connected) {
@@ -1438,7 +1582,7 @@ void ResetAll() {
     g_motion = 0;
     g_motion_start = 0;
     g_last_take = -1000000;
-    g_prev_active = 0;
+    std::fill(std::begin(g_prev_active), std::end(g_prev_active), 0u);
     std::fill(std::begin(g_pad_suppressed), std::end(g_pad_suppressed), 0u);
     g_capture = CaptureRequest{};
     for (int i = 0; i < 4; i++) g_crouch[i] = g_aim[i] = {};
@@ -1532,14 +1676,15 @@ void UpdateCursor(HWND hwnd) {
     bool focused = GetForegroundWindow() == hwnd && !IsIconic(hwnd);
     // on a menu (the front end, a pause menu) the cursor is let go, and shown once the mouse moves there
     bool menu = g_menu_up.load();
-    bool capture = g_device == Device::KeyboardMouse && !g_cursor_wanted.load(std::memory_order_relaxed) &&
+    const bool kbm = g_sep || g_device == Device::KeyboardMouse;
+    bool capture = kbm && !g_cursor_wanted.load(std::memory_order_relaxed) &&
                    !overlay::Open() && !PageOpen() && !menu && focused;
     // over the game's window and no menu wanting it: hidden too, though the window is not (yet) the focused one, as
     // while a mission's window comes up
     POINT at{};
     bool over = GetCursorPos(&at) && WindowFromPoint(at) == hwnd;
     bool free_cursor = g_cursor_wanted.load(std::memory_order_relaxed) || overlay::Open() || PageOpen() || MenuCursor();
-    bool hide = capture || (g_device == Device::Controller && focused) || (over && !free_cursor);
+    bool hide = capture || (!kbm && focused) || (over && !free_cursor);
     if (capture) {
         RECT r;
         GetClientRect(hwnd, &r);

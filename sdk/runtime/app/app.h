@@ -137,6 +137,8 @@ struct GameInfo {
     using Emit = void (*)(uint32_t prim, const void* vertices, uint32_t count);
     void (*after_draw)(const void* state, uint32_t prim, const uint8_t* vertices, uint32_t stride, uint32_t count,
                        Emit emit);
+    // the controller (input::Device's slot, -1 none) a console port reads and rumbles; left out, each port its own
+    int (*pad_device)(int port);
 };
 extern const GameInfo kGame;
 

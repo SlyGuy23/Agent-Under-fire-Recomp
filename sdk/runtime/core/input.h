@@ -13,8 +13,10 @@ struct Pad {
 
 void Init();  // window thread, before boot; the game code window starts it earlier
 uint16_t HeldOnAnyController();  // face buttons as XINPUT_GAMEPAD_A/B/X/Y masks, GameInfo::pad left out
-// the controller on that port, then GameInfo::pad
+// the controller on that port (the one GameInfo::pad_device names), then GameInfo::pad
 Pad Poll(int port);
+// the controller plugged into that slot (0 to 3, in the order they were plugged in) as it is, GameInfo::pad left out
+Pad Device(int slot);
 void Rumble(int port, uint16_t left, uint16_t right);
 
 }  // namespace input

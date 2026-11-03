@@ -114,7 +114,26 @@ bool SeparateReload();
 uint32_t ReloadRequests();
 void SetReloadRequested(int player, bool requested);
 
-// where this executable plays, and which device drives it now
+// Multiplayer (bond_eng.xbe's split screen games): with the keyboard and a controller both there, the keyboard and
+// mouse are a player's device of their own instead of sharing port 0 with controller 1. From the 4-player screen on
+// (Press A to Join) each device takes the next free console port as it joins (A or START on a controller, Enter,
+// Space or a left click on the keyboard), so the first to join is AGENT1 whatever the device; the devices not joined
+// are shown on the ports left, in the order controllers then keyboard. Back on the main menu every port is its own
+// controller again and the keyboard and mouse share port 0, as in single player.
+// The query: 0 not multiplayer (the main menu, a mission), 1 the 4-player screen, 2 as it is (game_info.cpp).
+void SetMultiplayerQuery(int (*query)());
+// the devices are apart now
+bool SeparateDevices();
+// GameInfo::pad_device: the controller (input::Device's slot, -1 none) console port reads
+int PortDevice(int port);
+// the console port the keyboard and mouse play on: 0 in single player (shared with controller 1), its own port in
+// multiplayer, -1 while it has none
+int KeyboardPort();
+// the keyboard and mouse play now: the active device in single player, always while the devices are apart
+bool KeyboardPlaying();
+
+// where this executable plays, and which device drives it now (with the devices apart: the one used last, which the
+// screens all players share show the keys or buttons of)
 Context CurrentContext();
 Device ActiveDevice();
 // the game's auto-aim is off now: the keyboard and mouse in use, its auto lock-on option off (hooks.cpp)

@@ -27,6 +27,8 @@
 
 namespace menus {
 
+bool KeyboardView(float& x0, float& y0, float& x1, float& y1);
+
 namespace {
 
 constexpr bool kMenus = std::string_view(IMAGE_XBE) == "bond_eng.xbe";
@@ -1175,6 +1177,7 @@ struct PromptRect {
     float x0, y0, x1, y1;  // console coordinates
     float alpha = 1;       // the picture's own (a menu fading out)
     bool pause = false;    // a pause menu's (drawn while paused, its last frame too)
+    int8_t kb = -1;        // the keyboard's key over it: -1 while the keyboard and mouse are in use, 0 never, 1 always
 };
 std::mutex g_prompt_lock;
 // the prompts of the last few frames, each with its frame (Frame() while it was drawn): the keys are drawn over the
@@ -1273,9 +1276,24 @@ bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, flo
             if (!a || b) return false;
             g_rematch_seen.store(f + 1);
         }
-        if (fp.list.size() < 64) fp.list.push_back({p.prompt, x0, y0, x1, y1, std::clamp(alpha, 0.0f, 1.0f), DrawPaused()});
+        // multiplayer with the devices apart, in a match: a prompt in the keyboard's player's view is the keyboard's,
+        // any other a controller's (the screens all players share follow the device used last)
+        // multiplayer with the devices apart, the front end's 4-player screens: one in the keyboard's port's quarter
+        // (Press A to Join) is the keyboard's too, the prompt bar along the bottom is everyone's
+        int8_t kb = -1;
+        const float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        if (controls::SeparateDevices() && kernel::R32(0x2A88B8)) {
+            float vx0, vy0, vx1, vy1;
+            kb = KeyboardView(vx0, vy0, vx1, vy1) && cx >= vx0 && cx <= vx1 && cy >= vy0 && cy <= vy1 ? 1 : 0;
+        } else if (controls::SeparateDevices() && kernel::R32(0x2A9CCC) && cy < 410) {
+            const int port = controls::KeyboardPort();
+            const float qx = port % 2 ? 320.0f : 0.0f, qy = port / 2 ? 240.0f : 0.0f;
+            kb = port >= 0 && cx >= qx && cx < qx + 320 && cy >= qy && cy < qy + 240 ? 1 : 0;
+        }
+        if (fp.list.size() < 64)
+            fp.list.push_back({p.prompt, x0, y0, x1, y1, std::clamp(alpha, 0.0f, 1.0f), DrawPaused(), kb});
         g_prompts_seen.store(f + 1);
-        return Keyboard();
+        return kb < 0 ? Keyboard() : kb > 0;
     }
     return false;
 }
@@ -1542,22 +1560,26 @@ void Take(input::Pad& p, int dir) {
 }  // namespace
 
 // A multiplayer match's respawn screen (the scores, "Press A to Join" under them) is drawn under the level's projection,
-// so its A button was neither keyed nor hidden. When it is drawn in the view of the player port 0 (the keyboard and
-// mouse) plays, it is a prompt as any other, and Enter (Space, a left click) gives that player A meanwhile (RespawnUp).
+// so its A button was neither keyed nor hidden. When it is drawn in the view of the player the keyboard and mouse play
+// (port 0, or the keyboard's own port with the devices apart), it is a prompt as any other, and Enter (Space, a left
+// click) gives that player A meanwhile (RespawnUp).
 std::atomic<uint64_t> g_respawn_seen{0};
 
-// the screen rectangle (console pixels) of the view of the local player port 0 plays; false when none plays it
-bool PortZeroView(float& x0, float& y0, float& x1, float& y1) {
+// the screen rectangle (console pixels) of the view of the local player the keyboard and mouse play; false when none
+// plays it
+bool KeyboardView(float& x0, float& y0, float& x1, float& y1) {
     // the local players: those of [0x205408] (bots counted too) with a port in [0x218464 + p*4] (-1 for a bot)
     constexpr uint32_t kPlayers = 0x205408, kPorts = 0x218464;
+    const int kb = controls::KeyboardPort();
+    if (kb < 0) return false;
     int32_t all = std::min(int32_t(kernel::R32(kPlayers)), 4), players = 0, p = -1;
     for (int32_t i = 0; i < all; i++) {
         uint32_t port = kernel::R32(kPorts + uint32_t(i) * 4);
         if (port > 3) continue;
-        if (port == 0) p = players;
+        if (int(port) == kb) p = players;
         players++;
     }
-    if (all <= 1) p = 0, players = 1;
+    if (all <= 1) p = kb == 0 ? 0 : -1, players = 1;
     if (p < 0) return false;
     x0 = 0, y0 = 0, x1 = 640, y1 = 480;
     if (players == 2) y0 = p ? 240.0f : 0.0f, y1 = y0 + 240;
@@ -1573,12 +1595,134 @@ void RespawnPrompt(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t stri
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
     float x0, y0, x1, y1, cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-    if (!PortZeroView(x0, y0, x1, y1) || cx < x0 || cx > x1 || cy < y0 || cy > y1) return;
+    if (!KeyboardView(x0, y0, x1, y1) || cx < x0 || cx > x1 || cy < y0 || cy > y1) return;
     g_respawn_seen.store(Frame() + 1);
     auto pc = ColorOf(v, stride, l);
     if (PromptQuad(s, b.x0, b.y0, b.x1, b.y1, b.u0, b.v0, b.u1, b.v1, pc[3] * std::clamp(std::max({pc[0], pc[1], pc[2]}), 0.0f, 1.0f)))
         Hide(v, stride, l, count);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Multiplayer menus for the mouse (MouseMenus): the keyboard's player's own menu, as the game draws it.
+// - the front end's 4-player screens ([0x2A9CCC] set, no level): each player's game menu in its port's quarter (AGENT1
+//   top left, AGENT2 top right, AGENT3 bottom left, AGENT4 bottom right);
+// - a match: a player's own pause menu ([0x3B2200 + p*0x10] = 3, SplitPauseMenu in game_info.cpp) in its view
+//   (KeyboardView), full screen for one player (with bots), the half or quarter in split screen.
+// Their rows are lines of the list lettering (key 4ebcceda8339b90f: the 4-player menus, OPTIONS) or the italic one
+// (254f6da069f11c3f: PAUSE MENU's rows), each line one draw; the selected row is drawn light cyan (0.58 0.91 1 or
+// 0.81 0.94 1), the others greyer. A row is a line with any others at its height (a setting's value); the list is the
+// run of rows evenly spaced around the lit one (the titles and prompts are further away or in other lettering).
+
+namespace {
+
+struct MpLine {
+    float x0, y0, x1, y1;
+    bool lit;
+};
+struct MpFrame {
+    uint64_t frame = ~0ull;
+    std::vector<MpLine> lines;
+};
+std::mutex g_mp_lock;
+std::array<MpFrame, 4> g_mp_frames;
+uint64_t g_mp_region_frame = ~0ull;  // the frame the region below is for (draw thread)
+bool g_mp_region = false;
+float g_mp_rx0 = 0, g_mp_ry0 = 0, g_mp_rx1 = 0, g_mp_ry1 = 0;
+
+// the keyboard's player's own menu: where on the screen, false when it has none up
+bool MpRegion(float& x0, float& y0, float& x1, float& y1) {
+    if (!kMenus) return false;
+    const int kb = controls::KeyboardPort();
+    if (kb < 0) return false;
+    if (!kernel::R32(0x2A88B8)) {
+        if (!kernel::R32(0x2A9CCC)) return false;
+        x0 = kb % 2 ? 320.0f : 0.0f, x1 = x0 + 320, y0 = kb / 2 ? 240.0f : 0.0f, y1 = y0 + 240;
+        return true;
+    }
+    constexpr uint32_t kPlayers = 0x205408, kPorts = 0x218464;
+    const int32_t all = std::min(int32_t(kernel::R32(kPlayers)), 4);
+    if (all <= 1) return false;  // one player, no bots: the one-player pause menu (Paused, this file's own)
+    int p = -1;
+    for (int32_t i = 0; i < all && p < 0; i++)
+        if (int32_t(kernel::R32(kPorts + uint32_t(i) * 4)) == kb) p = i;
+    if (p < 0 || kernel::R32(0x3B2200 + uint32_t(p) * 0x10) != 3) return false;
+    return KeyboardView(x0, y0, x1, y1);
+}
+
+void MpMenuLine(const gpu::State& s, uint32_t prim, const uint8_t* v, uint32_t stride, uint32_t count) {
+    if (count < 6 || count % 6 || count > 6 * 48 || !(TextureSize(s, 128, 128) || TextureSize(s, 256, 128))) return;
+    const uint64_t f = Frame();
+    if (g_mp_region_frame != f) {
+        g_mp_region_frame = f;
+        g_mp_region = MpRegion(g_mp_rx0, g_mp_ry0, g_mp_rx1, g_mp_ry1);
+    }
+    if (!g_mp_region) return;
+    const uint64_t key = StageKey(s);
+    if (key != 0x4ebcceda8339b90full && key != 0x254f6da069f11c3full) return;
+    Layout l = MenuLayout(s, prim, stride, count, true);
+    if (!l.ok) return;
+    auto c = ColorOf(v, stride, l);
+    if (IsShadow(c) || c[3] < 0.5f) return;
+    Box b = BoxOf(v, stride, l, 0, count);
+    float cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    if (cx < g_mp_rx0 || cx > g_mp_rx1 || cy < g_mp_ry0 || cy > g_mp_ry1 || b.y1 - b.y0 > 40) return;
+    bool lit = c[2] >= 0.95f && c[1] >= 0.85f;
+    std::lock_guard lock(g_mp_lock);
+    MpFrame& mf = g_mp_frames[f % g_mp_frames.size()];
+    if (mf.frame != f) mf.frame = f, mf.lines.clear();
+    if (mf.lines.size() < 96) mf.lines.push_back({b.x0, b.y0, b.x1, b.y1, lit});
+}
+
+// the keyboard's player's menu rows as last drawn (a whole frame), top to bottom, and the lit one; -1 when none is up
+int MpRows(std::vector<MpLine>& rows) {
+    rows.clear();
+    std::vector<MpLine> lines;
+    {
+        std::lock_guard lock(g_mp_lock);
+        const MpFrame* best = nullptr;
+        for (const MpFrame& mf : g_mp_frames)
+            if (mf.frame < Frame() && Frame() - mf.frame <= 3 && (!best || mf.frame > best->frame)) best = &mf;
+        if (!best) return -1;
+        lines = best->lines;
+    }
+    // lines at one height are one row
+    std::sort(lines.begin(), lines.end(), [](const MpLine& a, const MpLine& b) { return a.y0 + a.y1 < b.y0 + b.y1; });
+    std::vector<MpLine> all;
+    for (const MpLine& m : lines) {
+        if (!all.empty() && std::fabs((all.back().y0 + all.back().y1) - (m.y0 + m.y1)) < 8) {
+            MpLine& r = all.back();
+            r.x0 = std::min(r.x0, m.x0), r.x1 = std::max(r.x1, m.x1), r.y0 = std::min(r.y0, m.y0), r.y1 = std::max(r.y1, m.y1);
+            r.lit = r.lit || m.lit;
+        } else {
+            all.push_back(m);
+        }
+    }
+    auto mid = [&](size_t i) { return (all[i].y0 + all[i].y1) / 2; };
+    // the longest evenly spaced run through a lit row, with no other lit one (the italic rows' letters hang below their
+    // line, so their spacing is even to a few pixels only)
+    size_t best_from = 0, best_to = 0;
+    int best_lit = -1;
+    for (size_t i = 0; i < all.size(); i++) {
+        if (!all[i].lit) continue;
+        float step = 1e9f;
+        if (i > 0) step = std::min(step, mid(i) - mid(i - 1));
+        if (i + 1 < all.size()) step = std::min(step, mid(i + 1) - mid(i));
+        if (step > 60 || step < 8) continue;
+        const float slack = std::max(5.0f, step * 0.2f);
+        size_t from = i, to = i;
+        while (from > 0 && std::fabs(mid(from) - mid(from - 1) - step) <= slack) from--;
+        while (to + 1 < all.size() && std::fabs(mid(to + 1) - mid(to) - step) <= slack) to++;
+        int lits = 0;
+        for (size_t k = from; k <= to; k++) lits += all[k].lit ? 1 : 0;
+        if (lits != 1 || to == from) continue;
+        if (best_lit < 0 || to - from > best_to - best_from) best_from = from, best_to = to, best_lit = int(i - from);
+    }
+    if (best_lit < 0 || best_to == best_from) return -1;
+    rows.assign(all.begin() + std::ptrdiff_t(best_from), all.begin() + std::ptrdiff_t(best_to) + 1);
+    return best_lit;
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -1589,6 +1733,7 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     }
     if (!kMenus) return;
     const auto& s = *static_cast<const gpu::State*>(state);
+    MpMenuLine(s, prim, v, stride, count);
     CoverDraw(s, prim, v, stride, count);
     if ((DrawPaused() || Closing()) && PausePage() && PausePanelDraw(s, prim, v, stride, count)) return;
     // the pause menu's question: its band moved up with the rows
@@ -1958,6 +2103,7 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
 
 bool PageOpen() { return g_page.load() != Page::None; }
 bool RespawnUp() { return kMenus && Recent(g_respawn_seen.load()); }
+bool MainMenuUp() { return kMenus && Recent(g_main_seen.load()); }
 
 void DrivingPauseShown(int lit) {
     g_drive_seen.store(Frame() + 1);
@@ -2015,7 +2161,7 @@ namespace {
 // player would press them, so the added rows go through the same code as the controller's. Nothing of it in play (the
 // mouse buttons are the game's there) or while a page is up (the pages take the mouse themselves).
 
-enum class MouseMenu { None, Main, Options, Pause, Question };
+enum class MouseMenu { None, Main, Options, Pause, Question, Split };
 
 std::atomic<float> g_cursor_x{-1}, g_cursor_y{-1};  // console pixels
 std::atomic<bool> g_cursor_over{false};             // over the console's frame
@@ -2105,13 +2251,18 @@ int MouseRowNow(MouseMenu m) {
             std::array<AnswerBox, 2> a;
             return asked ? Answers(a) : -1;
         }
+        case MouseMenu::Split: {
+            if (!kMenus || g_page.load() != Page::None) return -1;
+            std::vector<MpLine> rows;
+            return MpRows(rows);
+        }
         default: return -1;
     }
 }
 
 // the menu with rows up now, and its selected row (-1 and None when none)
 int MenuNow(MouseMenu& menu) {
-    for (MouseMenu m : {MouseMenu::Question, MouseMenu::Pause, MouseMenu::Main, MouseMenu::Options}) {
+    for (MouseMenu m : {MouseMenu::Question, MouseMenu::Pause, MouseMenu::Main, MouseMenu::Options, MouseMenu::Split}) {
         int cur = MouseRowNow(m);
         if (cur >= 0) {
             menu = m;
@@ -2141,6 +2292,22 @@ int MouseRowAt(MouseMenu m, float x, float y) {
         case MouseMenu::Main: rows = kMainItems + 1, x0 = kBarX0, x1 = kBarX1, above = 8, h = 46; break;
         case MouseMenu::Options: rows = kOptionRows + 1, x0 = kLabelX - 8, x1 = 600, above = 6, h = kRowStep; break;
         case MouseMenu::Pause: rows = kPauseRows + kPauseExtraRows, x0 = 95, x1 = 430, above = 5, h = kPauseStep; break;
+        case MouseMenu::Split: {
+            // the rows' height between their neighbours' middles, across the list's width and a little more
+            std::vector<MpLine> r;
+            if (MpRows(r) < 0) return -1;
+            float lx0 = 1e9f, lx1 = -1e9f;
+            for (const MpLine& m : r) lx0 = std::min(lx0, m.x0), lx1 = std::max(lx1, m.x1);
+            if (x < lx0 - 16 || x > lx1 + 16) return -1;
+            auto c = [&](size_t i) { return (r[i].y0 + r[i].y1) / 2; };
+            const float step = (c(r.size() - 1) - c(0)) / float(r.size() - 1);
+            for (size_t i = 0; i < r.size(); i++) {
+                float top = i > 0 ? (c(i - 1) + c(i)) / 2 : c(i) - step / 2;
+                float bottom = i + 1 < r.size() ? (c(i) + c(i + 1)) / 2 : c(i) + step / 2;
+                if (y >= top && y < bottom) return int(i);
+            }
+            return -1;
+        }
         case MouseMenu::Question: {
             std::array<AnswerBox, 2> a;
             Answers(a);
@@ -2188,9 +2355,9 @@ void MouseMenus(input::Pad& pad) {
     const bool moved = moves != moves_seen;
     const bool clicked = clicks != clicks_seen && NowMs() - g_cursor_click_at.load() < 250;
     moves_seen = moves, clicks_seen = clicks;
-    // only on a menu, with the cursor shown and no page up
-    if (controls::CurrentGameState() == controls::GameState::Playing || g_page.load() != Page::None || !MouseClicks() ||
-        overlay::Open()) {
+    // only on a menu (the keyboard's player's: a split screen player's own pause menu too, MouseClicks), with the
+    // cursor shown and no page up
+    if (g_page.load() != Page::None || !MouseClicks() || overlay::Open()) {
         target = -1, accept = false, hold = 0;
         return;
     }
@@ -2281,7 +2448,8 @@ void DrivingQuestionWord(int word, bool lit) {
 }
 
 void Pad(int port, input::Pad& pad) {
-    if (!(kMenus || kDrivingImage) || port != 0) return;
+    // the keyboard and mouse's port (port 0; in multiplayer with the devices apart the keyboard's own port)
+    if (!(kMenus || kDrivingImage) || port != controls::KeyboardPort()) return;
     MouseMenus(pad);
     // a multiplayer game's results (CONTINUE, X REMATCH) on the keyboard: Backspace (the menus' B) is X there
     if (kMenus && Keyboard() && Recent(g_rematch_seen.load())) {
@@ -3329,10 +3497,11 @@ void DrivingPageGlow(ImDrawList* dl) {
 
 // the keyboard's keys over the prompts the game drew this frame
 void DrawPrompts() {
-    if (!Keyboard()) return;
+    const bool keyboard = Keyboard();
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImTextureID tex = ImGui::GetIO().Fonts->TexID;
     for (const PromptRect& p : ShownPrompts()) {
+        if (p.kb < 0 ? !keyboard : p.kb == 0) continue;
         const KeyPicture& key = g_keys[int(p.prompt)];
         if (!key.ready) continue;
         float cx = (p.x0 + p.x1) / 2, cy = (p.y0 + p.y1) / 2;

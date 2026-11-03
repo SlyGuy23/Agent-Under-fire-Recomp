@@ -80,12 +80,12 @@ void Init() {
     }
 }
 
-Pad Poll(int port) {
+Pad Device(int slot) {
     Pad p;
     {
         std::lock_guard lock(g_lock);
         UpdatePads();
-        if (SDL_Gamepad* pad = port >= 0 && port < 4 ? g_pads[port] : nullptr) {
+        if (SDL_Gamepad* pad = slot >= 0 && slot < 4 ? g_pads[slot] : nullptr) {
             p.connected = true;
             constexpr SDL_GamepadButton kButtons[] = {
                 SDL_GAMEPAD_BUTTON_DPAD_UP,   SDL_GAMEPAD_BUTTON_DPAD_DOWN,  SDL_GAMEPAD_BUTTON_DPAD_LEFT,
@@ -109,6 +109,11 @@ Pad Poll(int port) {
             p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
         }
     }
+    return p;
+}
+
+Pad Poll(int port) {
+    Pad p = Device(app::kGame.pad_device ? app::kGame.pad_device(port) : port);
     if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }
@@ -129,8 +134,9 @@ uint16_t HeldOnAnyController() {
 // the motors run until set again
 void Rumble(int port, uint16_t left, uint16_t right) {
     if (app::kGame.rumble) app::kGame.rumble(port, left, right);
+    const int slot = app::kGame.pad_device ? app::kGame.pad_device(port) : port;
     std::lock_guard lock(g_lock);
-    if (port >= 0 && port < 4 && g_pads[port]) SDL_RumbleGamepad(g_pads[port], left, right, 0);
+    if (slot >= 0 && slot < 4 && g_pads[slot]) SDL_RumbleGamepad(g_pads[slot], left, right, 0);
 }
 
 }  // namespace input

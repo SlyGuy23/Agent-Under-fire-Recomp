@@ -17,8 +17,8 @@
 
 // Local players. One player ([0x205408] <= 1, every mission) is player 0 on port 0. Multiplayer split screen has
 // [0x205408] local players, player p reading the pad of port [0x218464 + p*4] (0x1380E0) and its player object at
-// [[0x329390] + p*0x2E0 + 0x278]; the port's controls (controls.cpp) are built per port, port 0 being the keyboard
-// and mouse's as well.
+// [[0x329390] + p*0x2E0 + 0x278]; the port's controls (controls.cpp) are built per port, the keyboard and mouse's
+// being port 0 (controls::KeyboardPort, its own port in multiplayer with the devices apart).
 namespace {
 int32_t LocalPlayers(uint8_t* base) { return std::clamp(int32_t(X86_MEM32(0x205408)), 1, 4); }
 
@@ -108,11 +108,11 @@ X86_FUNC(sub_000C5340) {
 // The game's auto-aim (0xB8BB0, the player's target search each think) bends the aim and the shots onto an enemy
 // while player+0x716 is set (at spawn: every difficulty but 00 Agent). With the keyboard and mouse and the port's
 // AUTO LOCK-ON off the search runs as if it were clear, so the aim follows the view; the byte is put back after, so
-// the option can come back on at any time. In split screen only for the keyboard and mouse's player (port 0): the
-// controllers of the others keep the game's aim.
+// the option can come back on at any time. In split screen only for the keyboard and mouse's player (its port,
+// controls::KeyboardPort): the controllers of the others keep the game's aim.
 X86_EXTERN_FUNC(__imp__sub_000B8BB0);
 X86_FUNC(sub_000B8BB0) {
-    if (!controls::AimAssistOff() || PortOf(base, LocalPlayerOf(base, ctx.ecx)) != 0) {
+    if (!controls::AimAssistOff() || PortOf(base, LocalPlayerOf(base, ctx.ecx)) != controls::KeyboardPort()) {
         __imp__sub_000B8BB0(ctx, base);
         return;
     }
@@ -251,15 +251,16 @@ X86_FUNC(sub_0015C920) {
 // enemy, locked on or not), 2 crosshair_manual, 0x107 crosshair_qcamera. With the keyboard and mouse the crosshair keeps
 // its normal size over an enemy: the targeted state is drawn as the normal one. The state itself is left as it was.
 // The element is +0x71F0 of local player n's HUD (0x2C2364 + n*0xD178, from 0x55583): in split screen only the
-// keyboard and mouse's player (port 0) gets it.
+// keyboard and mouse's player (controls::KeyboardPort) gets it.
 X86_EXTERN_FUNC(__imp__sub_00051320);
 X86_FUNC(sub_00051320) {
     constexpr uint32_t kTargeted = 0x201, kNormal = 1;
     constexpr uint32_t kHuds = 0x2C2364 + 0x71F0, kHudSize = 0xD178;
     const uint32_t state = X86_MEM32(ctx.esi + 0x2F0);
     const uint32_t hud = ctx.esi - kHuds;
-    const bool other = hud % kHudSize == 0 && hud / kHudSize < 4 && PortOf(base, int(hud / kHudSize)) != 0;
-    if (!state || X86_MEM32(state) != kTargeted || controls::ActiveDevice() != controls::Device::KeyboardMouse || other) {
+    const bool other =
+        hud % kHudSize == 0 && hud / kHudSize < 4 && PortOf(base, int(hud / kHudSize)) != controls::KeyboardPort();
+    if (!state || X86_MEM32(state) != kTargeted || !controls::KeyboardPlaying() || other) {
         __imp__sub_00051320(ctx, base);
         return;
     }

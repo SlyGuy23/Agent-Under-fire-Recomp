@@ -27,7 +27,8 @@ void Draw(const void* state, uint32_t prim, uint8_t* vertices, uint32_t stride, 
 // GameInfo::after_draw: the added rows
 void AfterDraw(const void* state, uint32_t prim, const uint8_t* vertices, uint32_t stride, uint32_t count,
                app::GameInfo::Emit emit);
-// GameInfo::pad, port 0's pad before the game sees it: the added rows' selection, and the pages
+// GameInfo::pad, the keyboard's port's pad before the game sees it (port 0; controls::KeyboardPort): the added rows'
+// selection, the pages, the mouse on the menus
 void Pad(int port, input::Pad& pad);
 // GameInfo::ui: the pages (the quit question, PC Settings, controls)
 void Ui();
@@ -39,6 +40,8 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
 bool PageOpen();
 // a multiplayer match's respawn screen (Press A to Join) shows for the player port 0 plays
 bool RespawnUp();
+// the main menu is up (its bars drawn lately): no multiplayer (controls::SetMultiplayerQuery)
+bool MainMenuUp();
 // The mouse cursor over the game's own menus (Ui each frame; the harness): where it is in console pixels (640x480),
 // whether it is over the console's frame, moved and the left button was clicked. On a menu with the cursor shown
 // (controls::MenuCursor) the row under it is selected as it moves there and a click accepts it (port 0's pad).

@@ -65,12 +65,12 @@ void Apply(const std::string& s, Pad& p) {
 
 }  // namespace
 
-Pad Poll(int port) {
+Pad Device(int slot) {
     static const std::vector<Press> script = LoadScript();
     static Press live{-1, "", 0};
     Pad p;
-    p.connected = port == 0;
-    if (port == 0) {
+    p.connected = slot == 0;
+    if (slot == 0) {
         double t = double(harness::g_frames.load());
         std::string cmd = (app::ExeDir() / "cmd").string();
         if (FILE* f = std::fopen(cmd.c_str(), "r")) {
@@ -84,6 +84,11 @@ Pad Poll(int port) {
             if (t >= s.at && t <= s.at + s.len) Apply(s.buttons, p);
         if (live.at >= 0 && t >= live.at && t <= live.at + live.len) Apply(live.buttons, p);
     }
+    return p;
+}
+
+Pad Poll(int port) {
+    Pad p = Device(app::kGame.pad_device ? app::kGame.pad_device(port) : port);
     if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }
