@@ -994,12 +994,11 @@ bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, con
         // on the pause panel (its left edge curves in), straight on its moving background
         DrawTable(c, dl, context, g_view_tab == 0 ? Device::Controller : Device::KeyboardMouse, c.pause_top, 13,
                   c.pause_grid_centre, false, c.pause_grid_scale);
-        float bw = c.title_width(13, "Back"), by = c.pause_bar_y, bx = c.pause_x;
-        bool over;
-        if (c.game_back && c.game_back()) {
-            // the game's B BACK prompt, in the bar where the other pause screens have it
-            over = ImGui::IsMouseHoveringRect(c.guest(c.back_x0, by - 2), c.guest(c.back_x1, by + 20), false);
-        } else {
+        // Back: the game's B BACK prompt in the bar (its click is the caller's, as Back); words of this page's there
+        // only when the game's is not seen
+        bool over = false;
+        if (!c.game_back || !c.game_back()) {
+            float bw = c.title_width(13, "Back"), by = c.pause_bar_y, bx = c.pause_x;
             over = ImGui::IsMouseHoveringRect(c.guest(bx - 3, by - 2), c.guest(bx + 3 + bw, by + 16), false);
             c.title(dl, bx, by, 13, over ? c.lit : Dim(c.unlit), "Back", 0);
         }

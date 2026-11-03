@@ -35,8 +35,8 @@ struct PageContext {
     // the layout's selected tab (Controller or Keyboard & Mouse) spans x0 to x1 in the tabs' bar (console pixels): the
     // game's light tab box is drawn there (menus.cpp); called each frame the layout is up
     void (*layout_tab)(float x0, float x1) = nullptr;
-    // the game draws Back to the list (B BACK) in the prompts' bar while the controller layout is up (driving.xbe,
-    // menus.cpp), x back_x0 to back_x1 (console pixels): no words of the page's there, only the mouse's place
+    // the game draws B BACK in the prompts' bar under a pause page (menus.cpp), x back_x0 to back_x1 (console
+    // pixels): no words of the page's there; a click on it is Back (menus.cpp Ui)
     bool (*game_back)() = nullptr;
     float back_x0 = 0, back_x1 = 0;
     // a scroll chevron (more rows above: up, below: down) centred on x in the 11 px cell from y; null: drawn here

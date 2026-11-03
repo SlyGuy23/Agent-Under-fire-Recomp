@@ -935,8 +935,8 @@ bool DrivingPanelPiece(const gpu::State& s, uint8_t* v, uint32_t stride, bool pa
     return false;
 }
 
-// The controller layout of a pause Controls page (driving and rails): Back to the page's list is the game's own B
-// prompt, as "Are you sure?" has it (B and BACK in the prompts' letters and colour, where that question puts them, the
+// A pause page (Controls, its controller layout, PC Settings; driving and rails): Back (to the Controls list from the
+// layout, else to the MISSION page) is the game's own B prompt, as "Are you sure?" has it (B and BACK in the prompts' letters and colour, where that question puts them, the
 // B picture or the keyboard's Backspace key), not words of this port's in the bar. The game draws a B prompt on every
 // pause screen, CONTINUE beside the B picture at x 110, see-through (alpha 0) where it is not wanted: that one is
 // made B BACK. The letters' places and parts of the lettering's 256x256 sheet (f3b5a8f2) are the question's: B, A, C
@@ -959,8 +959,7 @@ bool DrivingLayoutBack(const gpu::State& s, uint8_t* v, uint32_t stride, float& 
     const bool letter = key == 0xf3b5a8f28d4357d7ull;
     // the bar's words in sight: their colour for B BACK in the next frame
     if (letter && (c >> 24) >= 0x80 && Channels(c) >= 60 && x0 > 240) g_prompt_word_colour.store(c);
-    float t0, t1;
-    if ((c >> 24) != 0 || x0 < 100 || x0 > 240 || !LayoutTab(t0, t1)) return false;
+    if ((c >> 24) != 0 || x0 < 100 || x0 > 240) return false;
     const uint32_t word = g_prompt_word_colour.load();
     auto set = [&](float nx0, float nx1, float nu0, float nv0, float nu1, float nv1, uint32_t colour) {
         for (uint32_t i = 0; i < 4; i++) {
@@ -1058,7 +1057,7 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
         for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[0] += kBackShift;
         x0 += kBackShift, x1 += kBackShift;
     }
-    // the controller layout of the Controls page: B BACK in the prompts' bar, the game's own prompt (DrivingLayoutBack)
+    // a pause page: B BACK in the prompts' bar, the game's own prompt (DrivingLayoutBack)
     if ((Paused() || Closing()) && page && DrivingLayoutBack(s, v, stride, x0, y0, x1, y1)) {
         collapse();
         return;
@@ -1237,8 +1236,10 @@ PressLine g_press{};
 std::atomic<uint64_t> g_press_seen{0};
 
 // the pack key of the texture on stage 0, kept per texture and its bytes' place (hashed once)
-uint64_t StageKey(const gpu::State& s) {
-    uint32_t header = s.textures[0];
+uint64_t TextureKey(uint32_t header, uint32_t palette);
+uint64_t StageKey(const gpu::State& s) { return TextureKey(s.textures[0], s.palettes[0]); }
+// the same for a texture (its header) and the palette a P8 texture is drawn with
+uint64_t TextureKey(uint32_t header, uint32_t palette) {
     if (!header) return 0;
     gpu::TextureDesc d;
     if (!gpu::Describe(header, d) || !d.data) return 0;
@@ -1249,8 +1250,8 @@ uint64_t StageKey(const gpu::State& s) {
     if (auto it = cache.find(id); it != cache.end()) return it->second;
     uint32_t colours[256] = {};
     constexpr uint32_t kFmtP8 = 0x0B;
-    if (d.format == kFmtP8 && s.palettes[0]) {
-        uint32_t ph = s.palettes[0];
+    if (d.format == kFmtP8 && palette) {
+        uint32_t ph = palette;
         uint32_t va = mem::VirtualFromPhysical(kernel::R32(ph + 4));
         size_t bytes = (256u >> (kernel::R32(ph) >> 30)) * 4;
         std::memcpy(colours, kernel::HostPtr(va), bytes);
@@ -1435,6 +1436,285 @@ float PromptToWords(float x0, float y0, float x1, float y1, float picture_mid) {
     if (!Labelled({Prompt::A, x0, y0, x1, y1}, &mid)) return 0;
     float dy = mid - picture_mid;
     return std::abs(dy) < 6 ? dy : 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The on-foot pause pages (Controls, PC Settings, the controller layout): B BACK in the prompts' bar, as the game's
+// own "Are you sure?" shows it. Under a page the game draws its MISSION page's prompts (A SELECT, CHANGE PAGE,
+// SCROLL), with no B. The B picture (the B button's 32x64 texture, its pack key 08e4f0ae) is drawn after the A picture
+// with the A quad's vertices at the question's place (x 138 to 155, the A picture's rows), the A texture swapped for
+// the B one for that draw; BACK after SELECT, in SELECT's lettering (the prompts' 128x128 sheet), colour and line, the
+// question's letters (their part of the sheet and places, 26 to 62 right of the picture's left). The B texture is the
+// level's own (made with the A one, a few headers from it): found once beside the A texture's header, by its key.
+// With four prompts the bar's gaps were 53, 17 and 24 pixels: SELECT moves 21.5 left and CHANGE PAGE 7.5, so each
+// gap between a prompt's words and the next picture is 31.5 (SCROLL stays where it was).
+constexpr uint64_t kAButton = 0x94de8205578ce49full, kBButton = 0x08e4f0ae95c16b80ull;
+constexpr float kFootBackX = 138, kFootBackW = 17;
+constexpr float kFootSelectX = 253, kFootSelectDx = -21.5f;  // the A picture's left (SELECT 22 right of it)
+constexpr float kFootChangeX = 343.5f, kFootChangeDx = -7.5f;  // the CHANGE PAGE picture's left (its words 21.5 right)
+// BACK's letters: their left and width from the picture's left, their part of the 128x128 sheet (texels)
+struct FootLetter {
+    float dx, w, u0, v0, u1, v1;
+};
+constexpr FootLetter kFootBack[4] = {{26, 8, 109, 39, 116, 49}, {35, 9, 10, 39, 18, 49}, {46, 7, 42, 50, 48, 60},
+                                     {55, 7, 14, 61, 20, 71}};
+[[maybe_unused]] constexpr float kFootBackRight = kFootBackX + 62;  // BACK's end
+std::atomic<uint64_t> g_foot_back_seen{0};          // B BACK drawn on a page: the frame plus one
+uint32_t g_foot_b_header = 0, g_foot_b_near = 0;    // the B texture, and the A one it was looked for beside
+uint64_t g_foot_b_tried = 0;                        // the frame it was last looked for (and not found)
+Box g_foot_a{};                                     // the A picture in this frame's bar, as drawn
+uint64_t g_foot_a_frame = ~0ull;
+
+bool FootBar(const Box& b) { return b.y0 > 360 && b.y1 < 410; }
+
+// the level's B texture (0 when not found), the A texture's header given
+uint32_t FootBTexture(uint32_t a) {
+    if (g_foot_b_header && TextureKey(g_foot_b_header, 0) == kBButton) return g_foot_b_header;
+    g_foot_b_header = 0;
+    if (!a || (a == g_foot_b_near && Frame() < g_foot_b_tried + 120)) return 0;
+    g_foot_b_near = a, g_foot_b_tried = Frame();
+    // a header of the same shape (format word) whose bytes are near the A texture's
+    const uint32_t format = kernel::R32(a + 12), data = kernel::R32(a + 4);
+    for (int off = -0x400; off <= 0x400; off += 4) {
+        uint32_t h = a + uint32_t(off);
+        if (off == 0 || kernel::R32(h + 12) != format) continue;
+        uint32_t hd = kernel::R32(h + 4);
+        if (!hd || hd == data || (hd > data ? hd - data : data - hd) > 0x400000) continue;
+        if (TextureKey(h, 0) == kBButton) return g_foot_b_header = h;
+    }
+    return 0;
+}
+
+// the B prompt where B BACK goes, for the keys (the A picture's rows)
+void FootBackPrompt(const Box& a, float alpha) {
+    std::lock_guard l(g_prompt_lock);
+    uint64_t f = Frame();
+    FramePrompts& fp = g_prompt_frames[f % g_prompt_frames.size()];
+    if (fp.frame != f) fp.frame = f, fp.list.clear();
+    if (fp.list.size() < 64)
+        fp.list.push_back({Prompt::B, kFootBackX, a.y0, kFootBackX + kFootBackW, a.y1, std::clamp(alpha, 0.0f, 1.0f), true, -1});
+}
+
+void ShiftX(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, float dx) {
+    for (uint32_t i = 0; i < count; i++) At(v, stride, i, l.pos)[0] += dx;
+}
+
+// Draw, a page up: SELECT and CHANGE PAGE (pictures and words) moved left. Once: a quad already moved is not at the
+// game's place any more.
+void FootPageBar(const gpu::State& s, uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, Box& b) {
+    if (!FootBar(b)) return;
+    float dx = 0;
+    if (count == 6 && PromptPicture(s, b.u0, b.v0, b.u1, b.v1)) {
+        if (Near(b.x0, kFootSelectX, 1)) dx = kFootSelectDx;
+        else if (Near(b.x0, kFootChangeX, 1)) dx = kFootChangeDx;
+    } else if (TextureSize(s, 128, 128) && count >= 6 && count <= 6 * 16) {
+        if (Near(b.x0, kFootSelectX + 22, 1)) dx = kFootSelectDx;
+        else if (Near(b.x0, kFootChangeX + 21.5f, 1)) dx = kFootChangeDx;
+    }
+    if (dx == 0) return;
+    ShiftX(v, stride, l, count, dx);
+    b = BoxOf(v, stride, l, 0, count);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The front end's prompts' bars (the main menus, the multiplayer game select, setup pages, join screen, player menus
+// and results): the game lays a bar out as picture, words, picture, words ... with uneven gaps (a D-pad 2 pixels from
+// SELECT before it, 5 from BACK to the A after it), and draws its D-pads (the button sheet's 23x23 cells, the arrows'
+// ink 16x15 texels) much smaller than the A and B buttons (19x20, ink to their edges). Here each bar is laid out again
+// by the bar of the frame before (its pictures and words as the game placed them, kept in frame order): the D-pads
+// 1.3 times bigger (their ink about as big as A's and B's), each picture's ink kFrontToWords from its words and each
+// prompt's words kFrontGap from the next picture's ink, the whole bar centred where the game's was; each picture
+// then on its words' middle line (PromptToWords). Positions are set from the game's own (a line the game keeps and
+// draws again, already moved, is known by its new place), so it is the same however often a quad is drawn.
+constexpr uint64_t kButtonSheet = 0x7ffff33c7f8a7768ull;
+constexpr float kFrontPadScale = 1.3f, kFrontToWords = 8, kFrontGap = 16;
+struct FrontItem {
+    bool pic;
+    float x0, y0, x1, y1;  // as the game drew it
+    float ink0, ink1;      // a picture's ink across, as the game drew it
+};
+struct FrontMove {
+    bool pic;
+    float ox0, oy0, ox1, oy1;  // the game's place
+    float nx0, nx1;            // the new place across (a picture's quad, a line's start and end)
+    float scale;               // a picture's size
+};
+std::vector<FrontItem> g_front_building;
+std::vector<FrontMove> g_front_moves;
+uint64_t g_front_frame = ~0ull;
+
+// a D-pad cell's ink across (texels from the cell's left, the first and last columns) in the button sheet
+bool PadInk(float u0, float& a, float& b) {
+    if (Near(u0, 58, 2)) a = 6, b = 22;
+    else if (Near(u0, 125, 2) || Near(u0, 225, 2)) a = 4, b = 20;
+    else return false;
+    return true;
+}
+
+// the frame before's bars laid out again
+void FrontLayout() {
+    std::vector<FrontItem> pics, words;
+    for (const FrontItem& it : g_front_building) (it.pic ? pics : words).push_back(it);
+    std::vector<FrontMove> moves;
+    auto by_x = [](const FrontItem& a, const FrontItem& b) { return a.x0 < b.x0; };
+    std::sort(pics.begin(), pics.end(), by_x);
+    std::sort(words.begin(), words.end(), by_x);
+    struct Pair {
+        FrontItem pic, word;
+    };
+    std::vector<std::vector<Pair>> bars;
+    for (const FrontItem& p : pics) {
+        const float my = (p.y0 + p.y1) / 2;
+        const FrontItem* w = nullptr;
+        for (const FrontItem& c : words)
+            if (c.x0 >= p.x1 - 2 && c.x0 <= p.x1 + 20 && c.y0 < my && c.y1 > my) {
+                w = &c;
+                break;
+            }
+        if (!w) continue;
+        if (!bars.empty()) {
+            const Pair& last = bars.back().back();
+            const float ly = (last.pic.y0 + last.pic.y1) / 2;
+            if (p.ink0 - last.word.x1 < 60 && p.ink0 > last.word.x1 - 4 && std::fabs(ly - my) < 8) {
+                bars.back().push_back({p, *w});
+                continue;
+            }
+        }
+        bars.push_back({{p, *w}});
+    }
+    for (const auto& bar : bars) {
+        if (bar.size() < 2) continue;
+        // the inks' and words' widths, the new bar's width, centred on the game's
+        std::vector<float> ink_w;
+        float width = 0;
+        for (const Pair& pr : bar) {
+            const bool pad = pr.pic.ink1 - pr.pic.ink0 < pr.pic.x1 - pr.pic.x0 - 0.5f;
+            const float scale = pad ? kFrontPadScale : 1.0f;
+            ink_w.push_back((pr.pic.ink1 - pr.pic.ink0) * scale);
+            width += ink_w.back() + kFrontToWords + (pr.word.x1 - pr.word.x0);
+        }
+        width += kFrontGap * float(bar.size() - 1);
+        const float centre = (bar.front().pic.ink0 + bar.back().word.x1) / 2;
+        float x = centre - width / 2;
+        for (size_t i = 0; i < bar.size(); i++) {
+            const Pair& pr = bar[i];
+            const bool pad = pr.pic.ink1 - pr.pic.ink0 < pr.pic.x1 - pr.pic.x0 - 0.5f;
+            const float scale = pad ? kFrontPadScale : 1.0f;
+            const float qx0 = x - (pr.pic.ink0 - pr.pic.x0) * scale;
+            moves.push_back({true, pr.pic.x0, pr.pic.y0, pr.pic.x1, pr.pic.y1, qx0, qx0 + (pr.pic.x1 - pr.pic.x0) * scale, scale});
+            x += ink_w[i] + kFrontToWords;
+            moves.push_back({false, pr.word.x0, pr.word.y0, pr.word.x1, pr.word.y1, x, x + (pr.word.x1 - pr.word.x0), 1});
+            x += (pr.word.x1 - pr.word.x0) + kFrontGap;
+        }
+    }
+    g_front_moves.swap(moves);
+}
+
+bool FrontLine(const Box& b) { return b.y0 > 390 && b.y1 < 448; }
+
+// Draw, a front end screen: a bar's picture or words moved (and recorded for the next frame's layout)
+void FrontBar(const gpu::State& s, uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, Box& b, bool glyphs) {
+    if (!FrontLine(b)) return;
+    if (Frame() != g_front_frame) {
+        if (g_front_frame + 1 == Frame()) FrontLayout();
+        else g_front_moves.clear();
+        g_front_building.clear();
+        g_front_frame = Frame();
+    }
+    const bool pic = count == 6 && PromptPicture(s, b.u0, b.v0, b.u1, b.v1);
+    if (!pic && !(glyphs && count <= 6 * 20)) return;
+    const bool shadow = !pic && IsShadow(ColorOf(v, stride, l));
+    // the game's place: a quad already moved is found by its new one
+    Box o = b;
+    const FrontMove* m = nullptr;
+    for (const FrontMove& c : g_front_moves) {
+        if (c.pic != pic) continue;
+        const float tol = shadow ? 1.6f : 0.3f;
+        if (Near(b.x0, c.ox0, tol) && Near(b.y0, c.oy0, pic ? 6 : tol)) {
+            m = &c;
+            break;
+        }
+        if (Near(b.x0, c.nx0, tol) && Near(b.y0 + (pic ? (b.y1 - b.y0) / 2 : 0), c.oy0 + (pic ? (c.oy1 - c.oy0) / 2 : 0), pic ? 6 : tol)) {
+            m = &c;
+            o.x0 = c.ox0 + (b.x0 - c.nx0), o.x1 = o.x0 + (pic ? c.ox1 - c.ox0 : b.x1 - b.x0);
+            if (pic) o.y0 = c.oy0, o.y1 = c.oy1;
+            break;
+        }
+    }
+    if (!shadow && g_front_building.size() < 256) {
+        FrontItem it{pic, o.x0, o.y0, o.x1, o.y1, o.x0, o.x1};
+        float a, e;
+        if (pic && StageKey(s) == kButtonSheet && PadInk(b.u0 * 256, a, e)) {
+            // mirrored (the u larger at the left): the ink's pads change sides
+            float u_left = 0, x_left = 1e9f;
+            for (uint32_t i = 0; i < 6; i++)
+                if (At(v, stride, i, l.pos)[0] < x_left) x_left = At(v, stride, i, l.pos)[0], u_left = At(v, stride, i, l.tc)[0] * 256;
+            const float cell = (b.u1 - b.u0) * 256, k = (o.x1 - o.x0) / cell;
+            const bool mirrored = u_left > b.u0 * 256 + cell / 2;
+            if (mirrored) std::swap(a, e), a = cell - a, e = cell - e;
+            it.ink0 = o.x0 + a * k, it.ink1 = o.x0 + e * k;
+        }
+        g_front_building.push_back(it);
+    }
+    if (!m) return;
+    if (pic) {
+        // the quad from the game's, its size scaled about its middle line
+        const float cy = (m->oy0 + m->oy1) / 2, h = (m->oy1 - m->oy0) * m->scale;
+        for (uint32_t i = 0; i < 6; i++) {
+            float* p = At(v, stride, i, l.pos);
+            p[0] = p[0] > (b.x0 + b.x1) / 2 ? m->nx1 : m->nx0;
+            p[1] = p[1] > (b.y0 + b.y1) / 2 ? cy + h / 2 : cy - h / 2;
+        }
+        b = BoxOf(v, stride, l, 0, count);
+        MoveY(v, stride, l, count, PromptToWords(b.x0, b.y0, b.x1, b.y1, (b.y0 + b.y1) / 2));
+    } else {
+        ShiftX(v, stride, l, count, m->nx0 + (o.x0 - m->ox0) - b.x0);
+    }
+    b = BoxOf(v, stride, l, 0, count);
+}
+
+// AfterDraw, a page up: B after the A picture, BACK after SELECT
+void FootPageBack(gpu::State& s, const uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, const Box& b,
+                  app::GameInfo::Emit emit) {
+    if (!FootBar(b) || g_foot_a_frame != Frame()) return;
+    const bool keyboard = Keyboard();
+    if (count == 6 && StageKey(s) == kAButton) {
+        uint32_t bt = keyboard ? 0 : FootBTexture(s.textures[0]);
+        if (!bt) return;
+        std::vector<uint8_t> quad(v, v + 6 * stride);
+        for (uint32_t i = 0; i < 6; i++) {
+            float* p = At(quad.data(), stride, i, l.pos);
+            const float* t = At(quad.data(), stride, i, l.tc);
+            p[0] = t[0] > 0.5f ? kFootBackX + kFootBackW : kFootBackX;
+            p[1] = t[1] > 0.5f ? g_foot_a.y1 : g_foot_a.y0;
+        }
+        const uint32_t was = s.textures[0];
+        s.textures[0] = bt;
+        emit(kTriangleList, quad.data(), 6);
+        s.textures[0] = was;
+        return;
+    }
+    // SELECT (6 letters, moved): BACK in its letters' place, line and colour
+    if (count != 36 || !TextureSize(s, 128, 128) || !Near(b.x0, kFootSelectX + 22 + kFootSelectDx, 1)) return;
+    if (!keyboard && !FootBTexture(g_foot_b_near)) return;
+    const Box first = BoxOf(v, stride, l, 0, 6);
+    std::vector<uint8_t> text(4 * 6 * size_t(stride));
+    for (int k = 0; k < 4; k++) {
+        const FootLetter& fl = kFootBack[k];
+        for (uint32_t i = 0; i < 6; i++) {
+            uint8_t* d = text.data() + (size_t(k) * 6 + i) * stride;
+            std::memcpy(d, v + i * stride, stride);
+            float* p = reinterpret_cast<float*>(d + l.pos);
+            float* t = reinterpret_cast<float*>(d + l.tc);
+            bool right = p[0] > (first.x0 + first.x1) / 2, bottom = p[1] > (first.y0 + first.y1) / 2;
+            p[0] = kFootBackX + (right ? fl.dx + fl.w : fl.dx);
+            p[1] = bottom ? first.y1 : first.y0;
+            t[0] = (right ? fl.u1 : fl.u0) / 128, t[1] = (bottom ? fl.v1 : fl.v0) / 128;
+        }
+        LabelQuad(kFootBackX + fl.dx, first.y0, kFootBackX + fl.dx + fl.w, first.y1);
+    }
+    emit(kTriangleList, text.data(), 24);
+    g_foot_back_seen.store(Frame() + 1);
 }
 
 // the frame being shown has this seen mark (a frame number plus one, as the draws store them): the overlays that
@@ -1792,6 +2072,11 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
         b = BoxOf(v, stride, l, 0, count);
     }
 
+    // a pause page's prompts' bar: room for B BACK (FootPageBar)
+    if ((DrawPaused() || Closing()) && PausePage()) FootPageBar(s, v, stride, l, count, b);
+    // a front end screen's prompts' bar: laid out again (FrontBar)
+    if (!DrawPaused() && !Closing()) FrontBar(s, v, stride, l, count, b, glyphs);
+
     // the words beside a prompt: the key goes on their middle line (DrawPrompts)
     if (glyphs && count <= 6 * 40 && !IsShadow(ColorOf(v, stride, l)))
         for (uint32_t q = 0; q < count; q += 6) {
@@ -1821,6 +2106,11 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     // (how much of it shows: its colour's alpha, and its brightness, should the game darken it to black instead)
     auto pc = ColorOf(v, stride, l);
     float shows = pc[3] * std::clamp(std::max({pc[0], pc[1], pc[2]}), 0.0f, 1.0f);
+    // a pause page's A picture: B BACK goes left of it (FootPageBack), its key with it
+    if (count == 6 && DrawPaused() && PausePage() && FootBar(b) && StageKey(s) == kAButton) {
+        g_foot_a = b, g_foot_a_frame = Frame();
+        if (Keyboard() || FootBTexture(s.textures[0])) FootBackPrompt(b, shows);
+    }
     if (count == 6 && PromptQuad(s, b.x0, b.y0, b.x1, b.y1, b.u0, b.v0, b.u1, b.v1, shows)) {
         Hide(v, stride, l, count);
         return;
@@ -2056,6 +2346,9 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
     Layout l = MenuLayout(s, prim, stride, count);
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
+
+    // a pause page's B BACK (the game's own state for that draw: its texture swapped for B's while it is drawn)
+    if (DrawPaused() && PausePage()) FootPageBack(const_cast<gpu::State&>(s), v, stride, l, count, b, emit);
 
     // the pause panel's moving light-blue background: on to the frame's curve
     if (count == 6 && prim == kTriangleList && (DrawPaused() || Closing()) && TextureSize(s, 64, 64) &&
@@ -2823,9 +3116,13 @@ PageContext Context() {
     if (!kDrivingImage) c.pause_grid_centre = 380, c.pause_grid_scale = 0.9f;
     c.panel = PanelBackground;
     c.chevron = DrawChevron;
+    // the pause pages' B BACK, the game's prompt (DrivingLayoutBack, FootPageBack)
     if (kDrivingImage) {
         c.game_back = [] { return Recent(g_layout_back_seen.load()); };
         c.back_x0 = kLayoutBackX - 3, c.back_x1 = kLayoutBackX + 45.4f + 11.7f + 3;
+    } else {
+        c.game_back = [] { return Recent(g_foot_back_seen.load()); };
+        c.back_x0 = kFootBackX - 3, c.back_x1 = kFootBackRight + 3;
     }
     c.layout_tab = [](float x0, float x1) {
         g_layout_tab_x0.store(x0), g_layout_tab_x1.store(x1);
@@ -3725,6 +4022,13 @@ void Ui() {
         };
         pc.unlit = lighten(pc.unlit, 0.45f), pc.value = lighten(pc.value, 0.45f);
         if (kDrivingImage) DrivingPageGlow(ImGui::GetForegroundDrawList());
+        // a click (or a right click) on the bar's B BACK: Back, as B or Backspace
+        if (pc.game_back && pc.game_back()) {
+            const float by = pc.pause_bar_y;
+            if (ImGui::IsMouseHoveringRect(pc.guest(pc.back_x0, by - 4), pc.guest(pc.back_x1, by + 22), false) &&
+                (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1)))
+                pn.push_back(PageNav::Back);
+        }
         g_layout_tab_set = false;
         bool open = page == Page::PauseControls ? ControlsViewPage(pc, pn, controls::CurrentContext(), opened)
                                                 : PausePcSettingsPage(pc, pn, controls::CurrentContext(), opened);
