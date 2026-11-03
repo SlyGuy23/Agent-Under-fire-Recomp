@@ -32,6 +32,7 @@
 #include "core/input.h"
 #include "core/log.h"
 #include "kernel/kernel.h"
+#include "kernel/memory.h"
 #include "gpu/state.h"
 #include "gpu/texture.h"
 
@@ -220,10 +221,13 @@ void SkipIntrosOnPress() {
             if (focus)
                 for (int key : {VK_RETURN, VK_SPACE, VK_ESCAPE, VK_LBUTTON}) held = held || (GetAsyncKeyState(key) & 0x8000);
             if (!held) {
-                armed = true;
+                armed = focus;
                 continue;
             }
-            if (!armed || overlay::g_intros_done.exchange(true)) continue;
+            // only a press that starts while the window has focus, and not before the game's memory is set up
+            if (!focus) armed = false;
+            if (!armed || !mem::Base() || !mem::IsCommitted(0x1F046C)) continue;
+            if (overlay::g_intros_done.exchange(true)) continue;
             LOGR("Intros skipped");
             audio::g_master_volume.store(0);  // this process only: the game's own starts from the setting
             constexpr uint32_t kFilmStop = 0x1F046C;
