@@ -68,6 +68,10 @@ Run `build.bat`. The first build recompiles the game and takes a while. The exe 
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 
+## Licence
+
+The source code in this repository is under the [MIT licence](LICENSE). The SDK in `sdk` has its own licence, and the third party libraries are listed in `sdk/THIRD_PARTY.txt`.
+
 ## Legal
 
 This is an unofficial fan project, not affiliated with or endorsed by Electronic Arts, MGM, Danjaq or Eon Productions. 007, James Bond and Agent Under Fire are trademarks of their respective owners. No game code, executables or assets are included in this repository: building or playing needs your own copy of the game.
