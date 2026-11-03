@@ -202,6 +202,29 @@ struct Shown {
 };
 Shown g_shown[2];  // the back buffer of the last two frames ended, newest first
 
+// How much of the pause screen's picture each back buffer still shows while the quit fades (its memory, and the
+// product of the fades drawn onto it since the picture was copied there): the fade's black quad goes onto whatever the
+// buffer last had, and with three buffers in turn each is darkened every third frame, so the screen is black long
+// before the fade's own value reaches 0 (half way through, at about a half). A buffer not in the list: the picture
+// whole. A frame of the quit with no fade drawn once it has begun: black (the game has cleared it).
+struct Faded {
+    uint32_t data = 0;
+    float left = 1;
+};
+Faded g_faded[4];
+bool g_quitting = false;
+int g_fades = 0;            // the fade's quads drawn so far in this quit
+bool g_faded_now = false;  // and one in this frame
+
+float& FadedLeft(uint32_t data) {
+    for (Faded& f : g_faded)
+        if (f.data == data) return f.left;
+    for (Faded& f : g_faded)
+        if (!f.data) return f.data = data, f.left = 1, f.left;
+    g_faded[0] = {data, 1};
+    return g_faded[0].left;
+}
+
 void CopySurface(X86Context& ctx, uint32_t header, uint32_t from, uint32_t to) {
     static uint32_t src = 0, dst = 0;  // surface headers of our own, the device's back buffer with another memory
     if (!src) {
@@ -223,16 +246,28 @@ void CopySurface(X86Context& ctx, uint32_t header, uint32_t from, uint32_t to) {
 X86_EXTERN_FUNC(__imp__sub_00100690);
 X86_FUNC(sub_00100690) {
     const gpu::Surface rt = d3d::State().rt;
-    // quitting: the pause screen's prompts are no longer drawn but its picture stays up while the screen fades, the
-    // keyboard's keys over them kept with it (menus::HoldPrompts, the fade in 0xBDD20 below)
-    if (kernel::R32(0x1E0780) == 1) menus::HoldPrompts();
-    if (kernel::R32(0x1E0780) == 1 && kernel::R32(0x1BEB1C) == 3 && rt.header && g_shown[0].header == rt.header &&
-        g_shown[0].data && g_shown[0].data != rt.data) {
+    const bool quitting = kernel::R32(0x1E0780) == 1;
+    if (quitting && !g_quitting) {
+        for (Faded& f : g_faded) f = {};
+        g_fades = 0;
+    }
+    g_quitting = quitting;
+    if (quitting && kernel::R32(0x1BEB1C) == 3 && rt.header && g_shown[0].header == rt.header && g_shown[0].data &&
+        g_shown[0].data != rt.data) {
         CopySurface(ctx, rt.header, g_shown[0].data, rt.data);
+        FadedLeft(rt.data) = 1;
         if (g_shown[1].header == rt.header && g_shown[1].data && g_shown[1].data != rt.data &&
             g_shown[1].data != g_shown[0].data)
-            CopySurface(ctx, rt.header, g_shown[0].data, g_shown[1].data);
+            CopySurface(ctx, rt.header, g_shown[0].data, g_shown[1].data), FadedLeft(g_shown[1].data) = 1;
     }
+    // quitting: the pause screen's prompts are no longer drawn but its picture stays up while the screen fades, the
+    // keyboard's keys over them kept with it, as bright as the picture this frame shows (this buffer's)
+    if (quitting) {
+        menus::HoldPrompts();
+        const float left = g_faded_now ? (rt.data ? FadedLeft(rt.data) : 1.0f) : g_fades ? 0.0f : 1.0f;
+        menus::ScreenFade(left);
+    }
+    g_faded_now = false;
     g_shown[1] = g_shown[0];
     g_shown[0] = {rt.header, rt.data};
     __imp__sub_00100690(ctx, base);
@@ -280,10 +315,14 @@ X86_FUNC(sub_000D3910) {
 }
 
 // The fade to black (0xB7B60, the mission's teardown after Quit Mission): each frame 0xBDD20(left) draws a black quad
-// of opacity 1 - left over the picture, left going from 1 to 0. The keyboard's keys kept over the pause screen's
-// prompts fade with it (menus::ScreenFade).
+// of opacity 1 - left over the picture in the back buffer, left going from 1 to 0. The buffer's picture is left that
+// much darker (g_faded): the keyboard's keys kept over the pause screen's prompts fade as it does (0x100690).
 X86_EXTERN_FUNC(__imp__sub_000BDD20);
 X86_FUNC(sub_000BDD20) {
-    menus::ScreenFade(F(ctx.esp + 4));
+    const float left = F(ctx.esp + 4);
+    if (const uint32_t data = d3d::State().rt.data; g_quitting && data && left >= 0 && left <= 1) {
+        FadedLeft(data) *= left;
+        g_fades++, g_faded_now = true;
+    }
     __imp__sub_000BDD20(ctx, base);
 }

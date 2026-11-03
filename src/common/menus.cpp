@@ -134,6 +134,41 @@ void InsetUV(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, float
     }
 }
 
+// The on-foot pause menu's >> marker: the game draws texels 54 to 63 across and 28 to 44 down of the 64x64 sheet
+// (4135a1a1, its pack key) mirrored on 11 x 17 console pixels (x 87 to 98, the tips on the right at u 54), which cuts
+// the sheet's << at its edges and leaves no room round it for an outline (the A button's green left of texel 54, the
+// sheet's edge right of 63). With the texture pack's menu part on, and its picture of the sheet holding the marker in
+// the free part kMarker (texels 19 to 29 across, 46 to 64 down: AddKeyPictures looks), the quad draws that part
+// instead, a quarter texel in from its edges (no neighbour taken in by the filtering at the pack's 4x), on 14 x 17
+// console pixels: its tips' end where the game's was (x 98), its back 3 pixels further left (84), the same rows. With
+// the menu part off the game's own marker as it was.
+constexpr float kMarkerU0 = 19.25f, kMarkerU1 = 28.75f, kMarkerV0 = 46.25f, kMarkerV1 = 63.75f, kMarkerWide = 14;
+std::atomic<bool> g_marker_in_pack{false};
+// true: the quad draws the pack's marker (not to be taken half a texel in, InsetUV)
+bool MoveMarker(uint8_t* v, uint32_t stride, const Layout& l) {
+    if (!g_marker_in_pack.load() || !overlay::g_hd_menus || !app::Get().custom_textures) return false;
+    float lo = 1e9f, hi = -1e9f, x_lo = 0, x_hi = 0;
+    for (uint32_t i = 0; i < 6; i++) {
+        float u = At(v, stride, i, l.tc)[0] * 64, x = At(v, stride, i, l.pos)[0];
+        if (u < lo) lo = u, x_lo = x;
+        if (u > hi) hi = u, x_hi = x;
+    }
+    if (Near(lo, kMarkerU0, 0.05f)) return true;  // done already (the game drew the same vertices again)
+    if (!Near(lo, 54, 0.6f) || !Near(hi, 63, 0.6f) || x_lo == x_hi) return false;
+    float vlo = 1e9f;
+    for (uint32_t i = 0; i < 6; i++) vlo = std::min(vlo, At(v, stride, i, l.tc)[1] * 64);
+    const float dir = x_hi > x_lo ? 1.0f : -1.0f;
+    for (uint32_t i = 0; i < 6; i++) {
+        float* t = At(v, stride, i, l.tc);
+        float* p = At(v, stride, i, l.pos);
+        bool tips = t[0] * 64 - lo < hi - t[0] * 64;
+        p[0] = tips ? x_lo : x_lo + dir * kMarkerWide;
+        t[0] = (tips ? kMarkerU0 : kMarkerU1) / 64;
+        t[1] = (Near(t[1] * 64, vlo, 1) ? kMarkerV0 : kMarkerV1) / 64;
+    }
+    return true;
+}
+
 // collapsed to its first vertex: nothing drawn
 void Hide(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count) {
     float x = At(v, stride, 0, l.pos)[0], y = At(v, stride, 0, l.pos)[1];
@@ -691,7 +726,7 @@ bool PausePanelDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t str
     }
     // the menu is still up underneath (its Quit Mission row drawn): the pad's handling of it holds
     if (PauseRow(s, b) == kPauseRows - 1) g_pause_seen.store(Frame() + 1);
-    bool marker = count == 6 && TextureSize(s, 64, 64) && Near(b.x0, kMarkerX, 3);
+    bool marker = count == 6 && TextureSize(s, 64, 64) && Near(b.x0, kMarkerX, 3.5f);
     bool words = glyphs && s.textures[0] && TextureSize(s, 256, 128) && b.y0 < kFootWordsEnd;
     if (marker || words) {
         Hide(v, stride, l, count);
@@ -897,6 +932,70 @@ bool DrivingPanelPiece(const gpu::State& s, uint8_t* v, uint32_t stride, bool pa
     return false;
 }
 
+// The controller layout of a pause Controls page (driving and rails): Back to the page's list is the game's own B
+// prompt, as "Are you sure?" has it (B and BACK in the prompts' letters and colour, where that question puts them, the
+// B picture or the keyboard's Backspace key), not words of this port's in the bar. The game draws a B prompt on every
+// pause screen, CONTINUE beside the B picture at x 110, see-through (alpha 0) where it is not wanted: that one is
+// made B BACK. The letters' places and parts of the lettering's 256x256 sheet (f3b5a8f2) are the question's: B, A, C
+// and K 19, 27.1, 37.2 and 45.4 right of the picture's left, 15.3 tall at the bar's other words' line, the sheet's
+// texels a tenth smaller; the rest of CONTINUE's letters go. The colour is the bar's other words' (SELECT's) of the
+// frame before. True: the quad is not drawn.
+constexpr float kLayoutBackX = 110 + 33;  // the B picture's left, as the question's (DrivingPauseDraw)
+std::atomic<uint64_t> g_layout_back_seen{0};
+std::atomic<uint32_t> g_prompt_word_colour{0xFF28BAC2u};
+bool DrivingLayoutBack(const gpu::State& s, uint8_t* v, uint32_t stride, float& x0, float& y0, float& x1, float& y1) {
+    static uint64_t letters_frame = ~0ull;
+    static int letters = 0;
+    if (!TextureSize(s, 256, 256) || y0 < 376 || y1 > 412 || x1 - x0 > 24) return false;
+    uint8_t* col = StreamOf(s, v, 1);
+    uint8_t* tc = StreamOf(s, v, 2);
+    if (!col || !tc || s.streams[1].stride < 4 || s.streams[2].stride < 8) return false;
+    uint32_t c;
+    std::memcpy(&c, col, 4);
+    const uint64_t key = StageKey(s);
+    const bool letter = key == 0xf3b5a8f28d4357d7ull;
+    // the bar's words in sight: their colour for B BACK in the next frame
+    if (letter && (c >> 24) >= 0x80 && Channels(c) >= 60 && x0 > 240) g_prompt_word_colour.store(c);
+    float t0, t1;
+    if ((c >> 24) != 0 || x0 < 100 || x0 > 240 || !LayoutTab(t0, t1)) return false;
+    const uint32_t word = g_prompt_word_colour.load();
+    auto set = [&](float nx0, float nx1, float nu0, float nv0, float nu1, float nv1, uint32_t colour) {
+        for (uint32_t i = 0; i < 4; i++) {
+            float* p = At(v, stride, i, 0);
+            bool right = p[0] > (x0 + x1) / 2, lower = p[1] > (y0 + y1) / 2;
+            p[0] = right ? nx1 : nx0;
+            float* t = reinterpret_cast<float*>(tc + i * s.streams[2].stride);
+            t[0] = (right ? nu1 : nu0) / 256, t[1] = (lower ? nv1 : nv0) / 256;
+            std::memcpy(col + i * s.streams[1].stride, &colour, 4);
+        }
+        x0 = nx0, x1 = nx1;
+    };
+    if (key == 0xa0aa68c1c1fc6b94ull) {
+        // the B picture (its part of the sheet: 99,34 to 131,98)
+        const float* t = reinterpret_cast<const float*>(tc);
+        if (!Near(x0, 110, 4) || !Near(std::min(t[0], reinterpret_cast<const float*>(tc + s.streams[2].stride)[0]) * 256, 99, 2))
+            return false;
+        set(kLayoutBackX, kLayoutBackX + (x1 - x0), 99, 34, 131, 98, (word & 0xFF000000u) | 0x00FFFFFFu);
+        g_layout_back_seen.store(Frame() + 1);
+        return false;
+    }
+    if (!letter) return false;
+    uint64_t f = Frame();
+    if (f != letters_frame) letters_frame = f, letters = 0;
+    int k = letters++;
+    if (k >= 4) return true;  // the rest of CONTINUE
+    struct Letter {
+        float dx, w, u0, v0, u1, v1;
+    };
+    static constexpr Letter kBack[4] = {{19.0f, 11.7f, 218, 108, 231, 125},
+                                        {27.1f, 13.5f, 184, 186, 199, 203},
+                                        {37.2f, 10.8f, 45, 58, 57, 75},
+                                        {45.4f, 11.7f, 30, 172, 43, 189}};
+    const Letter& l = kBack[k];
+    set(kLayoutBackX + l.dx, kLayoutBackX + l.dx + l.w, l.u0, l.v0, l.u1, l.v1, word);
+    return false;
+}
+
 void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
     constexpr uint32_t kFan = 6;
     if (prim != kFan || count != 4 || stride < 16) return;
@@ -955,6 +1054,11 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
         constexpr float kBackShift = 33;
         for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[0] += kBackShift;
         x0 += kBackShift, x1 += kBackShift;
+    }
+    // the controller layout of the Controls page: B BACK in the prompts' bar, the game's own prompt (DrivingLayoutBack)
+    if ((Paused() || Closing()) && page && DrivingLayoutBack(s, v, stride, x0, y0, x1, y1)) {
+        collapse();
+        return;
     }
     // a button prompt (coordinates in stream 2)
     if (const uint8_t* tc = StreamOf(s, v, 2); tc && s.streams[2].stride >= 8) {
@@ -1084,15 +1188,14 @@ std::atomic<uint64_t> g_prompts_seen{0};
 // driving.xbe quitting a mission (src/driving/hooks.cpp): the frames from the answer on, and when the last one ended
 std::atomic<uint64_t> g_hold_seen{0};
 std::atomic<int64_t> g_hold_at{0};
-// and each of those frames with what its fade to black left of the pause screen's picture (1 the picture whole, before
-// the fade starts; 0 black, a frame after it without the fade's quad). The prompts the pause screen showed last are
-// kept for them (the game draws its picture again, not its prompts).
+// and each of those frames with how much of the pause screen's picture it shows (1 the picture whole, before the fade
+// starts; the fades drawn onto that frame's buffer darken it, src/driving/hooks.cpp). The prompts the pause screen
+// showed last are kept for them (the game shows its picture again, not its prompts).
 struct HoldFrame {
     uint64_t frame = ~0ull;
     float left = 1;
 };
 std::array<HoldFrame, 8> g_hold_frames;
-bool g_hold_faded = false;  // the fade has started (g_prompt_lock)
 std::vector<PromptRect> g_prompts_held;
 
 bool Keyboard() { return controls::ActiveDevice() == controls::Device::KeyboardMouse; }
@@ -1303,9 +1406,9 @@ float PromptToWords(float x0, float y0, float x1, float y1, float picture_mid) {
     const FramePrompts& fp = g_prompt_frames[shown % g_prompt_frames.size()];
     const bool own = fp.frame == shown && !fp.list.empty();
     // quitting a driving or on-rails mission (from the frame Quit Mission's Yes is taken, src/driving/hooks.cpp): the
-    // pause screen's picture stays up and fades to black, its words with it, so the keys fade with that frame's fade
-    // (the prompts it last showed); none over a frame of the quit that has no picture (after the fade: black), and none
-    // once the game has stopped ending frames for the quit
+    // pause screen's picture stays up and fades to black, its words with it, so the keys (the prompts it last showed)
+    // are as bright as the picture that frame shows; none once it is all but black (or after the fade), and none once
+    // the game has stopped ending frames for the quit
     if (Recent(g_hold_seen.load()) || (g_hold_at.load() && NowMs() - g_hold_at.load() < 2000)) {
         if (NowMs() - g_hold_at.load() > 250) return {};
         const HoldFrame& hf = g_hold_frames[shown % g_hold_frames.size()];
@@ -1612,12 +1715,12 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
             }
             return;
         }
-        if (count == 6 && TextureSize(s, 64, 64) && Near(b.x0, kMarkerX, 3)) {
+        if (count == 6 && TextureSize(s, 64, 64) && Near(b.x0, kMarkerX, 3.5f)) {
             // the marker is the << of a 64x64 sheet (drawn mirrored) whose quad starts on the texel row right under
             // the sheet's blue picture and ends at its right edge: the filtering took in a row of that picture (a
             // line along the marker's top) and, wrapping, the sheet's left edge. Each edge of the part drawn goes
             // half a texel in, the same way however often the game draws it (as the driving HUD's sheet).
-            InsetUV(v, stride, l, 6, 64);
+            if (!MoveMarker(v, stride, l)) InsetUV(v, stride, l, 6, 64);
             int extra = g_pause_extra.load();
             if (page) Hide(v, stride, l, count);
             else MoveY(v, stride, l, count, PauseMarkerTarget(b.y0, extra) - b.y0);
@@ -1715,6 +1818,55 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     if (row > kControllerRow) MoveY(v, stride, l, count, kInsert);
 }
 
+// The on-foot pause panel's moving light-blue background (two 64x64 pictures over x 98 to 640, y 111 to 318 before a
+// page's stretch) starts at x 98, while the frame's curve (the column of pictures at x 64 to 128) has its inner line
+// further left on most rows (x 42 at its deepest): between the two the scene showed with no background over it, a
+// lighter strip with a hard edge down the panel at x 98. GlowToCurve fills it: a strip of the background's first
+// column (its picture, colour and rows as at its left edge, so it meets the quad with no edge) from the curve's inner
+// line (kFootCurve, measured on the game's own frame a pixel inside the line, rows in the background's height 0 to 1)
+// to x 98, under the curve's pictures (drawn after it). Where the line is right of 98 (the bottom rows) nothing.
+constexpr float kFootGlowX = 98;
+constexpr float kFootCurve[][2] = {{0.000f, 77}, {0.039f, 67}, {0.077f, 59}, {0.116f, 52}, {0.155f, 47}, {0.193f, 45},
+                                   {0.232f, 44}, {0.271f, 43}, {0.309f, 43}, {0.348f, 44}, {0.386f, 46}, {0.425f, 48},
+                                   {0.464f, 51}, {0.502f, 54}, {0.541f, 57}, {0.580f, 61}, {0.618f, 64}, {0.657f, 67},
+                                   {0.696f, 71}, {0.734f, 77}, {0.773f, 82}, {0.812f, 87}, {0.850f, 91}, {0.889f, 96},
+                                   {0.928f, 100}};
+std::vector<uint8_t> GlowToCurve(const uint8_t* v, uint32_t stride, const Layout& l, const Box& b) {
+    // the quad's left edge: its top and bottom vertices
+    int top = -1, bottom = -1;
+    for (uint32_t i = 0; i < 6; i++) {
+        const float* p = At(v, stride, i, l.pos);
+        if (!Near(p[0], b.x0, 0.5f)) continue;
+        if (Near(p[1], b.y0, 0.5f)) top = int(i);
+        if (Near(p[1], b.y1, 0.5f)) bottom = int(i);
+    }
+    std::vector<uint8_t> out;
+    if (top < 0 || bottom < 0) return out;
+    const float* ct = At(v, stride, uint32_t(top), l.color);
+    const float* cb = At(v, stride, uint32_t(bottom), l.color);
+    const float* tt = At(v, stride, uint32_t(top), l.tc);
+    const float* tb = At(v, stride, uint32_t(bottom), l.tc);
+    auto vertex = [&](float x, float f) {
+        size_t at = out.size();
+        out.insert(out.end(), v + size_t(top) * stride, v + size_t(top + 1) * stride);
+        float* p = reinterpret_cast<float*>(out.data() + at + l.pos);
+        float* c = reinterpret_cast<float*>(out.data() + at + l.color);
+        float* t = reinterpret_cast<float*>(out.data() + at + l.tc);
+        p[0] = x, p[1] = b.y0 + (b.y1 - b.y0) * f;
+        for (int k = 0; k < 4; k++) c[k] = ct[k] + (cb[k] - ct[k]) * f;
+        t[0] = tt[0], t[1] = tt[1] + (tb[1] - tt[1]) * f;
+    };
+    constexpr int n = int(sizeof(kFootCurve) / sizeof(kFootCurve[0]));
+    for (int i = 0; i + 1 < n; i++) {
+        float f0 = kFootCurve[i][0], f1 = kFootCurve[i + 1][0];
+        float x0 = std::min(kFootCurve[i][1], b.x0), x1 = std::min(kFootCurve[i + 1][1], b.x0);
+        if (x0 >= b.x0 && x1 >= b.x0) continue;
+        vertex(x0, f0), vertex(b.x0, f0), vertex(x1, f1);
+        vertex(x1, f1), vertex(b.x0, f0), vertex(b.x0, f1);
+    }
+    return out;
+}
+
 void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stride, uint32_t count, app::GameInfo::Emit emit) {
     if (!kMenus) return;
     const auto& s = *static_cast<const gpu::State*>(state);
@@ -1734,6 +1886,14 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
     Layout l = MenuLayout(s, prim, stride, count);
     if (!l.ok) return;
     Box b = BoxOf(v, stride, l, 0, count);
+
+    // the pause panel's moving light-blue background: on to the frame's curve
+    if (count == 6 && prim == kTriangleList && (DrawPaused() || Closing()) && TextureSize(s, 64, 64) &&
+        Near(b.x0, kFootGlowX, 1) && b.x1 - b.x0 > 400 && b.y1 - b.y0 > 150) {
+        std::vector<uint8_t> fill = GlowToCurve(v, stride, l, b);
+        if (!fill.empty()) emit(prim, fill.data(), uint32_t(fill.size() / stride));
+        return;
+    }
 
     // the page's name in place of OPTIONS
     if (!g_title_line.empty() && OptionsTitle(s, b)) {
@@ -1814,9 +1974,8 @@ void HoldPrompts() {
     {
         std::lock_guard l(g_prompt_lock);
         uint64_t f = Frame();
-        if (!Recent(g_hold_seen.load())) g_hold_faded = false;  // a new quit
         HoldFrame& hf = g_hold_frames[f % g_hold_frames.size()];
-        if (hf.frame != f) hf = {f, g_hold_faded ? 0.0f : 1.0f};  // no fade drawn in this frame
+        if (hf.frame != f) hf = {f, 1.0f};  // until ScreenFade says otherwise
     }
     g_hold_seen.store(Frame() + 1);
     g_hold_at.store(NowMs());
@@ -1825,7 +1984,6 @@ void ScreenFade(float left) {
     std::lock_guard l(g_prompt_lock);
     uint64_t f = Frame();
     if (!Recent(g_hold_seen.load())) return;  // not a quit's
-    g_hold_faded = true;
     g_hold_frames[f % g_hold_frames.size()] = {f, std::clamp(left, 0.0f, 1.0f)};
 }
 
@@ -2359,12 +2517,28 @@ namespace menus {
 
 // a grid's panel in the pause menu's look (below), for the pages' context
 void PanelBackground(ImDrawList* dl, float x0, float y0, float x1, float y1);
+// a scroll chevron of the pages (below)
+void DrawChevron(ImDrawList* dl, float x, float y, bool up, ImU32 col);
 
 namespace {
 
 ImFont* g_font = nullptr;  // the game's lettering (GameFont), else Bahnschrift
 bool g_game_font = false;
 ImFont* g_title_font = nullptr;  // the italic lettering, for titles and tabs (else g_font)
+// the same two at the game's own sheets' resolution (a texel of the sheet an atlas pixel, magnified with bilinear
+// filtering as the game's own lettering is drawn): with the texture pack's menu part off, as the game's menus then are
+ImFont* g_font_lo = nullptr;
+ImFont* g_title_font_lo = nullptr;
+bool g_body_outline = false;  // the body lettering's sheet has a dark outline round its letters (FillSheetFont)
+
+// Menu And HUD Textures off (or the texture pack off): this port's menu parts at the game's own resolution too
+bool LowMenus() { return !overlay::g_hd_menus || !app::Get().custom_textures; }
+ImFont* BodyFont() {
+    ImFont* f = LowMenus() && g_font_lo ? g_font_lo : g_font;
+    return f ? f : ImGui::GetFont();
+}
+// the italic lettering's font, null without its sheet
+ImFont* ItalicFont() { return LowMenus() && g_title_font_lo ? g_title_font_lo : g_title_font; }
 
 // console coordinates (640x480) to the window's
 ImVec2 Guest(float x, float y) {
@@ -2408,11 +2582,12 @@ float ItalicLine(ImFont* f, ImDrawList* dl, float px, ImVec2 p, ImU32 col, const
     return p.x - x0;
 }
 
-void SayIn(ImFont* f, ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align) {
-    if (!f) f = g_font ? g_font : ImGui::GetFont();
+// title: in the italic lettering (else the body's)
+void SayIn(bool title, ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align) {
+    ImFont* italic = title ? ItalicFont() : nullptr;
+    ImFont* f = italic ? italic : BodyFont();
     float px = size * GuestScale();
     ImVec2 p = Guest(x, y);
-    bool italic = f == g_title_font && g_title_font;
     if (align != 0) p.x -= (italic ? ItalicLine(f, nullptr, px, p, col, text) : f->CalcTextSizeA(px, FLT_MAX, 0, text).x) * align;
     // no shadow copy: at PC resolutions its offset edge reads as a line along every letter
     if (italic) ItalicLine(f, dl, px, p, col, text);
@@ -2420,24 +2595,20 @@ void SayIn(ImFont* f, ImDrawList* dl, float x, float y, float size, ImU32 col, c
 }
 
 void Say(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align = 0) {
-    SayIn(g_font, dl, x, y, size, col, text, align);
+    SayIn(false, dl, x, y, size, col, text, align);
 }
 void Title(ImDrawList* dl, float x, float y, float size, ImU32 col, const char* text, float align) {
-    SayIn(g_title_font, dl, x, y, size, col, text, align);
+    SayIn(true, dl, x, y, size, col, text, align);
 }
-float WidthIn(ImFont* f, float size, const char* text) {
-    if (!f) f = g_font ? g_font : ImGui::GetFont();
+float WidthIn(bool title, float size, const char* text) {
+    ImFont* italic = title ? ItalicFont() : nullptr;
+    ImFont* f = italic ? italic : BodyFont();
     float px = size * GuestScale();
-    if (f == g_title_font && g_title_font) return ItalicLine(f, nullptr, px, ImVec2(0, 0), 0, text) / GuestScale();
+    if (italic) return ItalicLine(f, nullptr, px, ImVec2(0, 0), 0, text) / GuestScale();
     return f->CalcTextSizeA(px, FLT_MAX, 0, text).x / GuestScale();
 }
-float TitleWidth(float size, const char* text) { return WidthIn(g_title_font, size, text); }
-
-float Width(float size, const char* text) {
-    ImFont* f = g_font ? g_font : ImGui::GetFont();
-    float px = size * GuestScale();
-    return f->CalcTextSizeA(px, FLT_MAX, 0, text).x / GuestScale();
-}
+float TitleWidth(float size, const char* text) { return WidthIn(true, size, text); }
+float Width(float size, const char* text) { return WidthIn(false, size, text); }
 
 bool g_layout_tab_set = false;  // Ui: the page reported its layout's tab this frame
 
@@ -2458,6 +2629,11 @@ PageContext Context() {
     // and 621, its last row ending near y 325
     if (!kDrivingImage) c.pause_grid_centre = 380, c.pause_grid_scale = 0.9f;
     c.panel = PanelBackground;
+    c.chevron = DrawChevron;
+    if (kDrivingImage) {
+        c.game_back = [] { return Recent(g_layout_back_seen.load()); };
+        c.back_x0 = kLayoutBackX - 3, c.back_x1 = kLayoutBackX + 45.4f + 11.7f + 3;
+    }
     c.layout_tab = [](float x0, float x1) {
         g_layout_tab_x0.store(x0), g_layout_tab_x1.store(x1);
         g_layout_tab_on.store(true);
@@ -2559,6 +2735,11 @@ struct SheetFont {
     std::vector<int> ids;
     int space = -1;
     bool outline = false;  // the sheet's letters have a dark outline (FillSheetFont draws one round them)
+    // the same letters a texel of the sheet an atlas pixel (Menu And HUD Textures off): FillSheetFont makes each from
+    // its letter's pixels above, averaged over each texel
+    ImFont* lo = nullptr;
+    std::vector<int> lo_ids;
+    int lo_space = -1;
 };
 
 // the sheet's white coverage at a pixel (0-255): an outline drawn dark round the letters is not part of them
@@ -2599,6 +2780,18 @@ bool AddSheetFont(ImGuiIO& io, const MenuFont& mf, const char* name, SheetFont& 
                                                           g.advance * k, ImVec2(-k - 2, (g.dy + 1) * k - 2)));
     }
     sf.space = io.Fonts->AddCustomRectFontGlyph(sf.im, ImWchar(' '), 1, 1, mf.space * k, ImVec2(0, 0));
+    // the low resolution font: the same layout with k 1
+    ImFontConfig lo_cfg;
+    lo_cfg.SizePixels = float(mf.line_height);
+    lo_cfg.GlyphRanges = io.Fonts->GetGlyphRangesDefault();
+    std::snprintf(lo_cfg.Name, sizeof(lo_cfg.Name), "%s low", name);
+    sf.lo = io.Fonts->AddFontDefault(&lo_cfg);
+    for (int gi = 0; gi < mf.count; gi++) {
+        const MenuGlyph& g = mf.glyphs[gi];
+        sf.lo_ids.push_back(io.Fonts->AddCustomRectFontGlyph(sf.lo, ImWchar(static_cast<unsigned char>(g.c)), g.x1 - g.x0 + 3 + 4,
+                                                             g.y1 - g.y0 + 3 + 4, float(g.advance), ImVec2(-3, float(g.dy + 1) - 2)));
+    }
+    sf.lo_space = io.Fonts->AddCustomRectFontGlyph(sf.lo, ImWchar(' '), 1, 1, float(mf.space), ImVec2(0, 0));
     return true;
 }
 
@@ -2690,7 +2883,7 @@ void FillSheetFont(ImGuiIO& io, const SheetFont& sf) {
     io.Fonts->GetTexDataAsRGBA32(&atlas, &aw, &ah);
     SheetShapes shapes = Shapes(sf);
     constexpr int kBorder = 2;  // transparent pixels round each rectangle (AddSheetFont)
-    auto put = [&](const ImFontAtlasCustomRect* r, const MenuGlyph* g) {
+    auto put = [&](const ImFontAtlasCustomRect* r, const ImFontAtlasCustomRect* lr, const MenuGlyph* g) {
         int W = r->Width, H = r->Height;
         std::vector<float> cov(size_t(W) * H, 0.0f);  // the letter's coverage, 0-1
         if (g) {
@@ -2739,30 +2932,63 @@ void FillSheetFont(ImGuiIO& io, const SheetFont& sf) {
                     ring[size_t(y) * W + x] = best * 0.85f;
                 }
         }
+        // white over the dark outline, premultiplied (the low resolution copy averages these)
+        std::vector<float> lit(cov.size()), alpha(cov.size());
+        for (size_t i = 0; i < cov.size(); i++) {
+            float c = cov[i], o = ring[i];
+            alpha[i] = c + o * (1 - c), lit[i] = c;
+        }
+        auto write = [&](unsigned char* d, float c, float a) {
+            // straight alpha: white over the dark outline (an outlined sheet's clear pixels dark too, so the
+            // filtering does not lighten its edge)
+            uint8_t v = a > 0.0f ? uint8_t(std::clamp(c / a * 255.0f + 0.5f, 0.0f, 255.0f)) : (sf.outline ? 0 : 255);
+            d[0] = d[1] = d[2] = v;
+            d[3] = uint8_t(std::clamp(a * 255.0f + 0.5f, 0.0f, 255.0f));
+        };
         for (int y = 0; y < H; y++)
-            for (int x = 0; x < W; x++) {
-                float c = cov[size_t(y) * W + x], o = ring[size_t(y) * W + x];
-                float a = c + o * (1 - c);
-                unsigned char* d = atlas + (size_t(r->Y + y) * aw + r->X + x) * 4;
-                // straight alpha: white over the dark outline (an outlined sheet's clear pixels dark too, so the
-                // filtering does not lighten its edge)
-                uint8_t v = a > 0.0f ? uint8_t(std::clamp(c / a * 255.0f + 0.5f, 0.0f, 255.0f)) : (sf.outline ? 0 : 255);
-                d[0] = d[1] = d[2] = v;
-                d[3] = uint8_t(std::clamp(a * 255.0f + 0.5f, 0.0f, 255.0f));
+            for (int x = 0; x < W; x++)
+                write(atlas + (size_t(r->Y + y) * aw + r->X + x) * 4, lit[size_t(y) * W + x], alpha[size_t(y) * W + x]);
+        if (!lr) return;
+        // the low resolution copy: each texel of the sheet under the glyph's rectangle and a texel round it the
+        // average of the pixels above that cover it (they start at the sheet's pixel round((x0 - 1) k))
+        int LW = lr->Width, LH = lr->Height;
+        for (int ty = 0; ty < LH; ty++)
+            for (int tx = 0; tx < LW; tx++) {
+                float c = 0, a = 0;
+                int cx = tx - kBorder, cy = ty - kBorder;
+                if (g && cx >= 0 && cy >= 0 && cx < LW - 2 * kBorder && cy < LH - 2 * kBorder) {
+                    float bx = std::round(float(g->x0 - 1) * sf.k), by = std::round(float(g->y0 - 1) * sf.k);
+                    int px0 = int(std::lround(float(g->x0 - 1 + cx) * sf.k - bx)), px1 = int(std::lround(float(g->x0 + cx) * sf.k - bx));
+                    int py0 = int(std::lround(float(g->y0 - 1 + cy) * sf.k - by)), py1 = int(std::lround(float(g->y0 + cy) * sf.k - by));
+                    int n = 0;
+                    for (int py = py0; py < py1; py++)
+                        for (int px = px0; px < px1; px++) {
+                            int x = px + kBorder, y = py + kBorder;
+                            if (x < 0 || y < 0 || x >= W || y >= H) continue;
+                            c += lit[size_t(y) * W + x], a += alpha[size_t(y) * W + x], n++;
+                        }
+                    if (n) c /= float(n), a /= float(n);
+                }
+                write(atlas + (size_t(lr->Y + ty) * aw + lr->X + tx) * 4, c, a);
             }
     };
-    for (size_t i = 0; i < sf.ids.size(); i++) put(io.Fonts->GetCustomRectByIndex(sf.ids[i]), &sf.font->glyphs[i]);
-    put(io.Fonts->GetCustomRectByIndex(sf.space), nullptr);
+    for (size_t i = 0; i < sf.ids.size(); i++)
+        put(io.Fonts->GetCustomRectByIndex(sf.ids[i]), sf.lo ? io.Fonts->GetCustomRectByIndex(sf.lo_ids[i]) : nullptr,
+            &sf.font->glyphs[i]);
+    put(io.Fonts->GetCustomRectByIndex(sf.space), sf.lo ? io.Fonts->GetCustomRectByIndex(sf.lo_space) : nullptr, nullptr);
     // each glyph drawn from all but its rectangle's outer pixel (AddSheetFont): the filtering stays inside it
     float pu = 1.0f / float(aw), pv = 1.0f / float(ah);
-    for (int gi = 0; gi < sf.font->count; gi++) {
-        auto* glyph = const_cast<ImFontGlyph*>(sf.im->FindGlyphNoFallback(ImWchar(static_cast<unsigned char>(sf.font->glyphs[gi].c))));
-        if (!glyph) continue;
-        glyph->X0 += 1, glyph->Y0 += 1, glyph->X1 -= 1, glyph->Y1 -= 1;
-        glyph->U0 += pu, glyph->V0 += pv, glyph->U1 -= pu, glyph->V1 -= pv;
+    for (ImFont* font : {sf.im, sf.lo}) {
+        if (!font) continue;
+        for (int gi = 0; gi < sf.font->count; gi++) {
+            auto* glyph = const_cast<ImFontGlyph*>(font->FindGlyphNoFallback(ImWchar(static_cast<unsigned char>(sf.font->glyphs[gi].c))));
+            if (!glyph) continue;
+            glyph->X0 += 1, glyph->Y0 += 1, glyph->X1 -= 1, glyph->Y1 -= 1;
+            glyph->U0 += pu, glyph->V0 += pv, glyph->U1 -= pu, glyph->V1 -= pv;
+        }
+        // the space: nothing drawn (its 1x1 picture, drawn, took in its neighbours through the filtering)
+        if (auto* sp = const_cast<ImFontGlyph*>(font->FindGlyphNoFallback(ImWchar(' ')))) sp->Visible = 0;
     }
-    // the space: nothing drawn (its 1x1 picture, drawn, took in its neighbours through the filtering)
-    if (auto* sp = const_cast<ImFontGlyph*>(sf.im->FindGlyphNoFallback(ImWchar(' ')))) sp->Visible = 0;
     LOGI("menus: the pages use the game's lettering %s (%ux%u sheet%s)", sf.font->key, sf.w, sf.h, sf.outline ? ", outlined" : "");
 }
 
@@ -2782,6 +3008,10 @@ KeyPicture g_keys[4] = {{L"kb_enter.png"}, {L"kb_backspace.png"}, {L"kb_updown.p
 // 63 across and 1 to 27 down) the game stretches over the panel twice, the second copy upside down, the two fading
 // into each other (PanelBackground)
 KeyPicture g_glow{L""};
+// a scroll chevron of the pages (menus_pages.cpp Chevron) as a picture a texel a console pixel, for the low resolution
+// look (Menu And HUD Textures off): its up form, 18 x 11 texels round its point (FillChevron)
+KeyPicture g_chevron{L""};
+constexpr int kChevronW = 18, kChevronH = 11;
 
 std::filesystem::path FindFile(const wchar_t* file) {
     namespace fs = std::filesystem;
@@ -2829,12 +3059,20 @@ void AddKeyPictures(ImGuiIO& io) {
     if (std::filesystem::path p = FindSheet("4135a1a1b1d6547e"); !p.empty() && LoadPicture(p, g_glow.px, g_glow.w, g_glow.h)) {
         // just the part the game draws, at the picture's own scale
         UINT k = g_glow.w / 64, w = 62 * k, h = 26 * k;
+        // the >> marker drawn into the sheet's free part (MoveMarker): some of it opaque there
+        size_t ink = 0;
+        for (UINT y = UINT(kMarkerV0) * k; y < UINT(kMarkerV1 + 1) * k && y < g_glow.h; y++)
+            for (UINT x = UINT(kMarkerU0) * k; x < UINT(kMarkerU1 + 1) * k && x < g_glow.w; x++) ink += g_glow.px[(size_t(y) * g_glow.w + x) * 4 + 3] > 200;
+        g_marker_in_pack.store(ink >= size_t(20) * k * k);
+        LOGI("menus: the pause marker %s", g_marker_in_pack.load() ? "from the texture pack's free part of its sheet" : "as the game draws it");
         std::vector<uint8_t> part(size_t(w) * h * 4);
         for (UINT y = 0; y < h; y++)
             std::memcpy(&part[size_t(y) * w * 4], &g_glow.px[(size_t(y + k) * g_glow.w + k) * 4], size_t(w) * 4);
         g_glow.px.swap(part), g_glow.w = w, g_glow.h = h;
         g_glow.id = io.Fonts->AddCustomRectRegular(int(w), int(h));
+        g_glow.lo_id = io.Fonts->AddCustomRectRegular(62, 26);  // the game's own 62 x 26 texels (Menu And HUD off)
     }
+    g_chevron.id = io.Fonts->AddCustomRectRegular(kChevronW, kChevronH);
     for (KeyPicture& k : g_keys) {
         std::filesystem::path p = FindFile(k.file);
         if (p.empty() || !LoadPicture(p, k.px, k.w, k.h)) continue;
@@ -2864,6 +3102,29 @@ void FillKeyPictures(ImGuiIO& io) {
         io.Fonts->CalcCustomRectUV(r, &g_glow.uv0, &g_glow.uv1);
         ImVec2 px((g_glow.uv1.x - g_glow.uv0.x) / r->Width, (g_glow.uv1.y - g_glow.uv0.y) / r->Height);
         g_glow.uv0.x += px.x * 0.5f, g_glow.uv0.y += px.y * 0.5f, g_glow.uv1.x -= px.x * 0.5f, g_glow.uv1.y -= px.y * 0.5f;
+        // the low resolution copy: each of the game's texels the average of the picture's pixels over it
+        if (g_glow.lo_id >= 0) {
+            ImFontAtlasCustomRect* lr = io.Fonts->GetCustomRectByIndex(g_glow.lo_id);
+            UINT k = std::max(1u, g_glow.w / 62);
+            for (int y = 0; y < lr->Height; y++)
+                for (int x = 0; x < lr->Width; x++) {
+                    float acc[4] = {}, n = 0;
+                    for (UINT sy = UINT(y) * k; sy < UINT(y + 1) * k && sy < g_glow.h; sy++)
+                        for (UINT sx = UINT(x) * k; sx < UINT(x + 1) * k && sx < g_glow.w; sx++) {
+                            const uint8_t* q = &g_glow.px[(size_t(sy) * g_glow.w + sx) * 4];
+                            float a = q[3] / 255.0f;
+                            acc[0] += q[2] * a, acc[1] += q[1] * a, acc[2] += q[0] * a, acc[3] += a;
+                            n++;
+                        }
+                    unsigned char* d = atlas + (size_t(lr->Y + y) * aw + lr->X + x) * 4;
+                    float a = n ? acc[3] / n : 0;
+                    for (int c = 0; c < 3; c++) d[c] = uint8_t(a > 0 ? std::clamp(acc[c] / n / a, 0.0f, 255.0f) : 0);
+                    d[3] = uint8_t(std::clamp(a * 255.0f + 0.5f, 0.0f, 255.0f));
+                }
+            io.Fonts->CalcCustomRectUV(lr, &g_glow.lo_uv0, &g_glow.lo_uv1);
+            ImVec2 lp((g_glow.lo_uv1.x - g_glow.lo_uv0.x) / lr->Width, (g_glow.lo_uv1.y - g_glow.lo_uv0.y) / lr->Height);
+            g_glow.lo_uv0.x += lp.x * 0.5f, g_glow.lo_uv0.y += lp.y * 0.5f, g_glow.lo_uv1.x -= lp.x * 0.5f, g_glow.lo_uv1.y -= lp.y * 0.5f;
+        }
         g_glow.ready = true;
         g_glow.px.clear();
     }
@@ -2949,6 +3210,74 @@ void FillKeyPictures(ImGuiIO& io) {
     }
 }
 
+// the up chevron's picture (g_chevron), after the fonts (its outline as the body lettering's): white where its stroke
+// is, a dark outline round it when the lettering has one
+void FillChevron(ImGuiIO& io) {
+    if (g_chevron.id < 0) return;
+    unsigned char* atlas = nullptr;
+    int aw = 0, ah = 0;
+    io.Fonts->GetTexDataAsRGBA32(&atlas, &aw, &ah);
+    ImFontAtlasCustomRect* r = io.Fonts->GetCustomRectByIndex(g_chevron.id);
+    constexpr float kHalfW = 6, kTall = 5.5f, kHalfStroke = 0.95f, kRing = 0.6f, kX = -9, kY = -2.75f;
+    auto seg = [](float px, float py, float ax, float ay, float bx, float by) {
+        float dx = bx - ax, dy = by - ay, t = std::clamp(((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy), 0.0f, 1.0f);
+        float qx = ax + dx * t - px, qy = ay + dy * t - py;
+        return std::sqrt(qx * qx + qy * qy);
+    };
+    for (int j = 0; j < r->Height; j++)
+        for (int i = 0; i < r->Width; i++) {
+            float c = 0, o = 0;
+            for (int sj = 0; sj < 4; sj++)
+                for (int si = 0; si < 4; si++) {
+                    float px = kX + float(i) + (float(si) + 0.5f) / 4, py = kY + float(j) + (float(sj) + 0.5f) / 4;
+                    float d = std::min(seg(px, py, -kHalfW, kTall, 0, 0), seg(px, py, 0, 0, kHalfW, kTall));
+                    c += d <= kHalfStroke ? 1.0f / 16 : 0;
+                    o += d <= kHalfStroke + kRing ? 1.0f / 16 : 0;
+                }
+            o = g_body_outline ? o * 0.85f : 0;
+            float a = c + o * (1 - c);
+            unsigned char* d = atlas + (size_t(r->Y + j) * aw + r->X + i) * 4;
+            d[0] = d[1] = d[2] = uint8_t(a > 0 ? std::clamp(c / a * 255.0f + 0.5f, 0.0f, 255.0f) : 0);
+            d[3] = uint8_t(std::clamp(a * 255.0f + 0.5f, 0.0f, 255.0f));
+        }
+    io.Fonts->CalcCustomRectUV(r, &g_chevron.uv0, &g_chevron.uv1);
+    g_chevron.ready = true;
+}
+
+// a scroll chevron (more rows above: up, below: down) in the body lettering's look, centred on x, in the 11 px cell
+// from y (console pixels): a chevron of the list's stroke weight (two console pixels at the rows' size), square-ended,
+// with a thin dark outline when the lettering has one; with the menu part of the texture pack off a picture of it
+// at the game's own resolution
+void DrawChevron(ImDrawList* dl, float x, float y, bool up, ImU32 col) {
+    constexpr float kHalfW = 6, kTall = 5.5f, kStroke = 1.9f, kRing = 0.6f;
+    float top = y + (up ? 1.5f : 3.5f), bottom = top + kTall;
+    if (LowMenus() && g_chevron.ready) {
+        ImVec2 a = Guest(x - kChevronW / 2.0f, top - 2.75f), b = Guest(x + kChevronW / 2.0f, top - 2.75f + kChevronH);
+        ImVec2 u0 = g_chevron.uv0, u1 = g_chevron.uv1;
+        if (!up) std::swap(u0.y, u1.y);
+        dl->AddImage(ImGui::GetIO().Fonts->TexID, a, b, u0, u1, col);
+        return;
+    }
+    ImVec2 p[3] = {{x - kHalfW, up ? bottom : top}, {x, up ? top : bottom}, {x + kHalfW, up ? bottom : top}};
+    if (g_body_outline) {
+        // the outline: the stroke wider each side, its ends taken that much further out
+        float len = std::sqrt(kHalfW * kHalfW + kTall * kTall), ex = kHalfW / len * kRing, ey = kTall / len * kRing;
+        float sy = up ? 1.0f : -1.0f;
+        ImVec2 o[3] = {Guest(p[0].x - ex, p[0].y + ey * sy), Guest(p[1].x, p[1].y), Guest(p[2].x + ex, p[2].y + ey * sy)};
+        ImU32 dark = IM_COL32(0, 0, 0, int(float((col >> IM_COL32_A_SHIFT) & 0xFF) * 0.85f));
+        dl->AddPolyline(o, 3, dark, ImDrawFlags_None, (kStroke + 2 * kRing) * GuestScale());
+    }
+    ImVec2 g[3] = {Guest(p[0].x, p[0].y), Guest(p[1].x, p[1].y), Guest(p[2].x, p[2].y)};
+    dl->AddPolyline(g, 3, col, ImDrawFlags_None, kStroke * GuestScale());
+}
+
+// the moving background's picture in the atlas: the texture pack's, or at the game's own resolution with the menu
+// part of the pack off
+void GlowUV(ImVec2& u0, ImVec2& u1) {
+    bool low = LowMenus() && g_glow.lo_id >= 0;
+    u0 = low ? g_glow.lo_uv0 : g_glow.uv0, u1 = low ? g_glow.lo_uv1 : g_glow.uv1;
+}
+
 // a grid's panel in the pause menu's look: a dark base and the moving light-blue background over it (two copies of the
 // picture, one upside down, fading into each other as the game's do), a plain dark panel without the picture
 void PanelBackground(ImDrawList* dl, float x0, float y0, float x1, float y1) {
@@ -2959,8 +3288,10 @@ void PanelBackground(ImDrawList* dl, float x0, float y0, float x1, float y1) {
     float f = 0.5f + 0.5f * std::sin(t * 0.9f);
     int a1 = int(255 * (0.25f + 0.5f * f)), a2 = int(255 * (0.75f - 0.5f * f));
     ImTextureID tex = ImGui::GetIO().Fonts->TexID;
-    dl->AddImage(tex, a, b, g_glow.uv0, g_glow.uv1, IM_COL32(255, 255, 255, a1));
-    dl->AddImage(tex, a, b, ImVec2(g_glow.uv0.x, g_glow.uv1.y), ImVec2(g_glow.uv1.x, g_glow.uv0.y), IM_COL32(255, 255, 255, a2));
+    ImVec2 u0, u1;
+    GlowUV(u0, u1);
+    dl->AddImage(tex, a, b, u0, u1, IM_COL32(255, 255, 255, a1));
+    dl->AddImage(tex, a, b, ImVec2(u0.x, u1.y), ImVec2(u1.x, u0.y), IM_COL32(255, 255, 255, a2));
 }
 
 // driving.xbe's pause pages: the moving light-blue background the on-foot pages have (the same picture and fading as
@@ -2978,11 +3309,13 @@ void DrivingPageGlow(ImDrawList* dl) {
     float f = 0.5f + 0.5f * std::sin(t * 0.9f);
     int a1 = int(255 * (0.25f + 0.5f * f)), a2 = int(255 * (0.75f - 0.5f * f));
     ImTextureID tex = ImGui::GetIO().Fonts->TexID;
+    ImVec2 u0, u1;
+    GlowUV(u0, u1);
     // the picture over the whole area (x 60 to 640, y 97.6 to 380.2): each piece takes its part of it
-    auto uv = [](float x, float y, bool flip) {
+    auto uv = [&](float x, float y, bool flip) {
         float u = (x - kSlantX0) / (kRight - kSlantX0), w = (y - kTop) / (kBottom - kTop);
         if (flip) w = 1 - w;
-        return ImVec2(g_glow.uv0.x + (g_glow.uv1.x - g_glow.uv0.x) * u, g_glow.uv0.y + (g_glow.uv1.y - g_glow.uv0.y) * w);
+        return ImVec2(u0.x + (u1.x - u0.x) * u, u0.y + (u1.y - u0.y) * w);
     };
     auto quad = [&](ImVec2 p0, ImVec2 p1, ImVec2 p2, ImVec2 p3) {  // clockwise from the top left
         for (int k = 0; k < 2; k++) {
@@ -3066,8 +3399,9 @@ void Window(void*) {
         if (have_body || have_title || have_keys) {
             io.Fonts->Build();
             FillKeyPictures(io);
-            if (have_body) FillSheetFont(io, body), g_font = body.im, g_game_font = true;
-            if (have_title) FillSheetFont(io, title), g_title_font = title.im;
+            if (have_body) FillSheetFont(io, body), g_font = body.im, g_font_lo = body.lo, g_game_font = true, g_body_outline = body.outline;
+            if (have_title) FillSheetFont(io, title), g_title_font = title.im, g_title_font_lo = title.lo;
+            FillChevron(io);
             body.px.clear(), title.px.clear();
         }
     }
@@ -3143,13 +3477,14 @@ void PressEnter() {
     float k = p.first_h / float(cap->y1 - cap->y0 + 1);
     float size = kBodyFont.line_height * k * GuestScale();
     const char* text = "Press ENTER";
-    ImVec2 extent = g_font->CalcTextSizeA(size, FLT_MAX, 0, text);
+    ImFont* font = BodyFont();
+    ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0, text);
     // the font's cell puts a capital's top (dy + 2) texels below the text's top (AddSheetFont)
     ImVec2 at = Guest((p.x0 + p.x1) / 2, p.y0 - float(cap->dy + 2) * k);
     at.x -= extent.x / 2;
     ImU32 col = IM_COL32(int(std::clamp(p.color[0], 0.0f, 1.0f) * 255), int(std::clamp(p.color[1], 0.0f, 1.0f) * 255),
                          int(std::clamp(p.color[2], 0.0f, 1.0f) * 255), int(std::clamp(p.color[3], 0.0f, 1.0f) * 255));
-    ImGui::GetBackgroundDrawList()->AddText(g_font, size, at, col, text);
+    ImGui::GetBackgroundDrawList()->AddText(font, size, at, col, text);
 }
 
 void Ui() {

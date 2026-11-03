@@ -62,6 +62,10 @@ ImU32 Dim(ImU32 c) { return (c & 0x00FFFFFF) | (uint32_t(0x78) << 24); }
 // a scroll arrow (more rows above: up, below: down) in the body lettering's look: a chevron of the list's stroke
 // weight (two console pixels at the rows' size) and colour, square-ended, centred on x, in the 11 px cell from y
 void Chevron(const PageContext& c, ImDrawList* dl, float x, float y, bool up, ImU32 col) {
+    if (c.chevron) {
+        c.chevron(dl, x, y, up, col);  // menus.cpp: with an outline, and low resolution with the menu textures off
+        return;
+    }
     constexpr float kHalfW = 6, kTall = 5.5f, kStroke = 1.9f;
     float top = y + (up ? 1.5f : 3.5f), bottom = top + kTall;
     ImVec2 pts[3];
@@ -991,8 +995,14 @@ bool ControlsViewPage(const PageContext& c, const std::vector<PageNav>& nav, con
         DrawTable(c, dl, context, g_view_tab == 0 ? Device::Controller : Device::KeyboardMouse, c.pause_top, 13,
                   c.pause_grid_centre, false, c.pause_grid_scale);
         float bw = c.title_width(13, "Back"), by = c.pause_bar_y, bx = c.pause_x;
-        bool over = ImGui::IsMouseHoveringRect(c.guest(bx - 3, by - 2), c.guest(bx + 3 + bw, by + 16), false);
-        c.title(dl, bx, by, 13, over ? c.lit : Dim(c.unlit), "Back", 0);
+        bool over;
+        if (c.game_back && c.game_back()) {
+            // the game's B BACK prompt, in the bar where the other pause screens have it
+            over = ImGui::IsMouseHoveringRect(c.guest(c.back_x0, by - 2), c.guest(c.back_x1, by + 20), false);
+        } else {
+            over = ImGui::IsMouseHoveringRect(c.guest(bx - 3, by - 2), c.guest(bx + 3 + bw, by + 16), false);
+            c.title(dl, bx, by, 13, over ? c.lit : Dim(c.unlit), "Back", 0);
+        }
         if ((over && ImGui::IsMouseClicked(0)) || ImGui::IsMouseClicked(1)) g_view_mode = 0;
         return true;
     }

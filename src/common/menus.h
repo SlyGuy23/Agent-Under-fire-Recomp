@@ -68,8 +68,8 @@ const char* PauseExtraLabel(int row);
 // how far driving.xbe's pause rows and marker are moved up, in console pixels (640x480)
 float DrivingPauseLift();
 // driving.xbe quitting a mission (src/driving/hooks.cpp, each frame from the answer on): the keyboard's keys over the
-// pause screen's prompts stay with its picture, and fade with it as the screen fades to black (left: what the fade
-// leaves of the picture, 1 to 0, each frame of the fade)
+// pause screen's prompts stay with its picture, and fade with it as the screen fades to black (left: how much of the
+// picture the frame shows, 1 to 0, after HoldPrompts each frame)
 void HoldPrompts();
 void ScreenFade(float left);
 
