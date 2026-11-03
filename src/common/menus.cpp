@@ -117,9 +117,9 @@ std::array<float, 4> ColorOf(const uint8_t* v, uint32_t stride, const Layout& l)
     return c;
 }
 
-// each edge of the part of a size x size texture a quad draws half a texel in, so the filtering stays inside it; done the
-// same way however often the game draws the quad
-void InsetUV(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, float size) {
+// each edge of the part of a size x size texture a quad draws half a texel in (inset texels), so the filtering stays
+// inside it; done the same way however often the game draws the quad
+void InsetUV(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, float size, float inset = 0.5f) {
     for (int c = 0; c < 2; c++) {
         float lo = 1e9f, hi = -1e9f;
         for (uint32_t i = 0; i < count; i++) {
@@ -131,7 +131,7 @@ void InsetUV(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, float
         for (uint32_t i = 0; i < count; i++) {
             float* q = At(v, stride, i, l.tc);
             float x = q[c] * size;
-            q[c] = (x - lo < hi - x ? base_lo + 0.5f : base_hi - 0.5f) / size;
+            q[c] = (x - lo < hi - x ? base_lo + inset : base_hi - inset) / size;
         }
     }
 }
@@ -1545,24 +1545,34 @@ void FootBackPrompt(const Box& a, float alpha, bool key_box, bool pad_pic) {
 // player menus and results), the on-foot pause menu's and driving.xbe's (driving and rails) pause menu's, on every one
 // of their screens (the tabs, the pages, "Are you sure?"). The games lay a bar out as picture, words, picture, words
 // ... with uneven gaps, and draw their D-pads smaller than the A and B buttons (the front end's arrows' ink 16x15 of
-// a 23x23 cell beside a 19x20 A; driving's 16x15 beside 16x18). Each bar is laid out again by the bar of the frame
-// before (its pictures and words where the game put them):
+// a 23x23 cell beside a 19x20 A; driving's 16x15 beside 16x18). Here:
 // - with a controller every picture's ink BarStyle::icon_h tall (the A and B buttons' own height), the D-pads
 //   scaled up to it, its middle on its words' middle line (the lettering's ink: its quads' middle plus ink of their
 //   height);
 // - with the keyboard and mouse every key key_h tall (ENTER, BACKSPACE and the arrows' clusters alike), its width by
 //   its picture, on that line; DrawPrompts draws each in its box;
-// - each picture's (key's) right end to_words from its words, each prompt's words gap from the next picture (key);
-// - the bar centred where the game's was (the front end), or from its first picture's place (the pause bars, so
-//   B BACK, or SELECT without it, stays where the game has it and every pause screen has the same gaps).
-// Positions are set from the game's own (a line the game keeps and draws again, already moved, is known by its new
-// place), so it is the same however often a quad is drawn.
+// - each picture's (key's) right end to_words from its words, each prompt's words gap from the next picture (key).
+// Every place is decided by where the game put the picture or the line, the same on every frame and every screen, so
+// nothing moves when a screen changes (no frame with the game's own places):
+// - the pause bars have fixed places (BarSlot: B BACK, A SELECT, CHANGE PAGE, SCROLL, each where the game draws it on
+//   any screen): laid out once, all four, so a prompt is in the same place on every screen that has it;
+// - the front end's bars are laid out by a bar seen before (the frame before, or the last time that screen was up: the
+//   places are kept), from the left like the game's (the B BACK place kept free when a bar starts with A, as the game
+//   keeps it), so a prompt the game puts in the same place has the same place on every screen.
+// A line the game keeps and draws again, already moved, is known by its new place.
 constexpr uint64_t kButtonSheet = 0x7ffff33c7f8a7768ull;
+// a pause bar's prompt as the game draws it on every screen: its picture (x, its ink across, its quad's height), its
+// words across, and how far the words' ink middle is below the picture's middle (when the words of the frame before
+// are not there to tell)
+struct BarSlot {
+    float px0, px1, ink0, ink1, quad_h, wx0, wx1, mid_c, mid_page;  // (mid_page: with a page up, the panel stretched)
+};
 struct BarStyle {
     float icon_h, key_h, to_words, gap;
-    bool centre;
-    float ink;    // the words' ink middle: the quads' middle plus this of their height
-    bool letters; // the words drawn a letter a draw (driving.xbe): a word is the letters on a line close together
+    float ink;              // the words' ink middle: the quads' middle plus this of their height
+    bool letters;           // the words drawn a letter a draw (driving.xbe)
+    const BarSlot* slots;   // a pause bar's fixed places (B, A, CHANGE PAGE, SCROLL), else null
+    float b_slot;           // the front end: the game's B BACK place (B's left to A's left) kept free before an A
 };
 struct BarItem {
     bool pic;
@@ -1573,36 +1583,66 @@ struct BarItem {
 };
 struct BarMove {
     bool pic;
-    float ox0, oy0, ox1, oy1;  // the game's place (a word: all its letters)
+    float ox0, oy0, ox1, oy1;  // the game's place (a pause bar's picture: any height)
     float nx0, ny0, nx1, ny1;  // the new place (a picture's quad, or its key's box; a word: nx0 its start)
     bool key;                  // a picture's key: its box (the picture's quad goes there across)
+    float scale = 1, mid_c = 0, mid_page = 0;  // a pause bar's picture: its size, its words' middle below its own
+    float Mid() const { return PausePage() ? mid_page : mid_c; }
 };
 struct BarEngine {
     BarStyle st;
     std::vector<BarItem> building;
     std::vector<std::pair<uint32_t, Box>> covers;  // opaque quads drawn over the bar (and when)
-    std::vector<BarMove> moves;
+    std::vector<BarMove> moves[2];                 // the controller's, the keyboard's
+    std::vector<float> pic_cy;                     // the middles of the bar's pictures drawn this frame
+    float aspects[2][4] = {};                      // the keys' aspects the pause bar was laid out with
     uint64_t frame = ~0ull;
 
-    // the frame's first item: the frame before's bars laid out again
+    // the frame's first item: the frame before's bars laid out again (the front end)
     void Begin() {
         if (Frame() == frame) return;
-        if (frame + 1 == Frame()) Layout(Keyboard());
-        else moves.clear();
+        if (!st.slots && frame + 1 == Frame()) Layout(Keyboard());
         building.clear();
         covers.clear();
+        pic_cy.clear();
         frame = Frame();
     }
     void Add(BarItem it) {
         it.seq = uint32_t(building.size() + covers.size());
-        if (building.size() < 512) building.push_back(it);
+        if (!st.slots && building.size() < 512) building.push_back(it);
     }
     // an opaque quad drawn: what it covers of the bar drawn before it is not the bar (the multiplayer join screen
     // draws a bar off to the right, then black over it)
     void Cover(const Box& b) {
         if (frame == Frame() && covers.size() < 64) covers.push_back({uint32_t(building.size() + covers.size()), b});
     }
+    float IconWidth(bool keys, Prompt kind, float ink_w, float k) const {
+        return keys ? st.key_h * g_key_aspect[int(kind)].load() : ink_w * k;
+    }
 
+    // a pause bar: its four places, laid out from the first (B BACK's, where the game has it)
+    const std::vector<BarMove>& Fixed(bool keys) {
+        std::vector<BarMove>& out = moves[keys];
+        bool same = !out.empty();
+        for (int i = 0; i < 4; i++) same = same && aspects[keys][i] == g_key_aspect[i].load();
+        if (same) return out;
+        for (int i = 0; i < 4; i++) aspects[keys][i] = g_key_aspect[i].load();
+        out.clear();
+        constexpr Prompt kinds[4] = {Prompt::B, Prompt::A, Prompt::LeftRight, Prompt::UpDown};
+        float x = st.slots[0].ink0;
+        for (int i = 0; i < 4; i++) {
+            const BarSlot& sl = st.slots[i];
+            const float k = st.icon_h / sl.quad_h, w = IconWidth(keys, kinds[i], sl.ink1 - sl.ink0, k);
+            const float qx0 = keys ? x : x - (sl.ink0 - sl.px0) * k, qx1 = keys ? x + w : qx0 + (sl.px1 - sl.px0) * k;
+            out.push_back({true, sl.px0, 0, sl.px1, sl.quad_h, qx0, 0, qx1, 0, keys, k, sl.mid_c, sl.mid_page});
+            x += w + st.to_words;
+            out.push_back({false, sl.wx0, 0, sl.wx1, 0, x, 0, x + (sl.wx1 - sl.wx0), 0, false});
+            x += (sl.wx1 - sl.wx0) + st.gap;
+        }
+        return out;
+    }
+
+    // the front end: the bars of the frame before laid out again, their places kept with those of bars seen before
     void Layout(bool keys) {
         std::vector<BarItem> pics, words;
         for (const BarItem& it : building) {
@@ -1614,23 +1654,12 @@ struct BarEngine {
         auto by_x = [](const BarItem& a, const BarItem& b) { return a.x0 < b.x0; };
         std::sort(pics.begin(), pics.end(), by_x);
         std::sort(words.begin(), words.end(), by_x);
-        // letters into words: on a line, close together
-        if (st.letters) {
-            std::vector<BarItem> joined;
-            for (const BarItem& w : words) {
-                bool merged = false;
-                const float wy = (w.y0 + w.y1) / 2;
-                for (BarItem& j : joined)
-                    if (wy >= j.y0 - 4 && wy <= j.y1 + 4 && w.x0 >= j.x0 && w.x0 <= j.x1 + 8) {
-                        j.x1 = std::max(j.x1, w.x1);
-                        if (w.y1 - w.y0 > 4) j.y0 = std::min(j.y0, w.y0), j.y1 = std::max(j.y1, w.y1);  // not a mark
-                        merged = true;
-                        break;
-                    }
-                if (!merged) joined.push_back(w);
-            }
-            words.swap(joined);
-        }
+        // a picture the game draws twice in the same place (the join screen's MODIFY D-pad) is one prompt
+        auto twice = [](const BarItem& a, const BarItem& b) {
+            return Near(a.x0, b.x0, 0.3f) && Near(a.x1, b.x1, 0.3f) && Near(a.y0, b.y0, 0.3f) && a.prompt == b.prompt;
+        };
+        pics.erase(std::unique(pics.begin(), pics.end(), twice), pics.end());
+        words.erase(std::unique(words.begin(), words.end(), twice), words.end());
         struct Pair {
             BarItem pic, word;
         };
@@ -1654,66 +1683,84 @@ struct BarEngine {
             }
             bars.push_back({{p, *w}});
         }
-        std::vector<BarMove> out;
+        std::vector<BarMove>& kept = moves[keys];
         for (const auto& bar : bars) {
-            if (bar.empty()) continue;
-            std::vector<float> icon_w, scale;
-            float width = 0;
+            // from the left as the game: a bar starting with A keeps B BACK's place free before it (the game's 69
+            // pixels, here B's picture or key, its gap, BACK's 36 and the gap to A)
+            float x = bar.front().pic.ink0;
+            if (bar.front().pic.prompt == Prompt::A && st.b_slot > 0)
+                x += -st.b_slot + IconWidth(keys, Prompt::B, 19, st.icon_h / 20) + st.to_words + 36 + st.gap;
             for (const Pair& pr : bar) {
                 const float k = st.icon_h / std::max(1.0f, pr.pic.iy1 - pr.pic.iy0);
-                scale.push_back(k);
-                icon_w.push_back(keys ? st.key_h * g_key_aspect[int(pr.pic.prompt)].load() : (pr.pic.ink1 - pr.pic.ink0) * k);
-                width += icon_w.back() + st.to_words + (pr.word.x1 - pr.word.x0);
-            }
-            width += st.gap * float(bar.size() - 1);
-            float x = st.centre ? (bar.front().pic.ink0 + bar.back().word.x1) / 2 - width / 2 : bar.front().pic.ink0;
-            for (size_t i = 0; i < bar.size(); i++) {
-                const Pair& pr = bar[i];
+                const float w = IconWidth(keys, pr.pic.prompt, pr.pic.ink1 - pr.pic.ink0, k);
                 const float mid = (pr.word.y0 + pr.word.y1) / 2 + (pr.word.y1 - pr.word.y0) * st.ink;
-                const float k = scale[i];
+                BarMove pm, wm;
                 if (keys) {
-                    out.push_back({true, pr.pic.x0, pr.pic.y0, pr.pic.x1, pr.pic.y1, x, mid - st.key_h / 2, x + icon_w[i],
-                                   mid + st.key_h / 2, true});
+                    pm = {true, pr.pic.x0, pr.pic.y0, pr.pic.x1, pr.pic.y1, x, mid - st.key_h / 2, x + w, mid + st.key_h / 2, true};
                 } else {
                     const float qx0 = x - (pr.pic.ink0 - pr.pic.x0) * k;
                     const float qy0 = mid - ((pr.pic.iy0 + pr.pic.iy1) / 2 - pr.pic.y0) * k;
-                    out.push_back({true, pr.pic.x0, pr.pic.y0, pr.pic.x1, pr.pic.y1, qx0, qy0, qx0 + (pr.pic.x1 - pr.pic.x0) * k,
-                                   qy0 + (pr.pic.y1 - pr.pic.y0) * k, false});
+                    pm = {true, pr.pic.x0, pr.pic.y0, pr.pic.x1, pr.pic.y1, qx0, qy0, qx0 + (pr.pic.x1 - pr.pic.x0) * k,
+                          qy0 + (pr.pic.y1 - pr.pic.y0) * k, false};
                 }
-                x += icon_w[i] + st.to_words;
-                out.push_back({false, pr.word.x0, pr.word.y0, pr.word.x1, pr.word.y1, x, 0, x + (pr.word.x1 - pr.word.x0), 0, false});
+                x += w + st.to_words;
+                wm = {false, pr.word.x0, pr.word.y0, pr.word.x1, pr.word.y1, x, 0, x + (pr.word.x1 - pr.word.x0), 0, false};
                 x += (pr.word.x1 - pr.word.x0) + st.gap;
+                // in place of the one kept for the same picture or line
+                for (const BarMove& m : {pm, wm}) {
+                    auto same = [&](const BarMove& c) {
+                        return c.pic == m.pic && Near(c.ox0, m.ox0, 0.3f) && Near(c.ox1 - c.ox0, m.ox1 - m.ox0, 0.6f) &&
+                               Near((c.oy0 + c.oy1) / 2, (m.oy0 + m.oy1) / 2, 4);
+                    };
+                    kept.erase(std::remove_if(kept.begin(), kept.end(), same), kept.end());
+                    if (kept.size() > 512) kept.erase(kept.begin(), kept.begin() + 128);
+                    kept.push_back(m);
+                }
             }
         }
-        moves.swap(out);
     }
 
     // the move of a picture or a line (letter) drawn at b; o: where the game put it
-    const BarMove* Find(bool pic, bool shadow, const Box& b, Box& o) const {
+    const BarMove* Find(bool pic, bool shadow, const Box& b, Box& o) {
         o = b;
-        const float tol = shadow ? 2.5f : 0.3f;
-        for (const BarMove& c : moves) {
+        const bool keys = Keyboard();
+        const std::vector<BarMove>& mv = st.slots ? Fixed(keys) : moves[keys];
+        const float tol = shadow ? 2.5f : 0.3f, w = b.x1 - b.x0, cy = (b.y0 + b.y1) / 2;
+        // a pause bar's words: on the line of its pictures drawn this frame (they are drawn first)
+        if (st.slots && !pic) {
+            bool on = false;
+            for (float p : pic_cy) on |= std::fabs(p - cy) < 14;
+            if (!on) return nullptr;
+        }
+        for (const BarMove& c : mv) {
             if (c.pic != pic) continue;
             if (pic) {
-                const float cy = (b.y0 + b.y1) / 2, ocy = (c.oy0 + c.oy1) / 2;
-                if (Near(b.x0, c.ox0, tol) && Near(cy, ocy, 6) && Near(b.x1 - b.x0, c.ox1 - c.ox0, 1)) return &c;
-                if (Near(b.x0, c.nx0, tol) && (c.key ? Near(cy, ocy, 6) : Near(b.y0, c.ny0, 0.5f))) {
-                    o.x0 = c.ox0, o.x1 = c.ox1, o.y0 = c.oy0, o.y1 = c.oy1;
+                const float ocy = (c.oy0 + c.oy1) / 2;
+                if (Near(b.x0, c.ox0, st.slots ? 0.6f : tol) && Near(w, c.ox1 - c.ox0, 1.2f) && (st.slots || Near(cy, ocy, 6)))
+                    return &c;
+                if (Near(b.x0, c.nx0, st.slots ? 0.6f : tol) && Near(w, c.nx1 - c.nx0, 1.2f) &&
+                    (st.slots || (c.key ? Near(cy, ocy, 6) : Near(b.y0, c.ny0, 0.5f)))) {
+                    o.x0 = c.ox0, o.x1 = c.ox1;
+                    if (st.slots) {
+                        // (on its words' line already: the game's middle less theirs)
+                        const float h = c.key ? b.y1 - b.y0 : (b.y1 - b.y0) / c.scale, m = cy - (c.key ? 0 : c.Mid());
+                        o.y0 = m - h / 2, o.y1 = m + h / 2;
+                    } else if (!c.key) {
+                        o.y0 = c.oy0, o.y1 = c.oy1;
+                    }
                     return &c;
                 }
                 continue;
             }
             if (st.letters) {
-                const float cy = (b.y0 + b.y1) / 2;
-                if (cy < c.oy0 - 4 || cy > c.oy1 + 4) continue;
-                // a letter of the word (the game's own place: its letters are drawn anew every frame)
+                // a letter of the words (driving.xbe draws them anew every frame)
                 if (b.x0 >= c.ox0 - tol && b.x1 <= c.ox1 + tol) return &c;
                 continue;
             }
-            if (!Near((b.y0 + b.y1) / 2, (c.oy0 + c.oy1) / 2, 4)) continue;  // (a line's box may take in a mark)
-            if (Near(b.x0, c.ox0, tol)) return &c;
-            if (Near(b.x0, c.nx0, tol)) {
-                o.x0 = c.ox0 + (b.x0 - c.nx0), o.x1 = o.x0 + (b.x1 - b.x0);
+            if (!st.slots && !Near(cy, (c.oy0 + c.oy1) / 2, 4)) continue;  // (a line's box may take in a mark)
+            if (Near(b.x0, c.ox0, tol) && Near(w, c.ox1 - c.ox0, 0.6f)) return &c;
+            if (Near(b.x0, c.nx0, tol) && Near(w, c.nx1 - c.nx0, 0.6f)) {
+                o.x0 = c.ox0 + (b.x0 - c.nx0), o.x1 = o.x0 + w;
                 return &c;
             }
         }
@@ -1721,13 +1768,25 @@ struct BarEngine {
     }
 };
 // the front end's lettering and pictures: A and B 19x20, ink to their edges; the arrows' ink 4 texels in from the top
-// and bottom of their 23x23 cells
-BarEngine g_front_bar{{20, 9.5f, 8, 16, true, -0.045f, false}};
-// the on-foot pause bar: A and B 17x17; a little further from their words than the game had B (9) and A (5)
-BarEngine g_foot_bar{{17, 9.5f, 5, 31.5f, false, -0.06f, false}};
-// driving.xbe's pause bar: A and B 16x17.9; its letters' ink (measured: rows 390.8 to 402.5 of quads 388.3 to 403.6)
-// a little below their quads' middle
-BarEngine g_drive_bar{{17.9f, 10, 3, 48, false, 0.043f, true}};
+// and bottom of their 23x23 cells; the game's B BACK takes 69 pixels before A
+BarEngine g_front_bar{{20, 9.5f, 8, 16, -0.045f, false, nullptr, 69}};
+// the on-foot pause bar (on every screen; the page's stretch moves only its rows): B at 138 (the question's), A at
+// 253, CHANGE PAGE's D-pad at 343 (18 wide, its picture 17 in the middle), SCROLL's at 488; the pictures 17 tall, the
+// D-pads 16; the words' ink middle 0.5 (A, B) and 1.2 (the D-pads) below the pictures' middle as the game draws them.
+// Spread like driving.xbe's bar, from B to the panel's right: 5 from a picture to its words, 44 to the next picture.
+constexpr BarSlot kFootSlots[4] = {{138, 155, 138, 155, 17, 164, 200, 0.4f, 0.75f},
+                                   {253, 270, 253, 270, 17, 275, 326, 0.4f, 0.75f},
+                                   {343, 361, 343.5f, 360.5f, 16, 365, 464, 0.85f, 1.45f},
+                                   {488, 505, 488, 505, 16, 510, 561, 0.85f, 1.45f}};
+BarEngine g_foot_bar{{17, 9.5f, 5, 44, -0.06f, false, kFootSlots, 0}};
+// driving.xbe's pause bar: B at 143 (moved there, DrivingLayoutBack and the question), A at 248, the D-pads at 365 and
+// 527; A and B 16x17.9, the D-pads 16x15; its letters' ink (measured: rows 390.8 to 402.5 of quads 388.3 to 403.6) a
+// little below their quads' middle
+constexpr BarSlot kDriveSlots[4] = {{143, 159, 143, 159, 17.92f, 162, 200.1f, 2.35f, 3.35f},
+                                    {248, 264, 248, 264, 17.92f, 267, 316.3f, 2.35f, 3.35f},
+                                    {365, 381, 365, 381, 15, 384, 476.8f, 0.9f, 1.0f},
+                                    {527, 543, 527, 543, 15, 546, 596.9f, 0.9f, 1.0f}};
+BarEngine g_drive_bar{{17.92f, 10, 3, 48, 0.043f, true, kDriveSlots, 0}};
 
 // a D-pad cell's ink across (texels from the cell's left, the first and last columns) in the front end's button sheet
 bool PadInk(float u0, float& a, float& b) {
@@ -1737,16 +1796,43 @@ bool PadInk(float u0, float& a, float& b) {
     return true;
 }
 
+// the words' ink middle beside a picture whose right end is x (the frame before's letters on its line near cy)
+bool WordsMid(const BarEngine& e, float x, float cy, float& mid) {
+    std::lock_guard l(g_prompt_lock);
+    const auto& list = g_labels_shown.empty() ? g_labels_building : g_labels_shown;
+    for (const LabelRect& r : list)
+        if (r.x0 >= x - 2 && r.x0 <= x + 30 && r.y1 - r.y0 > 6 && Near((r.y0 + r.y1) / 2, cy, 6)) {
+            mid = (r.y0 + r.y1) / 2 + (r.y1 - r.y0) * e.st.ink;
+            return true;
+        }
+    return false;
+}
+
+// a picture's new quad (or its key's box: key) from its move, o where the game put it
+void PictureBox(const BarEngine& e, const BarMove& m, const Box& o, Box& q) {
+    q.x0 = m.nx0, q.x1 = m.nx1;
+    if (!e.st.slots) {
+        q.y0 = m.ny0, q.y1 = m.ny1;
+        return;
+    }
+    float mid = (o.y0 + o.y1) / 2 + m.Mid();
+    WordsMid(e, m.nx1, mid, mid);
+    const float h = m.key ? e.st.key_h : (o.y1 - o.y0) * m.scale;
+    q.y0 = mid - h / 2, q.y1 = mid + h / 2;
+}
+
 // a picture's or a line's quad (its vertices' positions, n of them) to the move's place: a picture's to its new box
 // (or across to its key's box), a line moved across
 void ApplyMove(BarEngine& e, const BarMove& m, const Box& b, const Box& o, float* const* pos, uint32_t n) {
     if (m.pic) {
+        Box q;
+        PictureBox(e, m, o, q);
         for (uint32_t i = 0; i < n; i++) {
-            pos[i][0] = pos[i][0] > (b.x0 + b.x1) / 2 ? m.nx1 : m.nx0;
-            if (!m.key) pos[i][1] = pos[i][1] > (b.y0 + b.y1) / 2 ? m.ny1 : m.ny0;
+            pos[i][0] = pos[i][0] > (b.x0 + b.x1) / 2 ? q.x1 : q.x0;
+            if (!m.key) pos[i][1] = pos[i][1] > (b.y0 + b.y1) / 2 ? q.y1 : q.y0;
         }
         if (m.key) {
-            g_front_key[0] = m.nx0, g_front_key[1] = m.ny0, g_front_key[2] = m.nx1, g_front_key[3] = m.ny1;
+            g_front_key[0] = q.x0, g_front_key[1] = q.y0, g_front_key[2] = q.x1, g_front_key[3] = q.y1;
             g_front_key_seen = Frame() + 1;
         }
         return;
@@ -1768,6 +1854,7 @@ bool BondBar(BarEngine& e, const gpu::State& s, uint8_t* v, uint32_t stride, con
     Box o;
     const BarMove* m = e.Find(pic, shadow, b, o);
     if (orig) *orig = o;
+    if (pic && e.pic_cy.size() < 16) e.pic_cy.push_back((o.y0 + o.y1) / 2);
     if (!shadow) {
         BarItem it{pic, 0, o.x0, o.y0, o.x1, o.y1, o.x0, o.y0, o.x1, o.y1, kind};
         if (!pic && count > 6) {
@@ -1793,10 +1880,6 @@ bool BondBar(BarEngine& e, const gpu::State& s, uint8_t* v, uint32_t stride, con
             if (mirrored) std::swap(a, z), a = cell - a, z = cell - z;
             it.ink0 = o.x0 + a * k, it.ink1 = o.x0 + z * k;
             it.iy0 = o.y0 + 4 * ky, it.iy1 = o.y1 - 4 * ky;
-        } else if (pic && StageKey(s) == 0x7e8cc44b3a0258fcull) {
-            // the pause menu's D-pads (its 32x32 sheet): drawn 17 and 18 wide, the same picture 17 wide in the middle
-            const float cx = (o.x0 + o.x1) / 2;
-            it.ink0 = cx - 8.5f, it.ink1 = cx + 8.5f;
         }
         e.Add(it);
     }
@@ -1817,7 +1900,7 @@ bool FrontLine(const Box& b) { return b.y0 > 390 && b.y1 < 448; }
 void FrontCover(const Box& b) { g_front_bar.Cover(b); }
 
 // DrivingPauseDraw, a pause screen: a prompt picture (its texture coordinates u0..v1, 0 to 1) or a letter of the bar
-// (x0..y1 its quad) moved (and recorded for the next frame's layout). True: moved.
+// (x0..y1 its quad) moved. True: moved.
 bool DriveBar(const gpu::State& s, uint8_t* v, uint32_t stride, float u0, float v0, float u1, float v1, float& x0, float& y0,
               float& x1, float& y1) {
     if (y0 < 300 || y1 > 420 || x1 - x0 > 48 || !TextureSize(s, 256, 256)) return false;
@@ -1835,8 +1918,7 @@ bool DriveBar(const gpu::State& s, uint8_t* v, uint32_t stride, float u0, float 
     b.x0 = x0, b.y0 = y0, b.x1 = x1, b.y1 = y1;
     Box o;
     const BarMove* m = g_drive_bar.Find(pic, shadow, b, o);
-    if (!shadow && (!pic || (c >> 24) >= 0x10))
-        g_drive_bar.Add({pic, 0, o.x0, o.y0, o.x1, o.y1, o.x0, o.y0, o.x1, o.y1, kind});
+    if (pic && (c >> 24) >= 0x10 && g_drive_bar.pic_cy.size() < 16) g_drive_bar.pic_cy.push_back((o.y0 + o.y1) / 2);
     if (!m) return false;
     float* pos[4];
     for (uint32_t i = 0; i < 4; i++) pos[i] = At(v, stride, i, 0);
@@ -1848,8 +1930,19 @@ bool DriveBar(const gpu::State& s, uint8_t* v, uint32_t stride, float u0, float 
 }
 bool FootPauseLine(const Box& b) { return b.y0 > 305 && b.y1 < 410; }
 
-// Draw, a page's A picture (o: where the game put it): B BACK's B at the question's place on its rows, recorded for
-// the bar's layout; its key's prompt
+// a page's B (the question's place, on A's rows: g_foot_b) laid out on the bar: its quad, or its key's box (key)
+bool FootBBox(Box& q, bool& key) {
+    Box o;
+    const BarMove* m = g_foot_bar.Find(true, false, g_foot_b, o);
+    q = g_foot_b, key = false;
+    if (!m) return false;
+    PictureBox(g_foot_bar, *m, o, q);
+    key = m->key;
+    return true;
+}
+
+// Draw, a page's A picture (o: where the game put it): B BACK's B at the question's place on its rows; its key's or
+// the overlay's picture's prompt
 void FootPageB(const gpu::State& s, const Box& o, float shows) {
     g_foot_b = o;
     g_foot_b.x0 = kFootBackX, g_foot_b.x1 = kFootBackX + kFootBackW;
@@ -1857,13 +1950,10 @@ void FootPageB(const gpu::State& s, const Box& o, float shows) {
     // with a controller the B picture: the overlay's (the texture pack's picture), else the game's B texture
     const bool overlay = g_pad_b_ready.load();
     if (!Keyboard() && !overlay && !FootBTexture(s.textures[0])) return;
-    g_foot_bar.Add({true, 0, g_foot_b.x0, g_foot_b.y0, g_foot_b.x1, g_foot_b.y1, g_foot_b.x0, g_foot_b.y0, g_foot_b.x1, g_foot_b.y1,
-                    Prompt::B});
-    Box ob;
-    const BarMove* m = g_foot_bar.Find(true, false, g_foot_b, ob);
-    Box at = g_foot_b;
-    if (m) at.x0 = m->nx0, at.y0 = m->ny0, at.x1 = m->nx1, at.y1 = m->ny1;
-    FootBackPrompt(at, shows, m && m->key, overlay);
+    Box at;
+    bool key;
+    FootBBox(at, key);
+    FootBackPrompt(at, shows, key, overlay);
 }
 
 // AfterDraw, a page up: B after the A picture, BACK after SELECT (both where the bar's layout puts them)
@@ -1874,9 +1964,9 @@ void FootPageBack(gpu::State& s, const uint8_t* v, uint32_t stride, const Layout
     if (count == 6 && StageKey(s) == kAButton) {
         uint32_t bt = keyboard || g_pad_b_ready.load() ? 0 : FootBTexture(s.textures[0]);
         if (!bt) return;
-        Box ob, at = g_foot_b;
-        if (const BarMove* m = g_foot_bar.Find(true, false, g_foot_b, ob); m && !m->key)
-            at.x0 = m->nx0, at.y0 = m->ny0, at.x1 = m->nx1, at.y1 = m->ny1;
+        Box at;
+        bool key;
+        if (!FootBBox(at, key) || key) at = g_foot_b;
         std::vector<uint8_t> quad(v, v + 6 * stride);
         for (uint32_t i = 0; i < 6; i++) {
             float* p = At(quad.data(), stride, i, l.pos);
@@ -1899,7 +1989,6 @@ void FootPageBack(gpu::State& s, const uint8_t* v, uint32_t stride, const Layout
     const Box first = BoxOf(v, stride, l, 0, 6);
     // BACK where the game would have it, then moved as the bar's layout says
     Box word{kFootBackX + kFootBack[0].dx, first.y0, kFootBackX + kFootBack[3].dx + kFootBack[3].w, first.y1};
-    g_foot_bar.Add({false, 0, word.x0, word.y0, word.x1, word.y1, word.x0, word.y0, word.x1, word.y1, Prompt::A});
     Box ow;
     float dx = 0;
     if (const BarMove* m = g_foot_bar.Find(false, false, word, ow)) dx = m->nx0 - m->ox0;
@@ -2372,7 +2461,10 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
         // texel in (the same way however often the game draws it).
         if (count == 6 && TextureSize(s, 32, 32) && b.x0 >= 28 && b.x1 <= 132 && b.y0 >= 50 && b.y1 <= 430 &&
             b.u1 - b.u0 > 0.9f && b.v1 - b.v0 > 0.9f) {
-            InsetUV(v, stride, l, count, 32);
+            // (half a texel of the texture pack's 4x picture with the menu part on: half a texel of the game's 32
+            // drew each picture a 32nd smaller than its place, its line a step off its neighbour's at every edge,
+            // which the PC's resolutions and a page's stretch show as a stair down the curve)
+            InsetUV(v, stride, l, count, 32, overlay::g_hd_menus && app::Get().custom_textures ? 0.125f : 0.5f);
             return;
         }
         // a page's moving light-blue background (the 64x64 picture drawn twice over the whole panel) a little brighter;
@@ -3782,8 +3874,12 @@ void AddKeyPictures(ImGuiIO& io) {
         k.aspect = float(k.w) / float(k.h);
         if (&k - g_keys < 4) g_key_aspect[&k - g_keys].store(k.aspect);  // the bars' layout (BarEngine)
         // a transparent pixel round it, as the letters (FillKeyPictures)
-        k.id = io.Fonts->AddCustomRectRegular(std::max(1, int(std::lround(kKeyHeight * k.aspect))) + 2, kKeyHeight + 2);
-        k.lo_id = io.Fonts->AddCustomRectRegular(std::max(1, int(std::lround(kKeyHeight * k.aspect))) + 2, kKeyHeight + 2);
+        // (the B button's picture at its own size, the pack's 4x, as crisp as the A the game draws beside it; its low
+        // resolution copy as big, the game's 32x64 texels magnified)
+        const int kw = k.file ? std::max(1, int(std::lround(kKeyHeight * k.aspect))) : int(std::min<UINT>(k.w, 256));
+        const int kh = k.file ? kKeyHeight : int(std::min<UINT>(k.h, 512));
+        k.id = io.Fonts->AddCustomRectRegular(kw + 2, kh + 2);
+        k.lo_id = io.Fonts->AddCustomRectRegular(kw + 2, kh + 2);
     }
 }
 

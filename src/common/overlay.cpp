@@ -70,18 +70,25 @@ bool EvilSummitFinale() {
 
 // mission 1's opening cutscene: a cutscene in orc_1 before play first started there
 bool Mission1Intro() {
-    static bool played = false;
+    // orc_1's opening cutscene: from its first cutscene frame until play has run outside cutscenes for two seconds'
+    // worth of frames (the loading before the cutscene doesn't count: nothing has played yet)
+    static bool seen = false, played = false;
+    static uint64_t out_since = 0;
     if (!g_level_is || !g_in_cutscene) return false;
     if (!g_level_is(kMission1Level)) {
-        played = false;
+        seen = played = false;
+        out_since = 0;
         return false;
     }
-    // play counts as started after two seconds' worth of frames out of cutscenes, so the gap while the level loads
-    // before the cutscene doesn't end it
-    static uint64_t out_since = 0;
+    if (played) return false;
     uint64_t now = g_frames.load(std::memory_order_relaxed);
-    if (g_in_cutscene()) out_since = 0;
-    else if (!out_since) out_since = now;
+    if (g_in_cutscene()) {
+        seen = true;
+        out_since = 0;
+        return true;
+    }
+    if (!seen) return false;
+    if (!out_since) out_since = now;
     else if (now - out_since > 120) played = true;
     return !played;
 }
