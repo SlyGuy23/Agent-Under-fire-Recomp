@@ -5,7 +5,7 @@
 // it is drawn and how far the next one starts (the list's: two texels after each letter, all alike). Measured from the game's own lines where a label has the character,
 // from the sheet otherwise. The game draws them a screen pixel a texel, one wider and taller.
 // The list's rectangles are each letter's whole ink (the texture pack's outlined sheet keeps letter and outline inside
-// it): the game's own for '5' (a texel lower than the 2's), ',' and ':' (Gold Medal Target : 50,000); '.' is the
+// it): the game's own for '5' (a texel lower than the 2's), ',' and ':' (Gold Medal Target : 50,000); ';' the sheet's, its dot on the line like ':'; '.' is the
 // sheet's period, '\'' its comma raised to the capitals' top.
 #pragma once
 #include <cstdint>
@@ -186,6 +186,7 @@ inline constexpr MenuGlyph kListGlyphs[] = {
     {',', 134, 103, 139, 108, 11, 7},
     {'.', 172, 103, 175, 106, 11, 5},
     {':', 21, 93, 24, 102, 4, 5},
+    {';', 31, 80, 36, 92, 4, 6},
     {'\'', 134, 103, 139, 108, 0, 6},
 };
 
