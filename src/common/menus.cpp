@@ -351,19 +351,20 @@ void Learn(uint64_t key, const uint8_t* v, uint32_t stride, const Layout& l, uin
 
 // Letters no options label has, at their place in the list font's 256x128 sheet: left and right column and the top
 // of their row of cells, given in the row of a letter that is learnt ('e', whose row of cells starts at 80) so the
-// cell's height and offsets carry over.
+// cell's height and offsets carry over. The g's whole ink (66 to 79, its descender's last row too: the texture pack's
+// outline round it is inside that), drawn as tall a texel as the e.
 struct SheetCell {
     char c;
     int x0, x1, row_top, below;  // below: rows the letter reaches under the reference letter's cell
 };
-constexpr SheetCell kSheetCells[] = {{'g', 119, 127, 66, 2}};
+constexpr SheetCell kSheetCells[] = {{'g', 119, 127, 66, 3}};
 constexpr char kRefLetter = 'e';
 constexpr int kRefRowTop = 80;
 
 void FillFromSheet() {
     const Glyph& ref = g_glyphs[static_cast<unsigned char>(kRefLetter)];
     if (!ref.known) return;
-    float px_per_texel = ref.w / ((ref.u1 - ref.u0) * 256.0f);
+    float px_per_texel = ref.w / ((ref.u1 - ref.u0) * 256.0f), py_per_texel = ref.h / ((ref.v1 - ref.v0) * 128.0f);
     for (const SheetCell& cell : kSheetCells) {
         Glyph& g = g_glyphs[static_cast<unsigned char>(cell.c)];
         if (g.known) continue;
@@ -372,7 +373,7 @@ void FillFromSheet() {
         g.v0 = ref.v0 + float(cell.row_top - kRefRowTop) / 128.0f;
         g.v1 = ref.v1 + float(cell.row_top - kRefRowTop + cell.below) / 128.0f;
         g.w = float(cell.x1 - cell.x0) * px_per_texel;
-        g.h = ref.h + float(cell.below) * px_per_texel;
+        g.h = ref.h + float(cell.below) * py_per_texel;
         g.dy = ref.dy;
         g.advance = g.w + ref.advance - ref.w;
         g.known = true;
@@ -1061,6 +1062,30 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
     if ((Paused() || Closing()) && page && DrivingLayoutBack(s, v, stride, x0, y0, x1, y1)) {
         collapse();
         return;
+    }
+    // the >> marker beside the lit row: the game draws texels 173-183 x 188-201 of its 256x256 sheet (a0aa68c1) on as
+    // many console pixels, the marker's ink to the part's edges, so the texture pack's sheet has no room in it for the
+    // marker's outline. The quad takes in 2 texels more on each side (empty in the game's own sheet, the outline in the
+    // pack's), a texel a pixel as before: the marker stays where it was.
+    if ((Paused() || Closing()) && !page && TextureSize(s, 256, 256) && StageKey(s) == 0xa0aa68c1c1fc6b94ull) {
+        if (uint8_t* tc = StreamOf(s, v, 2); tc && s.streams[2].stride >= 8) {
+            float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+            for (uint32_t i = 0; i < 4; i++) {
+                const float* t = reinterpret_cast<const float*>(tc + i * s.streams[2].stride);
+                u0 = std::min(u0, t[0] * 256), u1 = std::max(u1, t[0] * 256), v0 = std::min(v0, t[1] * 256), v1 = std::max(v1, t[1] * 256);
+            }
+            if (Near(u0, 173, 0.3f) && Near(u1, 183, 0.3f) && Near(v0, 188, 0.3f) && Near(v1, 201, 0.3f)) {
+                constexpr float kPad = 2;
+                for (uint32_t i = 0; i < 4; i++) {
+                    float* p = At(v, stride, i, 0);
+                    float* t = reinterpret_cast<float*>(tc + i * s.streams[2].stride);
+                    p[0] += p[0] > (x0 + x1) / 2 ? kPad : -kPad, p[1] += p[1] > (y0 + y1) / 2 ? kPad : -kPad;
+                    t[0] += (t[0] * 256 > (u0 + u1) / 2 ? kPad : -kPad) / 256, t[1] += (t[1] * 256 > (v0 + v1) / 2 ? kPad : -kPad) / 256;
+                }
+                x0 -= kPad, x1 += kPad, y0 -= kPad, y1 += kPad;
+                return;
+            }
+        }
     }
     // a button prompt (coordinates in stream 2)
     if (const uint8_t* tc = StreamOf(s, v, 2); tc && s.streams[2].stride >= 8) {
