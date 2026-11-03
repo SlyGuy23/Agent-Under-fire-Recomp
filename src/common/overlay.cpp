@@ -68,6 +68,24 @@ bool EvilSummitFinale() {
     return false;
 }
 
+// mission 1's opening cutscene: a cutscene in orc_1 before play first started there
+bool Mission1Intro() {
+    static bool played = false;
+    if (!g_level_is || !g_in_cutscene) return false;
+    if (!g_level_is(kMission1Level)) {
+        played = false;
+        return false;
+    }
+    // play counts as started after two seconds' worth of frames out of cutscenes, so the gap while the level loads
+    // before the cutscene doesn't end it
+    static uint64_t out_since = 0;
+    uint64_t now = g_frames.load(std::memory_order_relaxed);
+    if (g_in_cutscene()) out_since = 0;
+    else if (!out_since) out_since = now;
+    else if (now - out_since > 120) played = true;
+    return !played;
+}
+
 bool PackFolderOverrides(const std::wstring& folder) {
     constexpr std::wstring_view kTail = L"Only 4x";
     return folder.size() >= kTail.size() &&
@@ -84,6 +102,7 @@ bool PackFolderOff(const std::wstring& folder) {
     };
     if (is(kCharacterPack)) return !g_hd_characters;
     if (is(kEvilSummitPack)) return !g_hd_characters || !EvilSummitFinale();
+    if (is(kMission1IntroPack)) return !g_hd_characters || !Mission1Intro();
     if (is(kWeaponPack)) return !g_hd_weapons;
     for (const wchar_t* m : kMenuPacks)
         if (is(m)) return !g_hd_menus;
@@ -609,7 +628,7 @@ void Draw(double fps) {
     // the Evil Summit pack folder follows the level and its cutscenes: the pack is listed again when that changes
     if (g_level_is) {
         static int last = -1;
-        int now = EvilSummitFinale();
+        int now = EvilSummitFinale() | Mission1Intro() << 1;
         if (now != last) {
             last = now;
             app::g_pack_folders++;

@@ -31,6 +31,10 @@ inline constexpr const wchar_t* kMenuPacks[] = {L"AUF Menus and HUD 4x", L"AUF D
 // have them
 inline constexpr const wchar_t* kEvilSummitPack = L"AUF Evil Summit Only 4x";
 inline constexpr const char* kEvilSummitLevels[] = {"alp2_1", "alp2_2", "alp2_3"};
+// a pack folder named "AUF Mission 1 Intro Only 4x" is drawn only in mission 1's opening cutscene (level orc_1, until
+// play first starts), with the character part on: the briefcase there, whose textures are left as they are elsewhere
+inline constexpr const wchar_t* kMission1IntroPack = L"AUF Mission 1 Intro Only 4x";
+inline constexpr const char* kMission1Level = "orc_1";
 inline bool (*g_level_is)(const char* name) = nullptr;  // the level being played is <name> (set by the game)
 inline bool (*g_in_cutscene)() = nullptr;               // a cutscene is playing (set by the game)
 bool PackFolderOff(const std::wstring& folder);        // app::g_pack_folder_off
