@@ -148,9 +148,10 @@ controls::GameState OnFootState();
 // a pointer the game keeps that is safe to read through: its image and heap, or the 64 MB physical window
 bool GuestPointer(uint32_t va) { return (va >= 0x10000 && va < 0x7F00000) || (va >= 0x80000000u && va < 0x84000000u); }
 controls::GameState DrivingState();
-controls::Action FireRedirect();
-bool MountedGun();
-void ReloadRequest();
+controls::Action FireRedirect(int port);
+bool MountedGun(int port);
+void ReloadRequest(int port);
+int LocalPlayer(int port);
 bool Cutscene();
 bool DrivingCutscene();
 controls::Context PickedMission();
@@ -356,6 +357,8 @@ void Loaded() {
 // Mouse look on foot, straight into the game's view angles (bond_eng.xbe keeps them like Quake III's client: float
 // degrees it packs into each tick's command, the movement code clamping pitch at about 85 degrees). Written when the
 // game polls the pad, just before it builds the frame's command, and only while a level is being played.
+// In multiplayer split screen it is the view of the local player on port 0 (the keyboard and mouse's port), each
+// local player p having its own client block at +p*0x30 and playerState at +p*[0x2A88BC].
 void MouseLook(int port) {
     static const bool kOnFoot = std::string_view(IMAGE_XBE) == "bond_eng.xbe";
     if (!kOnFoot || port != 0) return;
@@ -363,16 +366,40 @@ void MouseLook(int port) {
     bool direct = controls::TakeMouseLook(yaw, pitch);
     constexpr uint32_t kPitch = 0x2A8124, kYaw = 0x2A8128;              // the local player's view: + is down, + is left
     constexpr uint32_t kYawScale = 0x2A8144, kPitchScale = 0x2A8148;    // the game's look scale: aiming, zoom, 0 when it may not
-    constexpr uint32_t kPlayerState = 0x2A88B8, kPaused = 0x3B2428, kCommandsOff = 0x3B2418;
+    constexpr uint32_t kPlayerState = 0x2A88B8, kStateSize = 0x2A88BC, kPaused = 0x3B2428, kCommandsOff = 0x3B2418;
     constexpr uint32_t kFlags = 0x0C, kFrozen = 0x40;
     if (!direct || (yaw == 0 && pitch == 0)) return;
     uint32_t ps = kernel::R32(kPlayerState);
     if (!ps || kernel::R32(kPaused) || kernel::R32(kCommandsOff)) return;
+    const int p = LocalPlayer(0);
+    if (p < 0) return;
+    const uint32_t client = uint32_t(p) * 0x30;
+    ps += uint32_t(p) * kernel::R32(kStateSize);
     auto f = [](uint32_t a) { return static_cast<float*>(kernel::HostPtr(a)); };
-    float ys = *f(kYawScale), pscale = *f(kPitchScale);
+    float ys = *f(kYawScale + client), pscale = *f(kPitchScale + client);
     if (!(ys > 0) || (kernel::R32(ps + kFlags) & kFrozen)) return;
-    *f(kYaw) -= yaw * ys;
-    *f(kPitch) -= pitch * (pscale > 0 ? pscale : ys);
+    *f(kYaw + client) -= yaw * ys;
+    *f(kPitch + client) -= pitch * (pscale > 0 ? pscale : ys);
+}
+
+// The local player a controller port plays (0 to 3), -1 for none. One player ([0x205408] <= 1, every mission): port
+// 0's, player 0, as before. Multiplayer split screen: [0x205408] local players, player p reading the pad of port
+// [0x218464 + p*4] (0x1380E0); the first to join is player 0 whichever port it pressed A on.
+int LocalPlayer(int port) {
+    constexpr uint32_t kPlayers = 0x205408, kPorts = 0x218464;
+    const int32_t players = int32_t(kernel::R32(kPlayers));
+    if (players <= 1) return port == 0 ? 0 : -1;
+    for (int32_t p = 0; p < std::min(players, 4); p++)
+        if (int32_t(kernel::R32(kPorts + uint32_t(p) * 4)) == port) return p;
+    return -1;
+}
+
+// the player object of local player p ([[0x329390] + p*0x2E0 + 0x278]), 0 when none
+uint32_t PlayerObject(int p) {
+    if (p < 0 || !kernel::R32(0x2A88B8)) return 0;
+    uint32_t players = kernel::R32(0x329390);
+    uint32_t player = GuestPointer(players) ? kernel::R32(players + uint32_t(p) * 0x2E0 + 0x278) : 0;
+    return GuestPointer(player) ? player : 0;
 }
 
 // Where the on-foot player is (controls::GameState): a level loaded (its playerState array set) and the pause menu
@@ -394,14 +421,17 @@ controls::GameState DrivingState() {
     return m && kernel::R32(m + 0x404) == 1 ? controls::GameState::Playing : controls::GameState::Menu;
 }
 
-// On foot, player 0 on a mounted gun (the FixedGun class: Fire & Water's AA gun, the 50 cal guns of Night of the
-// Jackal and Fire & Water, Mediterranean Crisis's AA guns): taking it (0x73690, the only writer) sets the gun at
-// player+0x2F0 and the player's gentity flag 0x100 ([0x2A88A8] + 8 for player 0), and leaving it clears both. The
+// On foot, the port's player on a mounted gun (the FixedGun class: Fire & Water's AA gun, the 50 cal guns of Night of
+// the Jackal and Fire & Water, Mediterranean Crisis's AA guns): taking it (0x73690, the only writer) sets the gun at
+// player+0x2F0 and the player's gentity flag 0x100 ([0x2A88A8] + p*[0x2A88AC] + 8), and leaving it clears both. The
 // flag is what the game's own stick code tests (0x24490): set, it puts the view angles back and aims the gun with
 // the left stick.
-bool MountedGun() {
-    if (!kernel::R32(0x2A88B8)) return false;
+bool MountedGun(int port) {
+    const int p = LocalPlayer(port);
+    if (p < 0 || !kernel::R32(0x2A88B8)) return false;
     uint32_t gent = kernel::R32(0x2A88A8);
+    if (!GuestPointer(gent)) return false;
+    gent += uint32_t(p) * kernel::R32(0x2A88AC);
     return GuestPointer(gent) && (kernel::R32(gent + 8) & 0x100) != 0;
 }
 
@@ -415,44 +445,46 @@ controls::Context PickedMission() {
     }
 }
 
-// On foot, the item in player 0's hands ([[0x329390]+0x278] is the player, +0x2EC what it holds): a gadget (its
+// On foot, the item in the port's player's hands ([[0x329390]+0x278] is player 0, +0x2EC what it holds): a gadget (its
 // byte +0x395 set, the flag the game's own fire code reads) and no mounted gun (+0x2F0) is used with B, where FIRE
 // would only put it away. The Q-Camera and the Q-Jet are not held: picked, they leave the hands empty (+0x2EC 0)
 // and sit at +0x84C, the gadget B uses first (0xB4C00); FIRE with empty hands brings the weapon back (0xBBA9F)
 // instead, so empty hands with one of those out are B as well.
-controls::Action FireRedirect() {
-    if (!kernel::R32(0x2A88B8)) return controls::Action::RT;
-    uint32_t players = kernel::R32(0x329390);
-    uint32_t player = GuestPointer(players) ? kernel::R32(players + 0x278) : 0;
-    if (!GuestPointer(player) || kernel::R32(player + 0x2F0)) return controls::Action::RT;
+controls::Action FireRedirect(int port) {
+    uint32_t player = PlayerObject(LocalPlayer(port));
+    if (!player || kernel::R32(player + 0x2F0)) return controls::Action::RT;
     uint32_t held = kernel::R32(player + 0x2EC);
     if (!held) return GuestPointer(kernel::R32(player + 0x84C)) ? controls::Action::B : controls::Action::RT;
     if (!GuestPointer(held)) return controls::Action::RT;
     return kernel::G<uint8_t>(held + 0x395) ? controls::Action::B : controls::Action::RT;
 }
 
-// Reload on its own: the game checks [0x333524] every frame (0xBBD7C) and reloads the weapon in hand once it is
-// ready, clearing it; nothing of its own ever sets it. It is let go of after half a second if still set, so a
-// request made just before the weapon was put away does not reload later.
-std::atomic<int64_t> g_reload_at{0};
-constexpr uint32_t kReloadRequest = 0x333524;
+// Reload on its own: the game checks [0x333524] every frame (0xBBD7C, each player's think) and reloads the weapon in
+// hand once it is ready, clearing it; nothing of its own ever sets it. The request is kept per local player
+// (controls::ReloadRequests) and src/game/hooks.cpp hands it to that player's think only, so in split screen it
+// reloads the gun of the player who asked. It is let go of after half a second if still set, so a request made just
+// before the weapon was put away does not reload later.
+std::atomic<int64_t> g_reload_at[4] = {};
 
 int64_t SteadyMs() {
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-void ReloadRequest() {
-    if (!kernel::R32(0x2A88B8)) return;
-    kernel::W32(kReloadRequest, 1);
-    g_reload_at.store(SteadyMs());
+void ReloadRequest(int port) {
+    const int p = LocalPlayer(port);
+    if (p < 0 || p > 3 || !kernel::R32(0x2A88B8)) return;
+    g_reload_at[p].store(SteadyMs());
+    controls::SetReloadRequested(p, true);
 }
 
 void ReloadExpiry() {
-    int64_t at = g_reload_at.load();
-    if (at && SteadyMs() - at > 500) {
-        if (kernel::R32(0x2A88B8)) kernel::W32(kReloadRequest, 0);
-        g_reload_at.store(0);
+    for (int p = 0; p < 4; p++) {
+        int64_t at = g_reload_at[p].load();
+        if (at && SteadyMs() - at > 500) {
+            controls::SetReloadRequested(p, false);
+            g_reload_at[p].store(0);
+        }
     }
 }
 

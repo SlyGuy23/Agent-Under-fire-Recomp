@@ -472,6 +472,13 @@ int OnRowGrid(float y0, float offset, bool* lifted) {
     return -1;
 }
 
+// the question's answers for the mouse (MouseMenus): a quad of answer i (0 the left, 1 the right) drawn, and how
+// bright; driving.xbe: a quad of the answer being drawn now (DrivingQuestionWord)
+void AnswerQuad(int i, float x0, float y0, float x1, float y1, float bright);
+void AnswerLetter(float x0, float y0, float x1, float y1);
+// the mission select's panel on side i (0 left, 1 right) drawn there
+void SidePanel(int i, float x0, float y0, float x1, float y1);
+
 // a piece of the question's band (untextured: the position only), moved up with the rows once
 bool QuestionBand(const gpu::State& s, uint8_t* v, uint32_t stride, uint32_t count) {
     static constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -558,9 +565,19 @@ bool OptionsTitle(const gpu::State& s, const Box& b) {
            Near(b.x0, 90.5f, 2) && Near(b.y0, 78.5f, 2);
 }
 
-bool SetupTitle(const gpu::State& s, const Box& b, uint32_t count) {
+bool SetupTitle(const gpu::State& s, const Box& b, uint32_t count, const uint8_t* v, uint32_t stride, const Layout& l) {
     // the letters' box starts at 90,76 and the shadow's a pixel down and right (less once tucked in): either counts
-    return count == 96 && TextureSize(s, 256, 128) && b.x0 > 87 && b.x0 < 94 && b.y0 > 73 && b.y0 < 81;
+    if (!(count == 96 && TextureSize(s, 256, 128) && b.x0 > 87 && b.x0 < 94 && b.y0 > 73 && b.y0 < 81)) return false;
+    // and its letters are CONTROLLER SETUP: other titles at that place type themselves out a letter at a time, and
+    // were taken for it at their 16th (MULTIPLAYER GAMES..., Combat Training Se...)
+    constexpr std::string_view kText = "CONTROLLER SETUP";
+    for (uint32_t q = 0; q < 16; q++) {
+        const MenuGlyph* g = FindGlyph(kTitleFont, kText[q]);
+        if (!g) continue;
+        Box gb = BoxOf(v, stride, l, q * 6, 6);
+        if (!Near(gb.u0 * 256.0f, g->x0) || !Near(gb.v0 * 128.0f, g->y0)) return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -916,6 +933,8 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
             }
         }
     }
+    // a letter of the question's Yes or No, for the mouse
+    if (y1 - y0 < 40 && x1 - x0 < 40) AnswerLetter(x0, y0, x1, y1);
     // a visible letter (a prompt's words, perhaps): not a shadow, not see-through
     if (y1 - y0 < 40 && x1 - x0 < 40) {
         if (const uint8_t* lc = StreamOf(s, v, 1)) {
@@ -932,6 +951,9 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
 // their texture's pack key and the part of it drawn.
 
 enum class Prompt : uint8_t { A, B, UpDown, LeftRight };
+constexpr uint64_t kXButton = 0x3914e9949f3a46d1ull;
+// the X button keyed (REMATCH, a multiplayer game's results), the frame plus one: Backspace gives X meanwhile
+std::atomic<uint64_t> g_rematch_seen{0};
 struct PromptPart {
     uint64_t key;
     float u0, v0, u1, v1;  // texels of the sheet, -1 for the whole texture
@@ -943,6 +965,10 @@ constexpr PromptPart kPrompts[] = {
     {0x08e4f0ae95c16b80ull, -1, -1, -1, -1, Prompt::B},
     {0x7ffff33c7f8a7768ull, 225, 89, 248, 112, Prompt::UpDown},
     {0x7ffff33c7f8a7768ull, 125, 89, 147, 112, Prompt::LeftRight},
+    // the D-pad with one arm lit, drawn as it is (NEXT) and mirrored (PREVIOUS): the multiplayer game select
+    {0x7ffff33c7f8a7768ull, 58, 89, 81, 112, Prompt::LeftRight},
+    // the X button (32x64), REMATCH on a multiplayer game's results: BACKSPACE, which gives X there (Pad)
+    {kXButton, -1, -1, -1, -1, Prompt::B},
     // the pause menu's stick pictures (32x32): CHANGE PAGE and SCROLL
     {0x7e8cc44b3a0258fcull, 16, 1, 32, 16, Prompt::LeftRight},
     {0x7e8cc44b3a0258fcull, 16, 17, 32, 32, Prompt::UpDown},
@@ -1027,6 +1053,13 @@ bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, flo
         uint64_t f = Frame();
         FramePrompts& fp = g_prompt_frames[f % g_prompt_frames.size()];
         if (fp.frame != f) fp.frame = f, fp.list.clear();
+        if (key == kXButton) {
+            // only REMATCH beside CONTINUE (A before it, no B in the frame): the one X the keyboard has a key for
+            bool a = false, b = false;
+            for (const PromptRect& r : fp.list) a |= r.prompt == Prompt::A, b |= r.prompt == Prompt::B;
+            if (!a || b) return false;
+            g_rematch_seen.store(f + 1);
+        }
         if (fp.list.size() < 64) fp.list.push_back({p.prompt, x0, y0, x1, y1, std::clamp(alpha, 0.0f, 1.0f), DrawPaused()});
         g_prompts_seen.store(f + 1);
         return Keyboard();
@@ -1047,6 +1080,19 @@ void Covered(float left) {
     if (sl.frame == f) sl.level *= left;
 }
 
+// an opaque quad drawn over part of the screen: the prompts drawn so far in the frame under it go (the multiplayer
+// screens draw a prompts' bar off to the right, then black over it, then their own)
+void CoveredBox(const Box& b) {
+    std::lock_guard l(g_prompt_lock);
+    uint64_t f = Frame();
+    FramePrompts& fp = g_prompt_frames[f % g_prompt_frames.size()];
+    if (fp.frame != f) return;
+    for (PromptRect& p : fp.list) {
+        float cx = (p.x0 + p.x1) / 2, cy = (p.y0 + p.y1) / 2;
+        if (cx >= b.x0 && cx <= b.x1 && cy >= b.y0 && cy <= b.y1) p.alpha = 0;
+    }
+}
+
 // bond_eng.xbe: a 2D draw of one quad from the screen's top left corner that hides what is under it: the whole screen
 // (a picture, or a black fade of its own opacity), or the first tile of a full screen picture (the loading screens)
 void CoverDraw(const gpu::State& s, uint32_t prim, const uint8_t* v, uint32_t stride, uint32_t count) {
@@ -1064,6 +1110,11 @@ void CoverDraw(const gpu::State& s, uint32_t prim, const uint8_t* v, uint32_t st
     Layout l;
     l.pos = pos.offset;
     Box b = BoxOf(v, stride, l, 0, count);
+    if (!s.textures[0]) {
+        float least = 1;
+        for (uint32_t i = 0; i < count; i++) least = std::min(least, At(v, stride, i, uint32_t(color))[3]);
+        if (least >= 0.98f) CoveredBox(b);
+    }
     if (b.x0 > 1 || b.y0 > 1) return;
     std::array<float, 4> c;
     std::memcpy(c.data(), v + uint32_t(color), 16);
@@ -1331,7 +1382,7 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     }
 
     // the pre-mission Controller Setup: its pictures go
-    if (SetupTitle(s, b, count)) {
+    if (SetupTitle(s, b, count, v, stride, l)) {
         g_setup_seen.store(Frame() + 1);
         g_setup_frame = Frame();
         if (!IsShadow(ColorOf(v, stride, l))) SetupLevel(ColorOf(v, stride, l));
@@ -1404,10 +1455,19 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
                 bool up = false;
                 if (PauseRow(s, b, &up, x) < 0) continue;
                 if (!up) MoveY(v, stride, l, count, -kPauseLift);
+                // where the mouse finds it (MouseMenus), and how bright: the lit answer is the brighter
+                float dy = up ? 0 : -kPauseLift;
+                auto c = ColorOf(v, stride, l);
+                AnswerQuad(x < 300 ? 0 : 1, b.x0, b.y0 + dy, b.x1, b.y1 + dy, IsShadow(c) ? 0 : Brightness(c));
                 return;
             }
         }
     }
+
+    // the mission select's 007 panels either side of the mission's picture: a click on one is LEFT or RIGHT
+    if (count == 6 && !DrawPaused() && TextureSize(s, 256, 256) && b.y0 > 100 && b.y1 < 280 && b.x1 - b.x0 > 90 &&
+        b.x1 - b.x0 < 200 && StageKey(s) == 0xb6da7d3f2f3aa462ull)
+        SidePanel((b.x0 + b.x1) / 2 < 320 ? 0 : 1, b.x0, b.y0, b.x1, b.y1);
 
     if (count == 6) {
         // a main menu bar: its row moved up, and OPTIONS unlit while QUIT GAME is selected
@@ -1571,27 +1631,93 @@ void PadInner(int port, input::Pad& pad, const Held& h);
 namespace {
 
 // ---------------------------------------------------------------------------------------------------------------
-// The mouse on the game's own menus (the main menu, the options list, the pause menus' MISSION page): the row under
-// the cursor is selected as the cursor moves, and a click on it accepts it. Ui finds the row (MouseMenus, the rows'
-// boxes known here); the pad then gets D-pad presses toward it, one row a press, and A once there, as a player would
-// press them, so the added rows (QUIT GAME, PC Settings, Controls) work through the same code as the controller's.
+// The mouse cursor on the game's own menus. controls.cpp shows the Windows arrow on a menu (the front end, a pause
+// menu) once the mouse has moved there, and hides it again in play. With it shown:
+// - the row under the cursor is selected when the cursor moves onto it, and a left click on a row accepts it, as
+//   ENTER does: the main menu's bars (QUIT GAME sixth), the options list's lines (PC Settings third), the pause menus'
+//   MISSION rows (Controls and PC Settings fourth and fifth) and the "Are you sure?" question's Yes and No;
+// - a click on a prompt's A or B picture, or its words, presses that button (B BACK goes back); on the mission
+//   select a click on the 007 panel left or right of the mission's picture is LEFT or RIGHT (the mission before or
+//   after);
+// - anywhere else a click does nothing on a screen with those rows, and is A on any other screen (the briefing, the
+//   pre-mission Controller Setup, the mission select), as before.
+// The cursor itself does not move the selection, only its moving onto a row does. Ui hands the cursor over in console
+// pixels (MouseCursor); the pad then gets D-pad presses toward the row, one row a press, and A once there, as a
+// player would press them, so the added rows go through the same code as the controller's. Nothing of it in play (the
+// mouse buttons are the game's there) or while a page is up (the pages take the mouse themselves).
 
-enum class MouseMenu { None, Main, Options, Pause };
-std::atomic<int> g_mouse_menu{0};       // a MouseMenu
-std::atomic<int> g_mouse_target{-1};    // the row to go to, -1 none
-std::atomic<bool> g_mouse_accept{false};  // and A there
-std::atomic<bool> g_mouse_strip_a{false};  // the click's own A held back until the row is reached
-std::atomic<int64_t> g_mouse_at{0};
+enum class MouseMenu { None, Main, Options, Pause, Question };
+
+std::atomic<float> g_cursor_x{-1}, g_cursor_y{-1};  // console pixels
+std::atomic<bool> g_cursor_over{false};             // over the console's frame
+std::atomic<uint32_t> g_cursor_moves{0}, g_cursor_clicks{0};
+std::atomic<int64_t> g_cursor_click_at{0};
+
+// the "Are you sure?" question's two answers as the game last drew them (bond_eng.xbe: Draw; driving.xbe: the words
+// between DrivingQuestionWord calls), each its box in console pixels, how bright it was drawn and the frame
+struct AnswerBox {
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    float bright = 0;
+    uint64_t seen = 0;  // frame plus one
+};
+std::mutex g_answer_lock;
+std::array<AnswerBox, 2> g_answers;
+std::atomic<int> g_answer_open{-1};  // driving.xbe: the answer being drawn now
+
+void AnswerQuad(int i, float x0, float y0, float x1, float y1, float bright) {
+    if (i < 0 || i > 1) return;
+    std::lock_guard l(g_answer_lock);
+    AnswerBox& a = g_answers[size_t(i)];
+    if (a.seen != Frame() + 1) a = AnswerBox{}, a.seen = Frame() + 1;
+    a.x0 = std::min(a.x0, x0), a.y0 = std::min(a.y0, y0), a.x1 = std::max(a.x1, x1), a.y1 = std::max(a.y1, y1);
+    a.bright = std::max(a.bright, bright);
+}
+
+void AnswerLetter(float x0, float y0, float x1, float y1) {
+    if (g_answer_open.load() < 0) return;
+    std::lock_guard l(g_answer_lock);
+    int i = g_answer_open.load();
+    if (i < 0 || i > 1) return;
+    AnswerBox& a = g_answers[size_t(i)];
+    a.x0 = std::min(a.x0, x0), a.y0 = std::min(a.y0, y0), a.x1 = std::max(a.x1, x1), a.y1 = std::max(a.y1, y1);
+}
+
+std::array<AnswerBox, 2> g_sides;  // the mission select's side panels (g_answer_lock)
+void SidePanel(int i, float x0, float y0, float x1, float y1) {
+    std::lock_guard l(g_answer_lock);
+    g_sides[size_t(i)] = {x0, y0, x1, y1, 0, Frame() + 1};
+}
+
+// the mission select's side panel under (x, y): 0 left, 1 right, -1 none
+int SideAt(float x, float y) {
+    std::lock_guard l(g_answer_lock);
+    for (int i = 0; i < 2; i++) {
+        const AnswerBox& a = g_sides[size_t(i)];
+        if (Recent(a.seen) && x >= a.x0 && x <= a.x1 && y >= a.y0 && y <= a.y1) return i;
+    }
+    return -1;
+}
+
+// both answers drawn lately: their boxes, and the lit one (the brighter), else -1
+int Answers(std::array<AnswerBox, 2>& out) {
+    std::lock_guard l(g_answer_lock);
+    out = g_answers;
+    static int lit = 0;
+    if (!Recent(out[0].seen) || !Recent(out[1].seen)) return -1;
+    // the lit one pulses: when the two come near, the last that stood out
+    if (std::fabs(out[0].bright - out[1].bright) >= 0.1f) lit = out[0].bright > out[1].bright ? 0 : 1;
+    return lit;
+}
 
 // the menu up and its selected row (the main menu 0 to 5 with QUIT GAME; the options list 0 to 10 with PC Settings
-// third; the pause menu 0 to 4 with Controls and PC Settings), -1 when that menu is not up
+// third; the pause menu 0 to 4 with Controls and PC Settings; the question's answer 0 or 1), -1 when that menu is not up
 int MouseRowNow(MouseMenu m) {
     switch (m) {
         case MouseMenu::Main:
-            if (!Recent(g_main_seen.load()) || g_page.load() != Page::None) return -1;
+            if (!kMenus || !Recent(g_main_seen.load()) || g_page.load() != Page::None) return -1;
             return g_quit_selected.load() ? kMainItems : g_main_selected.load();
         case MouseMenu::Options: {
-            if (!Recent(g_options_seen.load()) || g_page.load() != Page::None) return -1;
+            if (!kMenus || !Recent(g_options_seen.load()) || g_page.load() != Page::None) return -1;
             int sel = g_options_selected.load();
             if (g_pc_selected.load()) return kControllerRow + 1;
             return sel < 0 ? -1 : sel <= kControllerRow ? sel : sel + 1;
@@ -1599,55 +1725,200 @@ int MouseRowNow(MouseMenu m) {
         case MouseMenu::Pause: {
             if (!Paused() || g_page.load() != Page::None) return -1;
             bool up = kDrivingImage ? DriveMissionPage() : Recent(g_pause_seen.load());
-            if (!up || PauseQuestion()) return -1;
+            if (!up || (kDrivingImage ? g_drive_lit.load() < 0 : PauseQuestion())) return -1;
             int extra = g_pause_extra.load();
             if (extra >= 0) return kPauseRows + extra;
             return kDrivingImage ? g_drive_lit.load() : g_pause_lit.load();
+        }
+        case MouseMenu::Question: {
+            if (!Paused() || g_page.load() != Page::None) return -1;
+            bool asked = kDrivingImage ? Recent(g_drive_seen.load()) && g_drive_lit.load() < 0 : PauseQuestion();
+            std::array<AnswerBox, 2> a;
+            return asked ? Answers(a) : -1;
         }
         default: return -1;
     }
 }
 
-void MouseSteer(input::Pad& pad) {
-    static int phase = 0, accepting = 0;
-    int target = g_mouse_target.load();
-    bool strip = g_mouse_strip_a.load();
-    if (strip) {
-        // held back until the row is reached and accepted, then until the button is let go
-        if (target < 0 && !accepting && pad.analog[0] == 0) g_mouse_strip_a.store(false);
-        pad.analog[0] = 0;
+// the menu with rows up now, and its selected row (-1 and None when none)
+int MenuNow(MouseMenu& menu) {
+    for (MouseMenu m : {MouseMenu::Question, MouseMenu::Pause, MouseMenu::Main, MouseMenu::Options}) {
+        int cur = MouseRowNow(m);
+        if (cur >= 0) {
+            menu = m;
+            return cur;
+        }
     }
-    if (accepting) {
-        pad.analog[0] = 0xFF;
-        accepting--;
+    menu = MouseMenu::None;
+    return -1;
+}
+
+// the row of that menu under (x, y), console pixels, -1 none: the rows' boxes as they are drawn (moved by this port)
+int MouseRowAt(MouseMenu m, float x, float y) {
+    int rows = 0;
+    float x0 = 0, x1 = 0, above = 0, h = 0;
+    auto top = [&](int r) -> float {
+        switch (m) {
+            case MouseMenu::Main: return kNewTop + kNewStep * float(r);  // the bars, 30 tall
+            case MouseMenu::Options:
+                if (r <= kControllerRow) return kRowTop + kRowStep * float(r);
+                return kRowTop + kRowStep * float(r - 1) + kInsert;  // PC Settings, then the rows moved down under it
+            case MouseMenu::Pause:
+                return kDrivingImage ? kDriveRowsTop + kDriveStep * float(r) : kPauseTop - kPauseLift + kPauseStep * float(r);
+            default: return -1000;
+        }
+    };
+    switch (m) {
+        case MouseMenu::Main: rows = kMainItems + 1, x0 = kBarX0, x1 = kBarX1, above = 8, h = 46; break;
+        case MouseMenu::Options: rows = kOptionRows + 1, x0 = kLabelX - 8, x1 = 600, above = 6, h = kRowStep; break;
+        case MouseMenu::Pause: rows = kPauseRows + kPauseExtraRows, x0 = 95, x1 = 430, above = 5, h = kPauseStep; break;
+        case MouseMenu::Question: {
+            std::array<AnswerBox, 2> a;
+            Answers(a);
+            for (int i = 0; i < 2; i++)
+                if (x >= a[size_t(i)].x0 - 8 && x <= a[size_t(i)].x1 + 8 && y >= a[size_t(i)].y0 - 6 && y <= a[size_t(i)].y1 + 6)
+                    return i;
+            return -1;
+        }
+        default: return -1;
+    }
+    if (x < x0 || x > x1) return -1;
+    for (int r = 0; r < rows; r++) {
+        float t = top(r) - above;
+        if (y >= t && y < t + h) return r;
+    }
+    return -1;
+}
+
+// the A or B prompt (0 A, 1 B) under (x, y): its picture, and its words to the right up to the next prompt
+int PromptAt(float x, float y) {
+    std::lock_guard l(g_prompt_lock);
+    const FramePrompts* last = nullptr;
+    for (const FramePrompts& fp : g_prompt_frames)
+        if (fp.frame <= Frame() && Frame() - fp.frame <= 3 && (!last || fp.frame > last->frame)) last = &fp;
+    if (!last) return -1;
+    for (const PromptRect& p : last->list) {
+        if ((p.prompt != Prompt::A && p.prompt != Prompt::B) || p.alpha < 0.5f) continue;
+        float right = p.x1 + 110;
+        for (const PromptRect& q : last->list)
+            if (q.x0 > p.x1 && q.y0 < p.y1 && q.y1 > p.y0) right = std::min(right, q.x0 - 4);
+        if (x >= p.x0 - 4 && x <= right && y >= p.y0 - 4 && y <= p.y1 + 4) return p.prompt == Prompt::A ? 0 : 1;
+    }
+    return -1;
+}
+
+// the pad, before PadInner reads it
+void MouseMenus(input::Pad& pad) {
+    static uint32_t moves_seen = 0, clicks_seen = 0;
+    static MouseMenu menu = MouseMenu::None;
+    static int target = -1, hold = 0, hold_button = 0;
+    static bool accept = false;
+    static int64_t at = 0;
+    static uint64_t hold_until = 0, step_at = 0;  // frames: the game reads the pad once a frame, polled more often
+    const uint32_t moves = g_cursor_moves.load(), clicks = g_cursor_clicks.load();
+    const bool moved = moves != moves_seen;
+    const bool clicked = clicks != clicks_seen && NowMs() - g_cursor_click_at.load() < 250;
+    moves_seen = moves, clicks_seen = clicks;
+    // only on a menu, with the cursor shown and no page up
+    if (controls::CurrentGameState() == controls::GameState::Playing || g_page.load() != Page::None || !MouseClicks() ||
+        overlay::Open()) {
+        target = -1, accept = false, hold = 0;
         return;
+    }
+    // a button pressed for a click: held three frames, as a press (and no more than 30 polls)
+    auto press = [&] {
+        if (hold <= 0 || Frame() >= hold_until) {
+            hold = 0;
+            return false;
+        }
+        if (hold_button == 0) pad.analog[0] = 0xFF;
+        else if (hold_button == 1) pad.analog[1] = 0xFF;
+        else pad.buttons |= hold_button == 2 ? 4 : 8;
+        hold--;
+        return true;
+    };
+    auto start_press = [&](int button) {
+        hold_button = button, hold = 30, hold_until = Frame() + 3;
+        press();
+    };
+    if (press()) return;
+    MouseMenu now = MouseMenu::None;
+    int cur = MenuNow(now);
+    const bool over = g_cursor_over.load();
+    const float x = g_cursor_x.load(), y = g_cursor_y.load();
+    int hover = over && now != MouseMenu::None ? MouseRowAt(now, x, y) : -1;
+    if (clicked) {
+        int prompt = over ? PromptAt(x, y) : -1;
+        int side = over && now == MouseMenu::None ? SideAt(x, y) : -1;
+        if (hover >= 0) {
+            target = hover, accept = true, menu = now, at = NowMs();
+        } else if (prompt >= 0 || now == MouseMenu::None) {
+            // a prompt's button, the mission select's LEFT or RIGHT, or A on a screen without rows
+            target = -1, accept = false;
+            start_press(prompt >= 0 ? prompt : side >= 0 ? 2 + side : 0);
+            return;
+        }
+    } else if (moved && hover >= 0 && hover != cur) {
+        target = hover, accept = false, menu = now, at = NowMs();
     }
     if (target < 0) {
-        phase = 0;
+        step_at = 0;
         return;
     }
-    int cur = MouseRowNow(MouseMenu(g_mouse_menu.load()));
-    if (cur < 0 || NowMs() - g_mouse_at.load() > 4000) {
-        g_mouse_target.store(-1), g_mouse_accept.store(false);
+    // (a poll between the frames of a menu can find none up: then it waits)
+    if (now == MouseMenu::None && NowMs() - at <= 2000) return;
+    if (now != menu || cur < 0 || NowMs() - at > 2000) {
+        target = -1, accept = false;
         return;
     }
     if (cur == target) {
-        g_mouse_target.store(-1);
-        if (g_mouse_accept.exchange(false)) accepting = 3;
-        phase = 0;
+        target = -1, step_at = 0;
+        if (accept) accept = false, start_press(0);
         return;
     }
-    // a press toward it, held two polls and let go four: the selection the menus' draws report has caught up by the
-    // next one
-    if (phase < 2) pad.buttons |= target > cur ? 2 : 1;
-    phase = (phase + 1) % 6;
+    // a press toward it, held two frames and let go three: the selection the menus' draws report has caught up by
+    // the next one. The answers lie side by side: left and right.
+    if (!step_at || Frame() >= step_at + 5) step_at = Frame();
+    if (Frame() < step_at + 2) {
+        if (now == MouseMenu::Question) {
+            std::array<AnswerBox, 2> a;
+            Answers(a);
+            pad.buttons |= a[size_t(target)].x0 < a[size_t(cur)].x0 ? 4 : 8;
+        } else {
+            pad.buttons |= target > cur ? 2 : 1;
+        }
+    }
 }
 
 }  // namespace
 
+void MouseCursor(float x, float y, bool over, bool moved, bool clicked) {
+    g_cursor_x.store(x), g_cursor_y.store(y), g_cursor_over.store(over);
+    if (moved) g_cursor_moves.fetch_add(1);
+    if (clicked) g_cursor_click_at.store(NowMs()), g_cursor_clicks.fetch_add(1);
+}
+
+bool MouseClicks() {
+    return (kMenus || kDrivingImage) && controls::MenuCursor() && g_page.load() == Page::None;
+}
+
+void DrivingQuestionWord(int word, bool lit) {
+    std::lock_guard l(g_answer_lock);
+    g_answer_open.store(word);
+    if (word < 0 || word > 1) return;
+    AnswerBox& a = g_answers[size_t(word)];
+    if (a.seen != Frame() + 1) a = AnswerBox{}, a.seen = Frame() + 1;
+    a.bright = lit ? 2.0f : 1.0f;
+}
+
 void Pad(int port, input::Pad& pad) {
     if (!(kMenus || kDrivingImage) || port != 0) return;
-    MouseSteer(pad);
+    MouseMenus(pad);
+    // a multiplayer game's results (CONTINUE, X REMATCH) on the keyboard: Backspace (the menus' B) is X there
+    if (kMenus && Keyboard() && Recent(g_rematch_seen.load())) {
+        pad.analog[2] = std::max(pad.analog[2], pad.analog[1]);
+        pad.analog[1] = 0;
+    }
     Held h = Read(pad);
     PadInner(port, pad, h);
     // what the game was kept from stays kept from it until let go
@@ -2639,48 +2910,15 @@ bool MouseGuest(float& x, float& y) {
     return x >= 0 && y >= 0 && x < 640 && y < 480;
 }
 
-// The mouse on the game's own menus (MouseSteer): the row under the cursor, selected when the cursor moves onto it,
-// accepted when clicked. The rows' boxes in console pixels: the main menu's bars (QUIT GAME sixth), the options list's
-// lines (PC Settings third), the pause menu's MISSION rows (Controls and PC Settings fourth and fifth).
-void MouseMenus() {
+// The cursor for the game's own menus (MouseMenus, on the pad): where it is over the console's frame, whether it moved
+// and whether the left button was clicked this frame. Not while ImGui wants the mouse (the F10 panel) or a page is up.
+void FeedMouse() {
     ImGuiIO& io = ImGui::GetIO();
-    if (!Keyboard() || io.WantCaptureMouse || g_page.load() != Page::None) return;
-    MouseMenu menu = MouseMenu::None;
-    int rows = 0;
-    float x0 = 0, x1 = 0, h = 0;
-    auto top = [&](int r) -> float {
-        switch (menu) {
-            case MouseMenu::Main: return kNewTop + kNewStep * float(r);
-            case MouseMenu::Options:
-                if (r <= kControllerRow) return kRowTop + kRowStep * float(r);
-                return kRowTop + kRowStep * float(r - 1) + kInsert;  // PC Settings, then the rows moved down under it
-            case MouseMenu::Pause:
-                return kDrivingImage ? kDriveRowsTop + kDriveStep * float(r) : kPauseTop - kPauseLift + kPauseStep * float(r);
-            default: return -1000;
-        }
-    };
-    // Only the pause menu's MISSION rows: on the main menus (the bars, the options list) the cursor is not drawn, and
-    // the selection following an unseen cursor was in the way (the main menus' rows are still the keys', the wheel's
-    // and the controller's; a click accepts the selected row as before, controls.cpp)
-    if (Paused()) menu = MouseMenu::Pause, rows = kPauseRows + kPauseExtraRows, x0 = 95, x1 = 430, h = kPauseStep;
-    int cur = MouseRowNow(menu);
-    float mx, my;
-    if (cur < 0 || !MouseGuest(mx, my)) return;
-    int hover = -1;
-    for (int r = 0; r < rows; r++) {
-        float y = top(r);
-        if (mx >= x0 && mx <= x1 && my >= y - 3 && my < y - 3 + h) hover = r;
-    }
-    if (hover < 0 || hover == cur) return;
+    float x = -1, y = -1;
+    bool game = !io.WantCaptureMouse && g_page.load() == Page::None;
+    bool over = game && MouseGuest(x, y);
     bool moved = io.MouseDelta.x != 0 || io.MouseDelta.y != 0;
-    bool click = ImGui::IsMouseClicked(0);
-    if (!moved && !click) return;
-    g_mouse_menu.store(int(menu));
-    g_mouse_at.store(NowMs());
-    g_mouse_target.store(hover);
-    // a click on a row not yet selected: its A waits for the selection to get there (a click on the selected row is
-    // the menus' own A, controls.cpp)
-    if (click) g_mouse_strip_a.store(true), g_mouse_accept.store(true);
+    MouseCursor(x, y, over, moved, game && ImGui::IsMouseClicked(0));
 }
 
 // "Press ENTER" where the title screen's "Press START" was, in the same lettering, size and colour
@@ -2710,7 +2948,7 @@ void Ui() {
     if (kMenus) PressEnter();
     if (kMenus || kDrivingImage) DrawPrompts();
     if (!kMenus && !kDrivingImage) return;
-    MouseMenus();
+    FeedMouse();
     Page page = g_page.load();
     if (page == Page::None) {
         // exactly on the frames the game draws its Controller Setup: not on the black screen after it

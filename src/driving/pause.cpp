@@ -102,6 +102,13 @@ void DrawText(X86Context& ctx, uint32_t text, uint32_t colour, float x, float y)
 
 }  // namespace
 
+// the question's answer a call of its words draws (0 or 1, in the order drawn), -1 for "Are you sure?" itself
+static int AnswerWord(uint32_t ret) {
+    for (int i = 0; i < 6; i++)
+        if (kRetQuestionText[i] == ret) return i % 3 == 0 ? -1 : i % 3 - 1;
+    return -1;
+}
+
 bool OneOf(uint32_t ret, const uint32_t (&list)[6]) {
     for (uint32_t r : list)
         if (r == ret) return true;
@@ -119,7 +126,12 @@ X86_FUNC(sub_000B4560) {
             return;
         }
         F(kTextY) -= Lift(menu);
+        // Yes and No: the mouse finds them by the letters drawn now (menus::DrivingQuestionWord); the lit one is in
+        // the lit row's colour (its alpha pulsing)
+        int word = AnswerWord(ret);
+        if (word >= 0) menus::DrivingQuestionWord(word, (kernel::R32(kColour) & 0xFFFFFFu) == (kLit & 0xFFFFFFu));
         __imp__sub_000B4560(ctx, base);
+        if (word >= 0) menus::DrivingQuestionWord(-1, false);
         return;
     }
     if (row < 0 || !menu) {

@@ -91,15 +91,21 @@ struct Options {
 
 // driving.xbe: whether this run is a driving mission or an on-rails one
 void SetDrivingMode(Context c);
+// On foot each query is asked for the controller port whose pad is being built (0 for the keyboard and mouse); in
+// multiplayer split screen game_info.cpp answers for the local player on that port.
 // on foot with the keyboard and mouse: what the keys bound to FIRE give instead (the gadget's use while one is
 // raised); Action::RT, or Action::None, keeps them on FIRE
-void SetFireRedirect(Action (*query)());
+void SetFireRedirect(Action (*query)(int port));
 // on foot: Reload pressed with a weapon in hand (the game's own reload request, game_info.cpp)
-void SetReloadRequest(void (*request)());
-// on foot: true while player 0 is on a mounted gun (game_info.cpp), which the game aims with its left stick
-void SetMountedGunQuery(bool (*query)());
+void SetReloadRequest(void (*request)(int port));
+// on foot: true while the port's player is on a mounted gun (game_info.cpp), which the game aims with its left stick
+void SetMountedGunQuery(bool (*query)(int port));
 // on foot, the device in use has Reload bound: A (action) no longer reloads (src/game/hooks.cpp)
 bool SeparateReload();
+// on foot: the local players (a bit each) with a reload asked for. The game has one request for everyone
+// ([0x333524]); src/game/hooks.cpp hands it to each player's own think, so in split screen it reloads the right gun.
+uint32_t ReloadRequests();
+void SetReloadRequested(int player, bool requested);
 
 // where this executable plays, and which device drives it now
 Context CurrentContext();
@@ -158,18 +164,23 @@ void SetGameInputBlocked(bool blocked);
 // something wants the mouse: the cursor is shown and let go. The F10 panel, a menus.cpp page and an unfocused
 // window do the same on their own.
 void SetCursorWanted(bool wanted);
+// On a menu (the front end, a pause menu) the cursor is let go, and the Windows arrow shown once the mouse moves
+// there while the keyboard and mouse are in use; true while it is shown. It goes again in play (held in the middle of
+// the window) and when the controller is used.
+bool MenuCursor();
 
 // mouse motion since the last take, as degrees: yaw right and pitch up positive, sensitivity and invert Y applied
 // (0.044 degrees a count at 100%). False with zeros while the keyboard and mouse are not driving the game, the
 // game's input is blocked or this context's mouse look is Stick. Call once a game frame from the camera hook.
 bool TakeMouseLook(float& yaw_degrees, float& pitch_degrees);
 
-// How much faster than the game's own the turning from each console stick axis of port 0's last pad is to be, for
+// How much faster than the game's own the turning from each console stick axis of a port's last pad is to be, for
 // the hooks that scale it (src/game/hooks.cpp on foot, src/driving/hooks.cpp on rails): the stick sensitivity (or
 // the mouse as a stick past full tilt) where the game cannot be sent it as a stick value. On foot the part past
 // full tilt (under 100% the stick itself is sent less far); on rails all of it, the game having only three rates
 // (and the further of the two sticks' on each axis, which the game takes). 1 everywhere else and outside play.
-void TurnGains(float& lx, float& ly, float& rx, float& ry);
+void TurnGains(float& lx, float& ly, float& rx, float& ry);  // port 0
+void TurnGains(int port, float& lx, float& ly, float& rx, float& ry);
 
 // GameInfo hooks
 void Pad(int port, input::Pad& pad);  // from GameInfo::pad: in place of sticks::Apply, before menus::Pad

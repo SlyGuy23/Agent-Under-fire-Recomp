@@ -37,6 +37,13 @@ void Window(void* hwnd);
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);
 // a page is up: the game gets no input
 bool PageOpen();
+// The mouse cursor over the game's own menus (Ui each frame; the harness): where it is in console pixels (640x480),
+// whether it is over the console's frame, moved and the left button was clicked. On a menu with the cursor shown
+// (controls::MenuCursor) the row under it is selected as it moves there and a click accepts it (port 0's pad).
+void MouseCursor(float x, float y, bool over, bool moved, bool clicked);
+// the menus take the left button's clicks (the cursor shown on a menu, no page up): controls.cpp no longer makes
+// every click A then
+bool MouseClicks();
 // what the mission picked in the front end plays as (its pre-mission Controller Setup lists those controls)
 void SetMissionQuery(controls::Context (*query)());
 // START or Escape pressed on bond_eng.xbe's pause menu (any page, row or question of it): true once, for the game's
@@ -47,6 +54,9 @@ bool TakePauseClose();
 // the row the game has lit (-1 while one of its questions is up), and its >> marker drawn
 void DrivingPauseShown(int lit);
 void DrivingPauseMarker();
+// driving.xbe's "Are you sure?" question: its answer word (0 the first drawn, 1 the second) is being drawn now, lit or
+// not; -1 when it is done (for the mouse, which finds the words by the letters drawn in between)
+void DrivingQuestionWord(int word, bool lit);
 // a pause page (Controls, PC Settings) is up, or closing with the pause menu: the menu's rows and marker are not drawn
 bool PausePageUp();
 // the added row selected (an index of the labels), -1 while the game's own selection holds; the added rows' labels

@@ -15,6 +15,30 @@
 #include <algorithm>
 #include <cmath>
 
+// Local players. One player ([0x205408] <= 1, every mission) is player 0 on port 0. Multiplayer split screen has
+// [0x205408] local players, player p reading the pad of port [0x218464 + p*4] (0x1380E0) and its player object at
+// [[0x329390] + p*0x2E0 + 0x278]; the port's controls (controls.cpp) are built per port, port 0 being the keyboard
+// and mouse's as well.
+namespace {
+int32_t LocalPlayers(uint8_t* base) { return std::clamp(int32_t(X86_MEM32(0x205408)), 1, 4); }
+
+// the port local player p plays on
+int PortOf(uint8_t* base, int p) {
+    if (LocalPlayers(base) <= 1) return p == 0 ? 0 : -1;
+    const int32_t port = int32_t(X86_MEM32(0x218464 + uint32_t(p) * 4));
+    return port >= 0 && port < 4 ? port : -1;
+}
+
+// the local player whose player object this is, -1 for any other (a bot, an enemy)
+int LocalPlayerOf(uint8_t* base, uint32_t player) {
+    const uint32_t entities = X86_MEM32(0x329390);
+    if (!entities || !player) return -1;
+    for (int32_t n = 0, players = LocalPlayers(base); n < players; n++)
+        if (X86_MEM32(entities + uint32_t(n) * 0x2E0 + 0x278) == player) return n;
+    return -1;
+}
+}  // namespace
+
 // A (the action button) also reloads in the game: 0xB7390, the "use" function it calls, ends by reloading the weapon
 // in hand (0x742E0 for the weapon, at 0xB7D1D, then its vfunc +0x220) when nothing was used. With Reload bound on its
 // own (controls.cpp) the weapon looked up for that reload is none, so A only uses and opens things; everything
@@ -28,6 +52,20 @@ X86_FUNC(sub_000742E0) {
         return;
     }
     __imp__sub_000742E0(ctx, base);
+}
+
+// The port's reload request (game_info.cpp) is per local player: the game's one flag ([0x333524], which 0xBBD7C in
+// each player's button handler 0xBB990 checks and clears when it reloads) is set only while that player's handler runs,
+// so in split screen one player's reload never reloads another's gun. A request the handler took is done.
+X86_EXTERN_FUNC(__imp__sub_000BB990);
+X86_FUNC(sub_000BB990) {
+    constexpr uint32_t kReloadRequest = 0x333524;
+    const int p = LocalPlayerOf(base, ctx.ecx);
+    const bool wanted = p >= 0 && (controls::ReloadRequests() >> p & 1);
+    X86_MEM32(kReloadRequest) = wanted ? 1 : 0;
+    __imp__sub_000BB990(ctx, base);
+    if (wanted && X86_MEM32(kReloadRequest) == 0) controls::SetReloadRequested(p, false);
+    X86_MEM32(kReloadRequest) = 0;
 }
 
 // The frame time ([0x3B2420], what movement and everything timed runs on) comes from 0x1389F0, which with a
@@ -70,10 +108,11 @@ X86_FUNC(sub_000C5340) {
 // The game's auto-aim (0xB8BB0, the player's target search each think) bends the aim and the shots onto an enemy
 // while player+0x716 is set (at spawn: every difficulty but 00 Agent). With the keyboard and mouse and the port's
 // AUTO LOCK-ON off the search runs as if it were clear, so the aim follows the view; the byte is put back after, so
-// the option can come back on at any time.
+// the option can come back on at any time. In split screen only for the keyboard and mouse's player (port 0): the
+// controllers of the others keep the game's aim.
 X86_EXTERN_FUNC(__imp__sub_000B8BB0);
 X86_FUNC(sub_000B8BB0) {
-    if (!controls::AimAssistOff()) {
+    if (!controls::AimAssistOff() || PortOf(base, LocalPlayerOf(base, ctx.ecx)) != 0) {
         __imp__sub_000B8BB0(ctx, base);
         return;
     }
@@ -86,27 +125,42 @@ X86_FUNC(sub_000B8BB0) {
 
 // Stick sensitivity past 100% on foot: the game turns the view in proportion to the stick (0x24130 yaw, 0x24260 pitch,
 // at most 180 and 90 degrees a second times its look scale), so a stick can turn it no faster than full tilt does.
-// 0x24570 builds player p's command from the pad, turning the client view angles (0x2A8124 pitch, 0x2A8128 yaw; the
-// mouse look of game_info.cpp is already in them) by the stick on the way: what it turned player 0's view by is
-// scaled by the part of the stick's sensitivity the pad could not carry (controls::TurnGains). In manual aim (0x2A814C)
-// and on a mounted gun (the player's gentity flag 0x100) the game puts the angles back and aims with the left stick
-// (0x24310, 0x24490), otherwise the right stick's X turns and its Y looks up and down (the game's setup 1).
+// 0x24570 builds local player p's command from the pad ([esp+8] = p), turning the client view angles (0x2A8124 pitch,
+// 0x2A8128 yaw, +p*0x30; the mouse look of game_info.cpp is already in them) by the stick on the way: what it turned
+// the view by is scaled by the part of the stick's sensitivity the pad of p's port could not carry
+// (controls::TurnGains). In manual aim (0x2A814C) and on a mounted gun (the player's gentity flag 0x100) the game puts
+// the angles back and aims with the left stick (0x24310, 0x24490), otherwise the right stick's X turns and its Y looks
+// up and down (the game's setup 1).
+// Multiplayer split screen: with more than one local player the game takes each player's controller setup from the
+// multiplayer player options ([0x3B22A0 + p*0x3C], 0 by default: the left stick turns, the right one strafes) instead
+// of [0x205288], which game_info.cpp keeps at setup 1 for the missions. The port's controls (the remap, the keyboard's
+// WASD, the manual aim stick swap, the mouse as a stick) are all built on setup 1, so each player's command is built
+// with setup 1 as in the missions; the player's own value is put back after (it is the game's setting, saved with it).
 X86_EXTERN_FUNC(__imp__sub_00024570);
 X86_FUNC(sub_00024570) {
-    constexpr uint32_t kPitch = 0x2A8124, kYaw = 0x2A8128, kAiming = 0x2A814C, kGentities = 0x2A88A8;
-    float lx, ly, rx, ry;
-    controls::TurnGains(lx, ly, rx, ry);
-    const uint32_t player = X86_MEM32(ctx.esp + 8);
-    if (player != 0 || (lx == 1 && ly == 1 && rx == 1 && ry == 1)) {
+    constexpr uint32_t kPitch = 0x2A8124, kYaw = 0x2A8128, kAiming = 0x2A814C, kGentities = 0x2A88A8, kGentSize = 0x2A88AC;
+    constexpr uint32_t kSetups = 0x3B22A0, kSetupStride = 0x3C, kSetup1 = 1;
+    const uint32_t p = X86_MEM32(ctx.esp + 8);
+    const bool split = int32_t(X86_MEM32(0x205408)) > 1 && p < 4;
+    const uint32_t setup_at = kSetups + p * kSetupStride;
+    const uint32_t setup = split ? X86_MEM32(setup_at) : 0;
+    if (split) X86_MEM32(setup_at) = kSetup1;
+    float lx = 1, ly = 1, rx = 1, ry = 1;
+    const int port = p < 4 ? PortOf(base, int(p)) : -1;
+    if (port >= 0) controls::TurnGains(port, lx, ly, rx, ry);
+    if (lx == 1 && ly == 1 && rx == 1 && ry == 1) {
         __imp__sub_00024570(ctx, base);
-        return;
+    } else {
+        const uint32_t client = p * 0x30;
+        uint32_t gent = X86_MEM32(kGentities);
+        if (gent) gent += p * X86_MEM32(kGentSize);
+        const bool left = X86_MEM32(kAiming + client) != 0 || (gent && (X86_MEM32(gent + 8) & 0x100));
+        const float pitch = X86_MEMF32(kPitch + client), yaw = X86_MEMF32(kYaw + client);
+        __imp__sub_00024570(ctx, base);
+        X86_MEMF32(kYaw + client) = yaw + (X86_MEMF32(kYaw + client) - yaw) * (left ? lx : rx);
+        X86_MEMF32(kPitch + client) = pitch + (X86_MEMF32(kPitch + client) - pitch) * (left ? ly : ry);
     }
-    const uint32_t gent = X86_MEM32(kGentities);
-    const bool left = X86_MEM32(kAiming) != 0 || (gent && (X86_MEM32(gent + 8) & 0x100));
-    const float pitch = X86_MEMF32(kPitch), yaw = X86_MEMF32(kYaw);
-    __imp__sub_00024570(ctx, base);
-    X86_MEMF32(kYaw) = yaw + (X86_MEMF32(kYaw) - yaw) * (left ? lx : rx);
-    X86_MEMF32(kPitch) = pitch + (X86_MEMF32(kPitch) - pitch) * (left ? ly : ry);
+    if (split) X86_MEM32(setup_at) = setup;
 }
 
 // FIELD OF VIEW: 0xB5FB0, the player's end of frame, copies what the player sees into its playerState, the field of
@@ -196,11 +250,16 @@ X86_FUNC(sub_0015C920) {
 // crosshair_auto_aim_on, 0x201 crosshair_auto_aim_on_targeted (a larger cross, whenever the aim trace 0xB2750 meets an
 // enemy, locked on or not), 2 crosshair_manual, 0x107 crosshair_qcamera. With the keyboard and mouse the crosshair keeps
 // its normal size over an enemy: the targeted state is drawn as the normal one. The state itself is left as it was.
+// The element is +0x71F0 of local player n's HUD (0x2C2364 + n*0xD178, from 0x55583): in split screen only the
+// keyboard and mouse's player (port 0) gets it.
 X86_EXTERN_FUNC(__imp__sub_00051320);
 X86_FUNC(sub_00051320) {
     constexpr uint32_t kTargeted = 0x201, kNormal = 1;
+    constexpr uint32_t kHuds = 0x2C2364 + 0x71F0, kHudSize = 0xD178;
     const uint32_t state = X86_MEM32(ctx.esi + 0x2F0);
-    if (!state || X86_MEM32(state) != kTargeted || controls::ActiveDevice() != controls::Device::KeyboardMouse) {
+    const uint32_t hud = ctx.esi - kHuds;
+    const bool other = hud % kHudSize == 0 && hud / kHudSize < 4 && PortOf(base, int(hud / kHudSize)) != 0;
+    if (!state || X86_MEM32(state) != kTargeted || controls::ActiveDevice() != controls::Device::KeyboardMouse || other) {
         __imp__sub_00051320(ctx, base);
         return;
     }

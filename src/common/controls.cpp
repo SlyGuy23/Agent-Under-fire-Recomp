@@ -299,17 +299,21 @@ uint32_t g_prev_active = 0;  // port 0's controller inputs past kActive at the l
 uint32_t g_pad_suppressed[4] = {};
 CaptureRequest g_capture;
 std::atomic<bool> g_blocked{false}, g_cursor_wanted{false};
+// a menu is up (the front end, a pause menu: not play), and the mouse has moved on it since it came up: the cursor is
+// shown there (UpdateCursor) and the menus take its clicks (menus::MouseClicks)
+std::atomic<bool> g_menu_up{true}, g_menu_cursor{false};  // as g_last_state
 GameState (*g_state_query)() = nullptr;
-A (*g_fire_redirect)() = nullptr;
-void (*g_reload_request)() = nullptr;
-bool (*g_mounted_gun)() = nullptr;
-bool g_reload_held = false;
+A (*g_fire_redirect)(int port) = nullptr;
+void (*g_reload_request)(int port) = nullptr;
+bool (*g_mounted_gun)(int port) = nullptr;
+bool g_reload_held[4] = {};  // per port: in split screen each controller is a player of its own
+std::atomic<uint32_t> g_reloads{0};
 std::atomic<int> g_drive_mode{int(Context::Driving)};
 // the toggles: the console input as the player holds it last poll, and whether the game gets it held
 struct Toggle {
     bool held = false, on = false;
 };
-Toggle g_crouch, g_aim;
+Toggle g_crouch[4], g_aim[4];  // per port
 GameState g_last_state = GameState::Menu;
 constexpr int kLayout = 6;  // 6: mouse as a stick, the old defaults' axes given way; 5: on foot the game setup 1, new keys; 4:  // 4: RB cycles weapons;  // 3: reload on its own, X with the gadget, B crouching  // settings written before 2 had the game's stick layout as the on-foot default
 
@@ -436,6 +440,7 @@ void Switch(Device d) {
     if (d == Device::Controller) {
         g_look_dx = g_look_dy = 0;
         g_samples.clear();
+        g_menu_cursor = false;
     }
 }
 
@@ -563,11 +568,12 @@ void StickOut(const Inputs& out, A up, float& x, float& y, float* gx = nullptr, 
 }
 
 // what the hooks scale the game's own turning by, per console stick axis (TurnGains)
-std::atomic<float> g_turn[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // LX, LY, RX, RY
-void SetTurn(const float (&g)[4]) {
-    for (int i = 0; i < 4; i++) g_turn[i].store(g[i], std::memory_order_relaxed);
+std::atomic<float> g_turn[4][4] = {{1.0f, 1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f},
+                                   {1.0f, 1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f}};  // per port: LX, LY, RX, RY
+void SetTurn(int port, const float (&g)[4]) {
+    for (int i = 0; i < 4; i++) g_turn[port & 3][i].store(g[i], std::memory_order_relaxed);
 }
-void NoTurn() { SetTurn({1, 1, 1, 1}); }
+void NoTurn(int port) { SetTurn(port, {1, 1, 1, 1}); }
 
 // keys held together go no further than full tilt, the angle kept: W and D are half way up and right each
 void RoundStick(Inputs& in, A up) {
@@ -655,8 +661,10 @@ void ApplyToggle(Toggle& t, float& v) {
 }
 
 // what play adds on top of the bindings: the toggles on foot, and FIRE keys using a raised gadget (mouse_stick: the
-// keyboard and mouse, with the mouse's motion on a stick, MouseStick)
-void PlayExtras(Inputs& out, const Options& o, bool keyboard, bool mouse_stick = false) {
+// keyboard and mouse, with the mouse's motion on a stick, MouseStick). Each port has its own: in multiplayer split
+// screen every controller is a player of its own (the queries answer for the port's player, game_info.cpp).
+void PlayExtras(int port, Inputs& out, const Options& o, bool keyboard, bool mouse_stick = false) {
+    const int pi = port & 3;
     float reload = out.v[int(A::Reload)];
     out.v[int(A::Reload)] = 0;
     if (Ctx() == Context::OnRails) {
@@ -669,26 +677,26 @@ void PlayExtras(Inputs& out, const Options& o, bool keyboard, bool mouse_stick =
     {
         // the item in hand decides: a gadget is used (B), a weapon reloaded (the game's reload request; A would
         // use what is in front of the player as well)
-        bool gadget = g_fire_redirect && g_fire_redirect() == A::B;
+        bool gadget = g_fire_redirect && g_fire_redirect(port) == A::B;
         bool held = reload >= kPressed;
         if (gadget) out.v[int(A::B)] = std::max(out.v[int(A::B)], reload);
-        else if (held && !g_reload_held) {
-            if (g_reload_request) g_reload_request();
+        else if (held && !g_reload_held[pi]) {
+            if (g_reload_request) g_reload_request(port);
             else out.v[int(A::A)] = std::max(out.v[int(A::A)], reload);
         }
-        g_reload_held = held;
+        g_reload_held[pi] = held;
     }
     if ((keyboard || o.smart_fire) && g_fire_redirect) {
-        A to = g_fire_redirect();
+        A to = g_fire_redirect(port);
         if (to != A::None && to != A::RT) {
             out.v[int(to)] = std::max(out.v[int(to)], out.v[int(A::RT)]);
             out.v[int(A::RT)] = 0;
         }
     }
-    if (o.crouch_toggle) ApplyToggle(g_crouch, out.v[int(A::X)]);
-    else g_crouch = {};
-    if (o.aim_toggle) ApplyToggle(g_aim, out.v[int(A::LT)]);
-    else g_aim = {};
+    if (o.crouch_toggle) ApplyToggle(g_crouch[pi], out.v[int(A::X)]);
+    else g_crouch[pi] = {};
+    if (o.aim_toggle) ApplyToggle(g_aim[pi], out.v[int(A::LT)]);
+    else g_aim[pi] = {};
     // Manual aim moves the crosshair with the left stick and zooms with the right stick's Y; the player has it the
     // other way round, aiming with what looks (the right stick, as the modern layout turns with it) and zooming
     // with what moves forward and back: the two Y axes trade places while aiming.
@@ -696,7 +704,7 @@ void PlayExtras(Inputs& out, const Options& o, bool keyboard, bool mouse_stick =
     // places on it as well, so it aims with what looks. With the keyboard and mouse only when the mouse moves a
     // stick: looking straight into the view angles (TakeMouseLook) already aims the gun, which aims with the view.
     bool aiming = out.v[int(A::LT)] >= kPressed || out.v[int(A::RSClick)] >= kPressed;
-    bool mounted = (!keyboard || mouse_stick) && g_mounted_gun && g_mounted_gun();
+    bool mounted = (!keyboard || mouse_stick) && g_mounted_gun && g_mounted_gun(port);
     if (aiming || mounted) {
         // the crosshair is on the game's left stick in every setup, the zoom on its right stick's Y
         for (int i = 0; i < 4; i++) {
@@ -772,6 +780,8 @@ input::Pad MenuKeyboardPad(GameState st, int64_t now) {
     for (const MenuKey& m : kMenuKeys) {
         if (m.when == 1 && st != GameState::Menu) continue;
         if (m.when == 2 && st != GameState::Paused) continue;
+        // with the cursor shown the menus take the left button: a click on a row, not anywhere (menus.cpp)
+        if (m.key == kMouseLeft && menus::MouseClicks()) continue;
         if (KeyHeld(m.key, now)) out.v[int(m.action)] = 1;
     }
     return Build(out, false, true);
@@ -854,7 +864,13 @@ void OnMotion(int dx, int dy) {
     }
     g_motion += std::abs(dx) + std::abs(dy);
     if (g_motion >= kMouseSwitchCounts) KeyboardMouseUsed();
-    if (g_device != Device::KeyboardMouse || Blocked() || PageOpen()) return;
+    if (g_device != Device::KeyboardMouse || Blocked()) return;
+    // on a menu the mouse moves the cursor, and looks nowhere (the view does not jump when play comes back)
+    if (g_last_state != GameState::Playing) {
+        g_menu_cursor = true;
+        return;
+    }
+    if (PageOpen()) return;
     if (LookMode(now) == MouseLook::Direct) {
         g_look_dx += dx;
         g_look_dy += dy;
@@ -905,7 +921,7 @@ void SetDrivingMode(Context c) {
     if (c == Context::Driving || c == Context::OnRails) g_drive_mode.store(int(c));
 }
 
-void SetReloadRequest(void (*request)()) {
+void SetReloadRequest(void (*request)(int port)) {
     std::lock_guard lock(g_lock);
     g_reload_request = request;
 }
@@ -917,12 +933,12 @@ bool SeparateReload() {
     return Source(Context::OnFoot, A::Reload) != A::None;
 }
 
-void SetFireRedirect(Action (*query)()) {
+void SetFireRedirect(Action (*query)(int port)) {
     std::lock_guard lock(g_lock);
     g_fire_redirect = query;
 }
 
-void SetMountedGunQuery(bool (*query)()) {
+void SetMountedGunQuery(bool (*query)(int port)) {
     std::lock_guard lock(g_lock);
     g_mounted_gun = query;
 }
@@ -1047,6 +1063,7 @@ void EndCapture() {
 
 void SetGameInputBlocked(bool blocked) { g_blocked.store(blocked, std::memory_order_relaxed); }
 void SetCursorWanted(bool wanted) { g_cursor_wanted.store(wanted, std::memory_order_relaxed); }
+bool MenuCursor() { return g_menu_up.load() && g_menu_cursor.load() && g_device.load() == Device::KeyboardMouse; }
 
 bool TakeMouseLook(float& yaw_degrees, float& pitch_degrees) {
     std::lock_guard lock(g_lock);
@@ -1071,7 +1088,7 @@ void Pad(int port, input::Pad& pad) {
     // first: in driving.xbe the query also tells driving from on rails, whose options this poll then uses
     GameState st = State();
     const ContextState& s = g_state[int(Ctx())];
-    if (port == 0) NoTurn();  // until play builds the pad
+    NoTurn(port);  // until play builds the pad
     Inputs phys = Physical(pad);
     if (!pad.connected) phys = Inputs{};
     if (port == 0) ControllerActivity(pad, phys, s.options);
@@ -1099,8 +1116,13 @@ void Pad(int port, input::Pad& pad) {
     }
     if (port == 0 && st != g_last_state) {
         // from a menu into play or back: what is held now stays away from the game until let go (Escape closing
-        // the pause menu must not open it again)
+        // the pause menu must not open it again, the click on Continue Mission must not fire). The cursor goes
+        // until the mouse moves on the new menu, and the mouse's motion so far is dropped.
         g_last_state = st;
+        g_menu_up = st != GameState::Playing;
+        g_menu_cursor = false;
+        g_look_dx = g_look_dy = 0;
+        g_samples.clear();
         g_suppressed |= g_held;
         for (Wheel& w : g_wheels) w = {};
         uint32_t& sup = g_pad_suppressed[0];
@@ -1109,7 +1131,8 @@ void Pad(int port, input::Pad& pad) {
     }
     if (st != GameState::Playing) {
         // the menus: the controller as it is, the menu keys
-        if (st == GameState::Menu) g_crouch = g_aim = {};
+        if (st == GameState::Menu)
+            for (int i = 0; i < 4; i++) g_crouch[i] = g_aim[i] = {};
         if (port == 0 && g_keyboard && g_device == Device::KeyboardMouse) {
             pad = MenuKeyboardPad(st, now);
             return;
@@ -1134,13 +1157,13 @@ void Pad(int port, input::Pad& pad) {
     }
     if (port == 0 && g_keyboard && g_device == Device::KeyboardMouse) {
         Inputs out = KeyboardInputs(s, now);
-        PlayExtras(out, s.options, true, LookMode(now) == MouseLook::Stick);
+        PlayExtras(0, out, s.options, true, LookMode(now) == MouseLook::Stick);
         // the game skips a cutscene on A alone (its raw A bit): Enter, Space and left click do it too
         if (g_cutscene && g_cutscene() && (KeyHeld(kEnter, now) || KeyHeld(kSpace, now) || KeyHeld(kMouseLeft, now)))
             out.v[int(A::A)] = 1;
         float turn[4];
         pad = Build(out, kThisImage, true, &turn);
-        SetTurn(turn);
+        SetTurn(0, turn);
         return;
     }
     if (!pad.connected) {
@@ -1148,17 +1171,30 @@ void Pad(int port, input::Pad& pad) {
         return;
     }
     Inputs out = ControllerInputs(port, pad, s);
-    if (port == 0) PlayExtras(out, s.options, false);
+    // every port: in multiplayer split screen the controllers on the other ports are players of their own, with the
+    // same layout, toggles, gadget use and reload as player 1 (in single player only port 0's player is asked)
+    PlayExtras(port, out, s.options, false);
     float turn[4];
     pad = Build(out, sticks::g_modern && kThisImage, pad.connected, &turn);
-    if (port == 0) SetTurn(turn);
+    SetTurn(port, turn);
 }
 
-void TurnGains(float& lx, float& ly, float& rx, float& ry) {
-    lx = g_turn[0].load(std::memory_order_relaxed);
-    ly = g_turn[1].load(std::memory_order_relaxed);
-    rx = g_turn[2].load(std::memory_order_relaxed);
-    ry = g_turn[3].load(std::memory_order_relaxed);
+void TurnGains(int port, float& lx, float& ly, float& rx, float& ry) {
+    const auto& t = g_turn[port & 3];
+    lx = t[0].load(std::memory_order_relaxed);
+    ly = t[1].load(std::memory_order_relaxed);
+    rx = t[2].load(std::memory_order_relaxed);
+    ry = t[3].load(std::memory_order_relaxed);
+}
+
+void TurnGains(float& lx, float& ly, float& rx, float& ry) { TurnGains(0, lx, ly, rx, ry); }
+
+uint32_t ReloadRequests() { return g_reloads.load(std::memory_order_relaxed); }
+
+void SetReloadRequested(int player, bool requested) {
+    if (player < 0 || player > 3) return;
+    if (requested) g_reloads.fetch_or(1u << player, std::memory_order_relaxed);
+    else g_reloads.fetch_and(~(1u << player), std::memory_order_relaxed);
 }
 
 // ---- the settings file ----
@@ -1362,10 +1398,11 @@ void ResetAll() {
     g_prev_active = 0;
     std::fill(std::begin(g_pad_suppressed), std::end(g_pad_suppressed), 0u);
     g_capture = CaptureRequest{};
-    g_crouch = g_aim = {};
+    for (int i = 0; i < 4; i++) g_crouch[i] = g_aim[i] = {};
     g_last_state = GameState::Playing;
     g_blocked = false;
     g_cursor_wanted = false;
+    g_menu_up = g_menu_cursor = false;
 }
 
 }  // namespace testing
@@ -1450,13 +1487,15 @@ void RawMouse(LPARAM lp) {
 bool g_clipped = false;
 void UpdateCursor(HWND hwnd) {
     bool focused = GetForegroundWindow() == hwnd && !IsIconic(hwnd);
+    // on a menu (the front end, a pause menu) the cursor is let go, and shown once the mouse moves there
+    bool menu = g_menu_up.load();
     bool capture = g_device == Device::KeyboardMouse && !g_cursor_wanted.load(std::memory_order_relaxed) &&
-                   !overlay::Open() && !PageOpen() && focused;
+                   !overlay::Open() && !PageOpen() && !menu && focused;
     // over the game's window and no menu wanting it: hidden too, though the window is not (yet) the focused one, as
     // while a mission's window comes up
     POINT at{};
     bool over = GetCursorPos(&at) && WindowFromPoint(at) == hwnd;
-    bool free_cursor = g_cursor_wanted.load(std::memory_order_relaxed) || overlay::Open() || PageOpen();
+    bool free_cursor = g_cursor_wanted.load(std::memory_order_relaxed) || overlay::Open() || PageOpen() || MenuCursor();
     bool hide = capture || (g_device == Device::Controller && focused) || (over && !free_cursor);
     if (capture) {
         RECT r;
@@ -1528,6 +1567,7 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
         }
         case WM_INPUT:
             RawMouse(LPARAM(lp));
+            if (g_hidden && MenuCursor()) UpdateCursor(h);  // the cursor shown on a menu as soon as the mouse moves
             return false;  // DefWindowProc frees the input
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE) {
@@ -1549,7 +1589,14 @@ bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* resu
             *result = 0;
             return true;
         case WM_SETCURSOR:
-            if (!g_hidden || LOWORD(lp) != HTCLIENT) return false;
+            if (LOWORD(lp) != HTCLIENT) return false;
+            if (!g_hidden) {
+                // the arrow on a menu (the window's class has no cursor of its own)
+                if (!MenuCursor() || overlay::Open() || PageOpen()) return false;
+                SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                *result = TRUE;
+                return true;
+            }
             SetCursor(nullptr);
             *result = TRUE;
             return true;
