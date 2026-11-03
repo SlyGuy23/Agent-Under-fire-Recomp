@@ -26,3 +26,8 @@ settings.toml
 
 # Local temporary folder
 .local
+
+# player files beside a build
+/textures/
+/captures/
+/ROM/

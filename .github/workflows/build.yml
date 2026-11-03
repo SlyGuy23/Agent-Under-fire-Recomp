@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  PRIVATE_REPO: SlyGuy23/AUF-Recomp-Private
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -13,16 +16,23 @@ jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: read
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
+      # the game's own executables are not in this repository: they come from the private one, with a token that can
+      # read and write it (repository secret PRIVATE_REPO_TOKEN)
       - name: Game files
         shell: pwsh
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
+          if (-not $env:TOKEN) { Write-Error "PRIVATE_REPO_TOKEN is not set"; exit 1 }
+          git clone -q --depth 1 "https://x-access-token:$($env:TOKEN)@github.com/${{ env.PRIVATE_REPO }}.git" private
           New-Item -ItemType Directory -Force assets | Out-Null
-          foreach ($x in 'default.xbe', 'bond_eng.xbe', 'driving.xbe') { Copy-Item "xbe/$x" "assets/$x" }
+          foreach ($x in 'default.xbe', 'bond_eng.xbe', 'driving.xbe') { Copy-Item "private/xbe/$x" "assets/$x" }
+          Remove-Item -Recurse -Force private
 
       - name: Build
         shell: pwsh
@@ -30,10 +40,12 @@ jobs:
           cmd /c build.bat 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-      # a failed build's log on the ci-log branch, readable with plain git
+      # a failed build's log on the private repository's ci-log branch, readable with plain git
       - name: Publish log
         if: failure()
         shell: pwsh
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force logpub | Out-Null
           Copy-Item build.log logpub/ -ErrorAction SilentlyContinue
@@ -44,7 +56,7 @@ jobs:
           git config user.email "github-actions@users.noreply.github.com"
           git add -A
           git commit -qm "Failed build $($env:GITHUB_SHA.Substring(0,7))"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ci-log
+          git push -f "https://x-access-token:$($env:TOKEN)@github.com/${{ env.PRIVATE_REPO }}.git" ci-log
 
       - name: Package
         shell: pwsh
@@ -69,26 +81,18 @@ jobs:
           Compress-Archive -Path "$pkg/*" -DestinationPath AgentUnderFire.zip -CompressionLevel Optimal
           Get-ChildItem -Recurse $pkg | Format-Table FullName, Length
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AgentUnderFire
-          path: AgentUnderFire.zip
-
-  # the finished build on the `builds` branch (one force-pushed commit), fetchable with plain git
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: AgentUnderFire
+      # the finished build on the private repository's `builds` branch (one force-pushed commit): it holds the
+      # recompiled game, so it is never published here (no artifact either)
       - name: Push to builds
+        shell: pwsh
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          mkdir pub && cd pub && unzip -q ../AgentUnderFire.zip && cp ../AgentUnderFire.zip .
+          Copy-Item AgentUnderFire.zip pkg/
+          cd pkg
           git init -q -b builds
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git add -A && git commit -qm "Build ${GITHUB_SHA::7}"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" builds
+          git add -A
+          git commit -qm "Build $($env:GITHUB_SHA.Substring(0,7))"
+          git push -f "https://x-access-token:$($env:TOKEN)@github.com/${{ env.PRIVATE_REPO }}.git" builds

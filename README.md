@@ -17,26 +17,26 @@ That's all. Everything else lives in the `Game Files` folder: the game itself, `
 
 ## Features
 
-### Settings panel
-Press **F10**, or click **both sticks** on a controller, to open the settings panel. Left and Right change a setting; B, Escape or F10 closes it.
-- **Display** - Display mode, resolution (Fullscreen and Windowed; Borderless always uses the desktop), max frame rate, vertical sync and an FPS counter.
-- **Graphics** - Anisotropic filtering and anti-aliasing (FXAA, 2x or 4x supersampling).
-- **General** - Skip Intros starts straight at the game; master volume.
-- **Controls** - Modern Stick Response gives both sticks a round deadzone that keeps the stick's exact angle, in place of the game's per axis deadzone that snaps movement to eight directions; Stick Deadzone sets its size. The driving missions get the same, steering from the first movement past it.
-- **Textures** - Upscaled texture replacement, with the character, weapon and menu/HUD parts each on or off, and texture dumping.
+### PC Settings
+Everything is in **PC Settings** on the main menu and the pause menu, and in the settings panel (**F10**, or click **both sticks** on a controller; Left and Right change a setting, B, Escape or F10 closes it).
+- **Display** - Fullscreen, borderless or windowed, resolution, vertical sync, max frame rate and an FPS counter.
+- **Graphics** - Anisotropic filtering, anti-aliasing (FXAA, 2x or 4x supersampling) and menus in 4:3.
+- **General** - Skip Intros, master volume and field of view.
+- **Textures** - Upscaled texture replacement, with the character, weapon and menu/HUD parts each on or off, and texture dumping (PNG or DDS) for making your own packs.
+- **Accessibility** - Damage effects (the flash and view kick when hit) from full to off, and a dark or white flash.
 
-### Display
+### Controls
+- **Keyboard and mouse** with mouse look, rebindable keys for on foot, driving and on rails missions, and a mouse cursor in the menus.
+- **Controllers** - Xbox, PlayStation and Switch controllers, with hot plugging and rumble. Modern stick response (a round deadzone that keeps the stick's exact angle), sensitivity and inner and outer deadzones per stick, crouch and manual aim as hold or toggle.
+- **Controls** pages in the pause menu, with the controller and keyboard layout of the mission being played.
+- **On-screen prompts** follow the device in use, with keyboard keys in place of controller buttons.
+- **Multiplayer** - Split screen with up to four players; a keyboard and mouse player can play alongside controller players.
 
-
-### Graphics
-
-### Controller
-Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
-
-### General
+### Upscaled textures
+Texture packs go in `Game Files\textures\replacement`, each in a folder of its own. A folder whose name ends in `Only 4x` replaces textures only where the game says so (for example `AUF Evil Summit Only 4x`, used only in Evil Summit's cutscenes).
 
 ### Miscellaneous
-- **Frame Capture** - F3 saves the next frame, every draw and texture, into a `captures` folder beside the exe, for bug reports (`final_full.bmp` at the resolution it was drawn).
+- **Frame Capture** - F3 saves the next frame, every draw and texture, into `Game Files\captures`, for bug reports.
 - **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
 
 ## System Requirements
@@ -52,7 +52,7 @@ Supports Xbox, PlayStation and Switch controllers, with hot plugging and rumble.
 Clone this repository using [Git](https://git-scm.com/).
 
 ### 2. Add the Required Game Files
-Place your extracted game data files in the `assets` folder. `bond_eng.xbe` must be there, with the game's folders beside it.
+Copy `default.xbe`, `bond_eng.xbe` and `driving.xbe` from your own copy of the game into an `assets` folder in the repository (it is ignored by git).
 
 ### 3. Install Dependencies
 Install Visual Studio 2022 with **Desktop development with C++**, **C++ Clang tools for Windows** and **C++ CMake tools for Windows** (`build.bat` offers to add the last two).
@@ -68,6 +68,6 @@ Run `build.bat`. The first build recompiles the game and takes a while. The exe 
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) for the overridable function layout and instruction hooks.
 - [Zydis](https://github.com/zyantific/zydis) for decoding x86 instructions, [toml++](https://github.com/marzer/tomlplusplus) for the configs, [Dear ImGui](https://github.com/ocornut/imgui) for the settings overlay and [SDL](https://github.com/libsdl-org/SDL) for the window, input and controllers.
 
-## Status
+## Legal
 
-The intro films play and hand over to the game; the menus and on-foot missions are playable with a controller. The driving missions (`DRIVING.XBE`) are wired up but not yet tested. The previous sp00nznet xboxrecomp attempt is kept on the `xboxrecomp-legacy` branch.
+This is an unofficial fan project, not affiliated with or endorsed by Electronic Arts, MGM, Danjaq or Eon Productions. 007, James Bond and Agent Under Fire are trademarks of their respective owners. No game code, executables or assets are included in this repository: building or playing needs your own copy of the game.
