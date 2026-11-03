@@ -56,11 +56,13 @@ struct Layout {
 
 // a 2D menu draw: no program, the identity projection, float4 positions in stream 0 with a float4 colour and
 // coordinates beside them
-Layout MenuLayout(const gpu::State& s, uint32_t prim, uint32_t stride, uint32_t count) {
+// any_projection: also under a level's projection (the positions are screen positions all the same), as a match's own
+// screens are drawn
+Layout MenuLayout(const gpu::State& s, uint32_t prim, uint32_t stride, uint32_t count, bool any_projection = false) {
     static constexpr float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     Layout l;
     if (prim != kTriangleList || count < 6 || count % 6 || !s.vs || !s.vs->program.empty()) return l;
-    if (std::memcmp(s.transforms[3].data(), kIdentity, sizeof(kIdentity)) != 0) return l;
+    if (!any_projection && std::memcmp(s.transforms[3].data(), kIdentity, sizeof(kIdentity)) != 0) return l;
     const auto& pos = s.vs->inputs[0];
     const auto& tc = s.vs->inputs[9];
     if (pos.stream != 0 || pos.type != kFloat4 || tc.stream != 0 || (tc.type != kFloat4 && tc.type != kFloat2)) return l;
@@ -608,7 +610,8 @@ void StretchPanel(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count);
 // bond_eng.xbe's tabs' bar (untextured quads, a float4 colour after the position): the lit tab's light box (1), the
 // dark rest of the bar after it (2), else 0. On the game's own panel (y 111 to 131) or a page's stretched one.
 constexpr float kFootTabsLeft = 95;  // where the bar's first box starts
-int FootTabPiece(const gpu::State& s, const uint8_t* v, uint32_t stride, uint32_t count, Layout& l) {
+// (any: the light box and the dark pieces wherever they are on the bar)
+int FootTabPiece(const gpu::State& s, const uint8_t* v, uint32_t stride, uint32_t count, Layout& l, bool any = false) {
     if (count != 6 || s.textures[0] || !s.vs || !s.vs->program.empty()) return 0;
     int color = -1;
     for (int r = 1; r < 16; r++) {
@@ -621,8 +624,8 @@ int FootTabPiece(const gpu::State& s, const uint8_t* v, uint32_t stride, uint32_
     if (b.y0 < 70 || b.y0 > 115 || b.y1 < 100 || b.y1 > 135 || b.y1 - b.y0 < 15 || b.x1 < 200) return 0;
     auto c = ColorOf(v, stride, l);
     auto is = [&](float r, float g, float bl) { return Near(c[0], r, 0.06f) && Near(c[1], g, 0.06f) && Near(c[2], bl, 0.06f); };
-    if (is(0.565f, 0.796f, 0.961f) && b.x0 < 120) return 1;
-    if (is(0.082f, 0.086f, 0.251f) && b.x1 > 630) return 2;
+    if (is(0.565f, 0.796f, 0.961f) && (any || b.x0 < 120)) return 1;
+    if (is(0.082f, 0.086f, 0.251f) && (any || b.x1 > 630)) return 2;
     return 0;
 }
 
@@ -633,6 +636,35 @@ void SpanX(uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, float x
         float& x = At(v, stride, i, l.pos)[0];
         x = x < (b.x0 + b.x1) / 2 ? x0 : x1;
     }
+}
+
+// the tabs' bar's light box as last drawn, and the frame (plus one) it was drawn in
+std::atomic<float> g_tab_box_x0{0}, g_tab_box_x1{0};
+std::atomic<uint64_t> g_tab_box_seen{0};
+
+// bond_eng.xbe's pause menu, its tabs' bar (on a page after its stretch and the layout tab's box): the dark pieces
+// either side of the lit tab's light box end where the box starts and start where it ends. The box is see-through,
+// and the dark piece left of OBJECTIVES' box reached 16 pixels into it (a darker strip at the box's left edge), the
+// others a pixel. The box is drawn after the piece left of it: its place in the frame before counts for that one, when
+// it starts near that piece's end (a tab just selected keeps the game's piece for a frame).
+void FootTabBar(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
+    if (prim != kTriangleList || count != 6 || s.textures[0] || !s.vs || !s.vs->program.empty()) return;
+    const auto& pos = s.vs->inputs[0];
+    if (pos.stream != 0 || pos.type != kFloat4 || pos.offset + 16 > stride) return;
+    Layout l;
+    l.pos = pos.offset;
+    int piece = FootTabPiece(s, v, stride, count, l, true);
+    if (!piece) return;
+    Box b = BoxOf(v, stride, l, 0, count);
+    if (piece == 1) {
+        g_tab_box_x0.store(b.x0), g_tab_box_x1.store(b.x1);
+        g_tab_box_seen.store(Frame() + 1);
+        return;
+    }
+    if (!Recent(g_tab_box_seen.load())) return;
+    float x0 = g_tab_box_x0.load(), x1 = g_tab_box_x1.load();
+    if (b.x0 < x0 - 0.5f && b.x1 > x0 && b.x1 - x0 < 24) SpanX(v, stride, l, count, b.x0, x0);
+    else if (b.x1 > x1 + 0.5f && b.x0 < x1 && x1 - b.x0 < 24) SpanX(v, stride, l, count, x1, b.x1);
 }
 
 bool PausePanelDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
@@ -662,6 +694,12 @@ bool PausePanelDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t str
     bool marker = count == 6 && TextureSize(s, 64, 64) && Near(b.x0, kMarkerX, 3);
     bool words = glyphs && s.textures[0] && TextureSize(s, 256, 128) && b.y0 < kFootWordsEnd;
     if (marker || words) {
+        Hide(v, stride, l, count);
+        return true;
+    }
+    // the Lives Remaining bar's top line and its dark box (its words gone): a light line across the page above the
+    // prompts' bar, and a darker band under it; the moving background runs down to the prompts' bar instead
+    if (count == 6 && !s.textures[0] && b.y0 > 286 && b.y1 < 316 && b.x0 >= 150 && b.x1 <= 570) {
         Hide(v, stride, l, count);
         return true;
     }
@@ -720,6 +758,8 @@ bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, flo
                 float alpha);
 void LabelQuad(float x0, float y0, float x1, float y1);
 uint64_t StageKey(const gpu::State& s);
+bool PromptPicture(const gpu::State& s, float u0, float v0, float u1, float v1);
+float PromptToWords(float x0, float y0, float x1, float y1, float picture_mid);
 
 // the stream i vertices of the draw whose stream 0 vertices are v
 uint8_t* StreamOf(const gpu::State& s, const uint8_t* v, int i) {
@@ -782,6 +822,8 @@ bool DrivingPanelPiece(const gpu::State& s, uint8_t* v, uint32_t stride, bool pa
             float to0 = x0 - 2, to1 = x1 > 600 ? 640.0f : x1 + 2;
             if (layout) to0 = t0 < 100 ? to0 : t0, to1 = t1;  // the first tab keeps its left end
             span(to0, to1);
+            g_tab_box_x0.store(to0), g_tab_box_x1.store(to1);
+            g_tab_box_seen.store(Frame() + 1);
             return false;
         }
         if (near(c0, 0xDA181832u)) {
@@ -794,6 +836,13 @@ bool DrivingPanelPiece(const gpu::State& s, uint8_t* v, uint32_t stride, bool pa
             }
             // the dark rest of the bar right of the box: from the layout tab's box on
             if (layout && x1 > 630 && x0 > 100) span(t1, x1);
+            // and no piece reaching into the box (it is see-through: a darker strip along its edge), the box drawn
+            // before them
+            if (Recent(g_tab_box_seen.load())) {
+                float b0 = g_tab_box_x0.load(), b1 = g_tab_box_x1.load();
+                if (x0 < b0 - 0.5f && x1 > b0 && x1 - b0 < 24) span(x0, b0);
+                else if (x1 > b1 + 0.5f && x0 < b1 && b1 - x0 < 24) span(b1, x1);
+            }
             return x0 > 600 && w < 30;
         }
         return false;
@@ -828,6 +877,23 @@ bool DrivingPanelPiece(const gpu::State& s, uint8_t* v, uint32_t stride, bool pa
             std::memcpy(ci, &c, 4);
         }
     }
+    if (glow && !page) {
+        // the MISSION page (and the other tabs): the background stronger, and moving as on foot (where two copies of a
+        // picture fade into each other): each corner's strength rises and falls in turn, so the light goes round the
+        // panel. The game's is a flat light blue (a quarter's strength), barely there.
+        constexpr float kStrength = 2.6f, kSwing = 0.35f, kSpeed = 0.9f;
+        constexpr float kPhase[4] = {0, 1.5708f, 4.7124f, 3.1416f};  // the fan's corners: top left, top right, bottom left, bottom right
+        float t = float(double(NowMs() % 600000) / 1000.0);
+        for (uint32_t i = 0; i < 4; i++) {
+            uint8_t* ci = col + i * s.streams[1].stride;
+            uint32_t c;
+            std::memcpy(&c, ci, 4);
+            float k = kStrength * (1 + kSwing * std::sin(t * kSpeed + kPhase[i]));
+            uint32_t a = std::min<uint32_t>(255, uint32_t(float(c >> 24) * k + 0.5f));
+            c = (c & 0x00FFFFFFu) | (a << 24);
+            std::memcpy(ci, &c, 4);
+        }
+    }
     return false;
 }
 
@@ -856,6 +922,12 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
         return;
     }
     if (page && (Paused() || Closing()) && InPanel(kDrivePanel, x0, y0, y1)) {
+        // the Lives Remaining bar's box and its top line (its words gone): a grey band with a light line across the
+        // page above the prompts' bar; the page's moving background runs down to that bar instead (DrivingPageGlow)
+        if (!s.textures[0] && x0 >= 155 && x1 <= 565 && y0 >= 282 && y1 <= 311) {
+            collapse();
+            return;
+        }
         bool word = false;
         if (KeepsSize(x1 - x0, y1 - y0) && y0 < kDriveWordsEnd && TextureSize(s, 256, 256)) {
             uint64_t key = StageKey(s);
@@ -875,12 +947,27 @@ void DrivingPauseDraw(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t s
             y0 = StretchY(kDrivePanel, y0), y1 = StretchY(kDrivePanel, y1);
         }
     }
+    // "Are you sure?" up: B BACK (the B picture at x 110, its word and the word's shadow) nearer SELECT, as far from
+    // its A picture as SELECT is from the prompt after it on the MISSION page (49 pixels); it sat out by the panel's
+    // curve, 82 from it
+    if ((Paused() || Closing()) && !page && Recent(g_drive_seen.load()) && g_drive_lit.load() < 0 && s.textures[0] &&
+        KeepsSize(x1 - x0, y1 - y0) && x0 >= 105 && x1 <= 205 && y0 > 311 && y1 < 340) {
+        constexpr float kBackShift = 33;
+        for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[0] += kBackShift;
+        x0 += kBackShift, x1 += kBackShift;
+    }
     // a button prompt (coordinates in stream 2)
     if (const uint8_t* tc = StreamOf(s, v, 2); tc && s.streams[2].stride >= 8) {
         float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
         for (uint32_t i = 0; i < 4; i++) {
             const float* t = reinterpret_cast<const float*>(tc + i * s.streams[2].stride);
             u0 = std::min(u0, t[0]), u1 = std::max(u1, t[0]), v0 = std::min(v0, t[1]), v1 = std::max(v1, t[1]);
+        }
+        // a pause screen's prompt picture on its words' middle line (each picture fills its quad)
+        if ((Paused() || Closing()) && PromptPicture(s, u0, v0, u1, v1)) {
+            float dy = PromptToWords(x0, y0, x1, y1, (y0 + y1) / 2);
+            for (uint32_t i = 0; i < 4; i++) At(v, stride, i, 0)[1] += dy;
+            y0 += dy, y1 += dy;
         }
         float alpha = 1;
         if (const uint8_t* col = StreamOf(s, v, 1); col && s.streams[1].stride >= 4) {
@@ -997,6 +1084,16 @@ std::atomic<uint64_t> g_prompts_seen{0};
 // driving.xbe quitting a mission (src/driving/hooks.cpp): the frames from the answer on, and when the last one ended
 std::atomic<uint64_t> g_hold_seen{0};
 std::atomic<int64_t> g_hold_at{0};
+// and each of those frames with what its fade to black left of the pause screen's picture (1 the picture whole, before
+// the fade starts; 0 black, a frame after it without the fade's quad). The prompts the pause screen showed last are
+// kept for them (the game draws its picture again, not its prompts).
+struct HoldFrame {
+    uint64_t frame = ~0ull;
+    float left = 1;
+};
+std::array<HoldFrame, 8> g_hold_frames;
+bool g_hold_faded = false;  // the fade has started (g_prompt_lock)
+std::vector<PromptRect> g_prompts_held;
 
 bool Keyboard() { return controls::ActiveDevice() == controls::Device::KeyboardMouse; }
 
@@ -1035,6 +1132,19 @@ uint64_t StageKey(const gpu::State& s) {
     if (cache.size() > 4096) cache.clear();
     cache[id] = key;
     return key;
+}
+
+// a prompt's picture (one the keys stand in for) is drawn with these coordinates (0 to 1)
+bool PromptPicture(const gpu::State& s, float u0, float v0, float u1, float v1) {
+    uint64_t key = StageKey(s);
+    if (!key) return false;
+    gpu::TextureDesc d;
+    gpu::Describe(s.textures[0], d);
+    float tu0 = u0 * float(d.width), tu1 = u1 * float(d.width), tv0 = v0 * float(d.height), tv1 = v1 * float(d.height);
+    for (const PromptPart& p : kPrompts)
+        if (p.key == key && (p.u0 < 0 || (Near(tu0, p.u0, 2) && Near(tu1, p.u1, 2) && Near(tv0, p.v0, 2) && Near(tv1, p.v1, 2))))
+            return true;
+    return false;
 }
 
 // a prompt picture drawn: kept for the pages to draw the key over, true when the game's should go
@@ -1161,10 +1271,24 @@ bool Labelled(const PromptRect& p, float* mid = nullptr) {
     float cy = (p.y0 + p.y1) / 2;
     for (const LabelRect& r : list)
         if (r.x0 >= p.x1 - 2 && r.x0 <= p.x1 + 30 && r.y0 < cy && r.y1 > cy && r.y1 - r.y0 > 4) {
-            if (mid) *mid = (r.y0 + r.y1) / 2;
+            // the middle of the letters themselves: driving.xbe's sit in the lower part of their quads (a 15.3 pixel
+            // quad, the letters' middle 2 below its own), bond_eng.xbe's in the upper (0.7 above its middle)
+            constexpr float kInk = kDrivingImage ? 0.135f : -0.06f;
+            if (mid) *mid = (r.y0 + r.y1) / 2 + (r.y1 - r.y0) * kInk;
             return true;
         }
     return false;
+}
+
+// how far a pause menu's prompt picture (x0..y1 its quad, picture_mid the middle line of what it shows, console
+// pixels) moves down to sit on its words' middle line, by the words of the frame before (0 without words beside it).
+// The game's sat a little high: on foot the D-pads 2 pixels and A 1, driving and rails A and B 2.5 to 3.5 and the
+// D-pads 1, which the PC's resolutions show.
+float PromptToWords(float x0, float y0, float x1, float y1, float picture_mid) {
+    float mid = 0;
+    if (!Labelled({Prompt::A, x0, y0, x1, y1}, &mid)) return 0;
+    float dy = mid - picture_mid;
+    return std::abs(dy) < 6 ? dy : 0;
 }
 
 // the frame being shown has this seen mark (a frame number plus one, as the draws store them): the overlays that
@@ -1175,13 +1299,29 @@ bool Labelled(const PromptRect& p, float* mid = nullptr) {
 // the prompts of the frame being shown
 [[maybe_unused]] std::vector<PromptRect> ShownPrompts() {
     std::lock_guard l(g_prompt_lock);
-    // quitting a driving or on-rails mission (from the frame Quit Mission's Yes is taken, src/driving/hooks.cpp): no
-    // keys at all. They were kept over the pause picture while it faded, but on the PC the screen can be black through
-    // that fade (the user saw the three keys over black, dim), so they go with the answer.
-    if (Recent(g_hold_seen.load()) && NowMs() - g_hold_at.load() < 2000) return {};
     uint64_t shown = app::g_shown_frame.load();
     const FramePrompts& fp = g_prompt_frames[shown % g_prompt_frames.size()];
-    if (fp.frame == shown && !fp.list.empty()) return fp.list;
+    const bool own = fp.frame == shown && !fp.list.empty();
+    // quitting a driving or on-rails mission (from the frame Quit Mission's Yes is taken, src/driving/hooks.cpp): the
+    // pause screen's picture stays up and fades to black, its words with it, so the keys fade with that frame's fade
+    // (the prompts it last showed); none over a frame of the quit that has no picture (after the fade: black), and none
+    // once the game has stopped ending frames for the quit
+    if (Recent(g_hold_seen.load()) || (g_hold_at.load() && NowMs() - g_hold_at.load() < 2000)) {
+        if (NowMs() - g_hold_at.load() > 250) return {};
+        const HoldFrame& hf = g_hold_frames[shown % g_hold_frames.size()];
+        if (hf.frame == shown) {
+            if (hf.left < 0.03f) return {};
+            std::vector<PromptRect> held = own ? fp.list : g_prompts_held;
+            for (PromptRect& p : held) p.alpha *= hf.left;
+            return held;
+        }
+        // a frame from before the answer (still on its way to the screen): its own prompts, as before
+        if (!own) return {};
+    }
+    if (own) {
+        g_prompts_held = fp.list;
+        return fp.list;
+    }
     return {};
 }
 
@@ -1298,6 +1438,45 @@ void Take(input::Pad& p, int dir) {
 
 }  // namespace
 
+// A multiplayer match's respawn screen (the scores, "Press A to Join" under them) is drawn under the level's projection,
+// so its A button was neither keyed nor hidden. When it is drawn in the view of the player port 0 (the keyboard and
+// mouse) plays, it is a prompt as any other, and Enter (Space, a left click) gives that player A meanwhile (RespawnUp).
+std::atomic<uint64_t> g_respawn_seen{0};
+
+// the screen rectangle (console pixels) of the view of the local player port 0 plays; false when none plays it
+bool PortZeroView(float& x0, float& y0, float& x1, float& y1) {
+    // the local players: those of [0x205408] (bots counted too) with a port in [0x218464 + p*4] (-1 for a bot)
+    constexpr uint32_t kPlayers = 0x205408, kPorts = 0x218464;
+    int32_t all = std::min(int32_t(kernel::R32(kPlayers)), 4), players = 0, p = -1;
+    for (int32_t i = 0; i < all; i++) {
+        uint32_t port = kernel::R32(kPorts + uint32_t(i) * 4);
+        if (port > 3) continue;
+        if (port == 0) p = players;
+        players++;
+    }
+    if (all <= 1) p = 0, players = 1;
+    if (p < 0) return false;
+    x0 = 0, y0 = 0, x1 = 640, y1 = 480;
+    if (players == 2) y0 = p ? 240.0f : 0.0f, y1 = y0 + 240;
+    if (players >= 3) x0 = p % 2 ? 320.0f : 0.0f, x1 = x0 + 320, y0 = p / 2 ? 240.0f : 0.0f, y1 = y0 + 240;
+    return true;
+}
+
+void RespawnPrompt(const gpu::State& s, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
+    if (count != 6 || controls::CurrentGameState() != controls::GameState::Playing || !TextureSize(s, 32, 64) ||
+        StageKey(s) != 0x94de8205578ce49full)
+        return;
+    Layout l = MenuLayout(s, prim, stride, count, true);
+    if (!l.ok) return;
+    Box b = BoxOf(v, stride, l, 0, count);
+    float x0, y0, x1, y1, cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    if (!PortZeroView(x0, y0, x1, y1) || cx < x0 || cx > x1 || cy < y0 || cy > y1) return;
+    g_respawn_seen.store(Frame() + 1);
+    auto pc = ColorOf(v, stride, l);
+    if (PromptQuad(s, b.x0, b.y0, b.x1, b.y1, b.u0, b.v0, b.u1, b.v1, pc[3] * std::clamp(std::max({pc[0], pc[1], pc[2]}), 0.0f, 1.0f)))
+        Hide(v, stride, l, count);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 
 void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_t count) {
@@ -1311,8 +1490,12 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
     if ((DrawPaused() || Closing()) && PausePage() && PausePanelDraw(s, prim, v, stride, count)) return;
     // the pause menu's question: its band moved up with the rows
     if (DrawPaused() && !PausePage() && QuestionDrawn() && QuestionBand(s, v, stride, count)) return;
+    if (DrawPaused() || Closing()) FootTabBar(s, prim, v, stride, count);
     Layout l = MenuLayout(s, prim, stride, count);
-    if (!l.ok) return;
+    if (!l.ok) {
+        RespawnPrompt(s, prim, v, stride, count);
+        return;
+    }
     Box b = BoxOf(v, stride, l, 0, count);
 
     // the lettering's black shadow copy, a console pixel down and right: at PC resolutions that is a hard dark edge
@@ -1348,6 +1531,19 @@ void Draw(const void* state, uint32_t prim, uint8_t* v, uint32_t stride, uint32_
         b.y0 > 300 && b.y1 < 345)
         g_question_seen.store(Frame() + 1);
 
+    // a pause menu's prompt picture on its words' middle line, and the two D-pad pictures (the pause menu's own 32x32
+    // sheet) the same size, 17 by 16 (CHANGE PAGE's was drawn a pixel wider than SCROLL's); what they show sits half a
+    // texel above their quad's middle
+    if (count == 6 && DrawPaused() && PromptPicture(s, b.u0, b.v0, b.u1, b.v1)) {
+        bool pad = StageKey(s) == 0x7e8cc44b3a0258fcull;
+        if (pad && b.x1 - b.x0 > 17.5f) {
+            float cx = (b.x0 + b.x1) / 2;
+            SpanX(v, stride, l, count, cx - 8.5f, cx + 8.5f);
+        }
+        float pic = (b.y0 + b.y1) / 2 - (pad ? (b.y1 - b.y0) / 30 : 0);
+        MoveY(v, stride, l, count, PromptToWords(b.x0, b.y0, b.x1, b.y1, pic));
+        b = BoxOf(v, stride, l, 0, count);
+    }
     // a button prompt: the keyboard's key in its place while the keyboard and mouse play
     // (how much of it shows: its colour's alpha, and its brightness, should the game darken it to black instead)
     auto pc = ColorOf(v, stride, l);
@@ -1601,6 +1797,7 @@ void AfterDraw(const void* state, uint32_t prim, const uint8_t* v, uint32_t stri
 }
 
 bool PageOpen() { return g_page.load() != Page::None; }
+bool RespawnUp() { return kMenus && Recent(g_respawn_seen.load()); }
 
 void DrivingPauseShown(int lit) {
     g_drive_seen.store(Frame() + 1);
@@ -1614,8 +1811,22 @@ const char* PauseExtraLabel(int row) { return row >= 0 && row < kPauseExtraRows 
 float DrivingPauseLift() { return kDriveLift; }
 
 void HoldPrompts() {
+    {
+        std::lock_guard l(g_prompt_lock);
+        uint64_t f = Frame();
+        if (!Recent(g_hold_seen.load())) g_hold_faded = false;  // a new quit
+        HoldFrame& hf = g_hold_frames[f % g_hold_frames.size()];
+        if (hf.frame != f) hf = {f, g_hold_faded ? 0.0f : 1.0f};  // no fade drawn in this frame
+    }
     g_hold_seen.store(Frame() + 1);
     g_hold_at.store(NowMs());
+}
+void ScreenFade(float left) {
+    std::lock_guard l(g_prompt_lock);
+    uint64_t f = Frame();
+    if (!Recent(g_hold_seen.load())) return;  // not a quit's
+    g_hold_faded = true;
+    g_hold_frames[f % g_hold_frames.size()] = {f, std::clamp(left, 0.0f, 1.0f)};
 }
 
 void SetMissionQuery(controls::Context (*query)()) { g_mission_query = query; }
@@ -2756,11 +2967,11 @@ void PanelBackground(ImDrawList* dl, float x0, float y0, float x1, float y1) {
 // PanelBackground), under the page's words. The game's own (a 256x256 picture, 4a7ca93e) is barely there at its
 // strength: on the page's grid it read as no background at all. Over the inside of the stretched panel only: from the
 // tabs' bar (its bottom at y 97.6) down to the prompts' bar (its top at 376.2), its left side the slant the game's
-// background has (x 60 at y 65.1 to x 100 at 380.2, inside the curve), and round the Lives Remaining / Mission Duration
-// bar (x 160 to 560 from y 334.4), which stays drawn (its words hidden) and is not covered.
+// background has (x 60 at y 65.1 to x 100 at 380.2, inside the curve), over the place of the Lives Remaining / Mission
+// Duration bar too (x 160 to 560 from y 334.4: on a page its box and top line are not drawn, DrivingPauseDraw).
 void DrivingPageGlow(ImDrawList* dl) {
     if (!g_glow.ready) return;
-    constexpr float kTop = 97.6f, kBottom = 380.2f, kEnd = 376.2f, kBarTop = 334.4f, kBarX0 = 160, kBarX1 = 560;
+    constexpr float kTop = 97.6f, kBottom = 380.2f, kEnd = 376.2f;
     constexpr float kRight = 640, kSlantY0 = 65.1f, kSlantX0 = 60, kSlantX1 = 100;
     auto left = [](float y) { return kSlantX0 + (kSlantX1 - kSlantX0) * (y - kSlantY0) / (kBottom - kSlantY0); };
     float t = float(double(NowMs() % 600000) / 1000.0);
@@ -2780,10 +2991,7 @@ void DrivingPageGlow(ImDrawList* dl) {
                              uv(p1.x, p1.y, k), uv(p2.x, p2.y, k), uv(p3.x, p3.y, k), col);
         }
     };
-    // above the bar, then left and right of it
-    quad({left(kTop), kTop}, {kRight, kTop}, {kRight, kBarTop}, {left(kBarTop), kBarTop});
-    quad({left(kBarTop), kBarTop}, {kBarX0, kBarTop}, {kBarX0, kEnd}, {left(kEnd), kEnd});
-    quad({kBarX1, kBarTop}, {kRight, kBarTop}, {kRight, kEnd}, {kBarX1, kEnd});
+    quad({left(kTop), kTop}, {kRight, kTop}, {kRight, kEnd}, {left(kEnd), kEnd});
 }
 
 // the keyboard's keys over the prompts the game drew this frame

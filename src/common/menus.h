@@ -37,6 +37,8 @@ void Window(void* hwnd);
 bool Message(void* hwnd, uint32_t msg, uintptr_t wp, intptr_t lp, intptr_t* result);
 // a page is up: the game gets no input
 bool PageOpen();
+// a multiplayer match's respawn screen (Press A to Join) shows for the player port 0 plays
+bool RespawnUp();
 // The mouse cursor over the game's own menus (Ui each frame; the harness): where it is in console pixels (640x480),
 // whether it is over the console's frame, moved and the left button was clicked. On a menu with the cursor shown
 // (controls::MenuCursor) the row under it is selected as it moves there and a click accepts it (port 0's pad).
@@ -66,7 +68,9 @@ const char* PauseExtraLabel(int row);
 // how far driving.xbe's pause rows and marker are moved up, in console pixels (640x480)
 float DrivingPauseLift();
 // driving.xbe quitting a mission (src/driving/hooks.cpp, each frame from the answer on): the keyboard's keys over the
-// pause screen's prompts are not drawn from then on
+// pause screen's prompts stay with its picture, and fade with it as the screen fades to black (left: what the fade
+// leaves of the picture, 1 to 0, each frame of the fade)
 void HoldPrompts();
+void ScreenFade(float left);
 
 }  // namespace menus

@@ -264,7 +264,9 @@ void Init() {
         controls::SetMountedGunQuery(MountedGun);
         controls::SetSplitPauseQuery(SplitPauseMenu);
         controls::SetReloadRequest(ReloadRequest);
-        controls::SetCutsceneQuery(Cutscene);
+        // Enter, Space and a left click give A in a cutscene, and on a match's respawn screen (Press A to Join) shown
+        // for the keyboard's player
+        controls::SetCutsceneQuery([] { return Cutscene() || menus::RespawnUp(); });
         menus::SetMissionQuery(PickedMission);
     }
     if (std::string_view(IMAGE_XBE) == "driving.xbe") {
