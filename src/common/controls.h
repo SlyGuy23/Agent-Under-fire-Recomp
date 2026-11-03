@@ -100,6 +100,13 @@ void SetFireRedirect(Action (*query)(int port));
 void SetReloadRequest(void (*request)(int port));
 // on foot: true while the port's player is on a mounted gun (game_info.cpp), which the game aims with its left stick
 void SetMountedGunQuery(bool (*query)(int port));
+// on foot, multiplayer split screen: a player's own pause menu (the match goes on, so the game state stays Playing).
+// The query gives the local player on that port with its pause menu up (-1 for none) and whether the menu is on its
+// first page. That port then gets the menu input, as the one-player pause menu does: no remap, the menu keys; START
+// (Escape) shuts the menu from any page, B (Backspace, right click) goes back and on the first page shuts it. A shut
+// is asked for here and done by src/game/pause.cpp in that player's menu tick (TakeSplitPauseClose).
+void SetSplitPauseQuery(int (*query)(int port, bool* first_page));
+bool TakeSplitPauseClose(int player);
 // on foot, the device in use has Reload bound: A (action) no longer reloads (src/game/hooks.cpp)
 bool SeparateReload();
 // on foot: the local players (a bit each) with a reload asked for. The game has one request for everyone

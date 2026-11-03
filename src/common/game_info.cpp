@@ -38,6 +38,11 @@
 #include <chrono>
 #include <thread>
 
+// driving.xbe's film player (0xD3910) is running a film: src/driving/hooks.cpp counts its calls in and out
+std::atomic<int> g_driving_film{0};
+void DrivingFilm(bool start) { g_driving_film.fetch_add(start ? 1 : -1); }
+bool DrivingFilmPlaying() { return g_driving_film.load() > 0; }
+
 namespace {
 
 constexpr const char* kGameExe = "AgentUnderFireGame";
@@ -152,6 +157,7 @@ controls::Action FireRedirect(int port);
 bool MountedGun(int port);
 void ReloadRequest(int port);
 int LocalPlayer(int port);
+int SplitPauseMenu(int port, bool* first_page);
 bool Cutscene();
 bool DrivingCutscene();
 controls::Context PickedMission();
@@ -256,6 +262,7 @@ void Init() {
         controls::SetGameStateQuery(OnFootState);
         controls::SetFireRedirect(FireRedirect);
         controls::SetMountedGunQuery(MountedGun);
+        controls::SetSplitPauseQuery(SplitPauseMenu);
         controls::SetReloadRequest(ReloadRequest);
         controls::SetCutsceneQuery(Cutscene);
         menus::SetMissionQuery(PickedMission);
@@ -385,6 +392,23 @@ void MouseLook(int port) {
 // The local player a controller port plays (0 to 3), -1 for none. One player ([0x205408] <= 1, every mission): port
 // 0's, player 0, as before. Multiplayer split screen: [0x205408] local players, player p reading the pad of port
 // [0x218464 + p*4] (0x1380E0); the first to join is player 0 whichever port it pressed A on.
+// Split screen pause: START opens a pause menu for that player alone (0x265C0) while the match goes on ([0x3B2428]
+// stays 0): [0x3B2200 + p*0x10] = 3 until it shuts (0x34040 puts back 1). Its screen [0x3B2204 + p*0x10] (7 for
+// player 0, 8 for player 1) runs on the menu manager [0x2A9724 + (screen - 1)*4] (0x33920), whose current page
+// ((+0x44 - +0x14) / 0x3F8) is 1 on the first page (PAUSE MENU), 2 on OPTIONS.
+// The local player on the port with its menu up, -1 for none.
+int SplitPauseMenu(int port, bool* first_page) {
+    if (int32_t(kernel::R32(0x205408)) <= 1 || !kernel::R32(0x2A88B8)) return -1;
+    const int p = LocalPlayer(port);
+    if (p < 0 || kernel::R32(0x3B2200 + uint32_t(p) * 0x10) != 3) return -1;
+    if (first_page) {
+        const uint32_t screen = kernel::R32(0x3B2204 + uint32_t(p) * 0x10);
+        uint32_t m = screen >= 1 && screen <= 19 ? kernel::R32(0x2A9724 + (screen - 1) * 4) : 0;
+        *first_page = GuestPointer(m) && (kernel::R32(m + 0x44) - kernel::R32(m + 0x14)) / 0x3F8 == 1;
+    }
+    return p;
+}
+
 int LocalPlayer(int port) {
     constexpr uint32_t kPlayers = 0x205408, kPorts = 0x218464;
     const int32_t players = int32_t(kernel::R32(kPlayers));
@@ -499,9 +523,11 @@ bool Cutscene() {
     return kernel::R32(0x2A88B8) != 0 && kernel::R32(0x3B2428) == 0 && kernel::R32(0x329600) != 0;
 }
 
-// driving.xbe: a film playing (a mission's intro, 0xD3910): its player's handle [0x1E132C] is set from its start until
-// 0xD3870 closes it, and the player skips on the A button of the active port (its analog byte, 0xD3DBF), as on foot
-bool DrivingCutscene() { return kernel::R32(0x1E132C) != 0; }
+// driving.xbe: a film playing (a mission's intro, 0xD3910), which skips on the A button of the active port (its analog
+// byte, 0xD3DBF), as on foot. Only while 0xD3910 runs (src/driving/hooks.cpp): the film's handle [0x1E132C] is not
+// enough, the mission opens its next film (0xD37A0 from 0x57FF6) after the intro and keeps it open all through play,
+// where Enter, Space and the left click then gave A as well (on rails A reloads: every other click reloaded).
+bool DrivingCutscene() { return DrivingFilmPlaying() && kernel::R32(0x1E132C) != 0; }
 
 void GamePad(int port, input::Pad& pad) {
     if (port == 0 && std::string_view(IMAGE_XBE) == "bond_eng.xbe") {

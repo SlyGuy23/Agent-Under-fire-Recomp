@@ -14,6 +14,7 @@
 // failed) are left alone.
 #include <cstdint>
 
+#include "common/controls.h"
 #include "common/menus.h"
 #include "cpu/x86_ops.h"
 #include "kernel/kernel.h"
@@ -25,7 +26,12 @@ X86_EXTERN_FUNC(__imp__sub_00033920);
 X86_FUNC(sub_00033920) {
     constexpr uint32_t kPaused = 0x3B2428, kPauseScreen = 0x205354;
     const uint32_t screen = kernel::R32(ctx.esp + 4);
-    if (kernel::R32(kPaused) && screen == kernel::R32(kPauseScreen) && menus::TakePauseClose()) {
+    // split screen: each player's pause menu is ticked with [0x3B23FC] = that player (0x26F4E), on whom 0x34040 acts
+    const uint32_t player = kernel::R32(0x3B23FC);
+    const bool split = int32_t(kernel::R32(0x205408)) > 1 && player < 4 && kernel::R32(0x3B2200 + player * 0x10) == 3 &&
+                       screen == kernel::R32(0x3B2204 + player * 0x10);
+    if ((kernel::R32(kPaused) && screen == kernel::R32(kPauseScreen) && menus::TakePauseClose()) ||
+        (split && controls::TakeSplitPauseClose(int(player)))) {
         // called as the game calls them, each with a return address on the stack that its ret takes off
         X86_PUSH32(0x4AF4Bu);
         sub_00034040(ctx, base);

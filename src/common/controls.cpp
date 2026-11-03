@@ -306,6 +306,10 @@ GameState (*g_state_query)() = nullptr;
 A (*g_fire_redirect)(int port) = nullptr;
 void (*g_reload_request)(int port) = nullptr;
 bool (*g_mounted_gun)(int port) = nullptr;
+int (*g_split_pause)(int port, bool* first_page) = nullptr;
+bool g_split_was[4] = {};                 // per port: its player's split screen pause menu was up last poll
+uint16_t g_split_last[4] = {};            // and START / B held then (bit 0 START, bit 1 B)
+std::atomic<int64_t> g_split_close[4] = {};  // per local player: a shut asked for at this time
 bool g_reload_held[4] = {};  // per port: in split screen each controller is a player of its own
 std::atomic<uint32_t> g_reloads{0};
 std::atomic<int> g_drive_mode{int(Context::Driving)};
@@ -938,6 +942,17 @@ void SetFireRedirect(Action (*query)(int port)) {
     g_fire_redirect = query;
 }
 
+void SetSplitPauseQuery(int (*query)(int port, bool* first_page)) {
+    std::lock_guard lock(g_lock);
+    g_split_pause = query;
+}
+
+bool TakeSplitPauseClose(int player) {
+    if (player < 0 || player > 3) return false;
+    int64_t at = g_split_close[player].exchange(0);
+    return at && Now() - at < 1000;  // stale when the menu's tick never came for it (shut meanwhile)
+}
+
 void SetMountedGunQuery(bool (*query)(int port)) {
     std::lock_guard lock(g_lock);
     g_mounted_gun = query;
@@ -1087,6 +1102,10 @@ void Pad(int port, input::Pad& pad) {
     int64_t now = Now();
     // first: in driving.xbe the query also tells driving from on rails, whose options this poll then uses
     GameState st = State();
+    // a split screen player's own pause menu: this port is in a menu while the match goes on
+    bool first_page = false;
+    const int split_player = st == GameState::Playing && g_split_pause ? g_split_pause(port, &first_page) : -1;
+    if (split_player >= 0) st = GameState::Paused;
     const ContextState& s = g_state[int(Ctx())];
     NoTurn(port);  // until play builds the pad
     Inputs phys = Physical(pad);
@@ -1129,12 +1148,34 @@ void Pad(int port, input::Pad& pad) {
         for (int i = 0; i < int(A::LSUp); i++)
             if (phys.v[i] >= kReleased) sup |= 1u << i;
     }
+    // the split screen pause menu: START (Escape) shuts it from any page, B (Backspace) on its first page too; the
+    // game's own menu takes START as select and B as back only on the later pages. A press held when the menu came
+    // up does not count; the buttons that shut it stay away from the game until let go.
+    auto split = [&](input::Pad& p) {
+        const int pi = port & 3;
+        if (split_player < 0) {
+            g_split_was[pi] = false;
+            return;
+        }
+        uint16_t held = uint16_t(((p.buttons & 0x10) ? 1 : 0) | (p.analog[1] > 30 ? 2 : 0));
+        uint16_t pressed = g_split_was[pi] ? uint16_t(held & ~g_split_last[pi]) : 0;
+        g_split_was[pi] = true;
+        g_split_last[pi] = held;
+        p.buttons &= uint16_t(~0x10u);  // START never selects here
+        if ((pressed & 1) || ((pressed & 2) && first_page)) {
+            g_split_close[split_player].store(now);
+            p.analog[1] = 0;
+            g_pad_suppressed[pi] |= 1u << int(A::Start) | 1u << int(A::B);
+            if (port == 0) g_suppressed |= g_held;
+        }
+    };
     if (st != GameState::Playing) {
         // the menus: the controller as it is, the menu keys
         if (st == GameState::Menu)
             for (int i = 0; i < 4; i++) g_crouch[i] = g_aim[i] = {};
         if (port == 0 && g_keyboard && g_device == Device::KeyboardMouse) {
             pad = MenuKeyboardPad(st, now);
+            split(pad);
             return;
         }
         // buttons kept from the game stay kept until let go
@@ -1152,9 +1193,11 @@ void Pad(int port, input::Pad& pad) {
                 else pad.analog[i] = 0;
             }
         }
+        split(pad);
         pad.connected = connected;
         return;
     }
+    split(pad);  // play: its menu is not up
     if (port == 0 && g_keyboard && g_device == Device::KeyboardMouse) {
         Inputs out = KeyboardInputs(s, now);
         PlayExtras(0, out, s.options, true, LookMode(now) == MouseLook::Stick);

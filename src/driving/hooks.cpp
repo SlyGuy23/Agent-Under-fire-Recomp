@@ -266,3 +266,14 @@ X86_FUNC(sub_00102990) {
         g_rails_view.known = g_rails_view.kx > 0 && g_rails_view.ky > 0;
     }
 }
+
+// FILMS: 0xD3910 (cdecl, three arguments) plays the open film to its end or until A skips it, polling the pad meanwhile.
+// While it runs, Enter, Space and the left click are A too (game_info.cpp DrivingCutscene), and only then: the mission
+// keeps its next film open through play.
+void DrivingFilm(bool start);  // game_info.cpp
+X86_EXTERN_FUNC(__imp__sub_000D3910);
+X86_FUNC(sub_000D3910) {
+    DrivingFilm(true);
+    __imp__sub_000D3910(ctx, base);
+    DrivingFilm(false);
+}
