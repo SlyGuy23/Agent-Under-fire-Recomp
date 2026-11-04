@@ -5,11 +5,13 @@ name: Release
 # the licences, and an empty ROM folder. The three game code DLLs and the compiler's work folder are never in it.
 # Before publishing, the zip is unpacked into a clean folder, checked for game code, and its first start build is run
 # there (--prepare-only) from a disc image made on the runner from the game's xbe files, which are never published.
-# The release is created as a draft: nothing is public until it is published by hand.
+# The release is created as a draft: nothing is public until it is published by hand. A push to main runs the same
+# package and checks without making a release, so a change that breaks the first start build shows before a release.
 
 on:
   push:
     tags: ['v*']
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -20,8 +22,8 @@ env:
   PRIVATE_REPO: SlyGuy23/AUF-Recomp-Private
 
 concurrency:
-  group: release
-  cancel-in-progress: false
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   release:
@@ -40,7 +42,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
-          $tag = if ($env:REF_TYPE -eq 'tag') { $env:REF_NAME } else { $env:INPUT_VERSION }
+          $tag = if ($env:REF_TYPE -eq 'tag') { $env:REF_NAME } elseif ($env:INPUT_VERSION) { $env:INPUT_VERSION } else { 'v0.0.0-check' }
           if ($tag -notmatch '^v\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') { Write-Error "not a release tag: $tag"; exit 1 }
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "zip=AgentUnderFire-$($tag.Substring(1)).zip" >> $env:GITHUB_OUTPUT
@@ -176,6 +178,7 @@ jobs:
       # the zip as checked (unchanged since), as a draft release on this repository; a published release is never
       # replaced
       - name: Draft release
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
