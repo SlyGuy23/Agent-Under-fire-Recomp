@@ -109,7 +109,14 @@ jobs:
         run: |
           $test = "$env:RUNNER_TEMP/reltest"
           Expand-Archive $env:ZIP -DestinationPath $test
-          python -I .github/scripts/check_release.py $test assets/default.xbe assets/bond_eng.xbe assets/driving.xbe 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/rellog/contents.txt"
+          # the toolchain's own clang and lld, which the build copied into the compiler folder: build.bat's LLVM
+          # (Program Files\LLVM before Visual Studio's)
+          $llvm = "$env:ProgramFiles\LLVM\bin"
+          if (-not (Test-Path "$llvm\clang++.exe")) {
+            $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+            $llvm = "$vs\VC\Tools\Llvm\x64\bin"
+          }
+          python -I .github/scripts/check_release.py $test assets/default.xbe assets/bond_eng.xbe assets/driving.xbe --reference "$llvm/clang.exe" --reference "$llvm/lld-link.exe" 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/rellog/contents.txt"
           if ($LASTEXITCODE) { exit 1 }
 
       # the first start's build, as a player's PC runs it from the unpacked release: the disc image in ROM (made here

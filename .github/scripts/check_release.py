@@ -2,8 +2,10 @@
 # - no game code DLL, no xbe or disc image, no compiler work folder or generated sources or objects;
 # - each game executable delay loads its <exe>.dll, where the recompiled code goes on the player's PC;
 # - no file holds a run of the game's own x86 code: windows from each xbe's executable sections are looked for in
-#   every file of the release.
-#   python check_release.py <release folder> <xbe>...
+#   every file of the release. Windows also found in a reference file (the toolchain's own clang.exe and lld-link.exe,
+#   from the Visual Studio install) are common tables, such as math constants the XDK's libraries share with any C
+#   runtime, and are left out; a release file identical to a reference is that toolchain file.
+#   python check_release.py <release folder> <xbe>... [--reference <file>]...
 import os
 import random
 import struct
@@ -81,7 +83,12 @@ def delay_dlls(path):
 
 
 def main():
-    root, xbes = sys.argv[1], sys.argv[2:]
+    args = sys.argv[2:]
+    root, refs, xbes = sys.argv[1], [], []
+    while args:
+        a = args.pop(0)
+        (refs.append(args.pop(0)) if a == "--reference" else xbes.append(a))
+    references = [open(r, "rb").read() for r in refs]
     bad = []
     files = []
     for d, dirs, names in os.walk(root):
@@ -122,9 +129,16 @@ def main():
         code = xbe_code(x)
         windows += [(os.path.basename(x), w) for w in samples(code, rng)]
         print(f"{os.path.basename(x)}: code sections {', '.join(f'{n} {len(b)}' for n, b in code)}")
+    common = [(x, w) for x, w in windows if any(w in r for r in references)]
+    windows = [(x, w) for x, w in windows if (x, w) not in common]
+    for x, w in common:
+        print(f"left out a window of {x} also in the toolchain (a common table): {w.hex()}")
     print(f"looking for {len(windows)} windows of {WINDOW} bytes of the game's code in the release")
     for p in files:
         data = open(p, "rb").read()
+        if any(data == r for r in references):
+            print(f"{os.path.relpath(p, root)} is the toolchain's own file")
+            continue
         hits = [x for x, w in windows if w in data]
         if hits:
             bad.append(f"{os.path.relpath(p, root)} holds {len(hits)} runs of the game's code ({hits[0]})")
