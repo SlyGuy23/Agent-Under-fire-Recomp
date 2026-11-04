@@ -5,7 +5,7 @@ An unofficial native PC port of the original Xbox version of 007: Agent Under Fi
 This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp) tool.
 
 > [!NOTE]
-> This project does not include any game assets. You must provide the files from your own legally acquired copy of the game to install or build.
+> This repository does not include any game assets. You must provide the files from your own legally acquired copy of the game to install or build.
 
 ## Installation
 
@@ -16,6 +16,8 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 The first start prepares the game for your PC: it builds the game's code from the disc image in `ROM`, with the compiler that comes in `Game Files\compiler`. This happens only once, takes a few minutes and needs about 1 GB of free space on the drive the game is on. Closing the window stops it, and the next start carries on where it left off. Once the game is ready you can tick **Delete the compiler files** to free the space (a later release brings the compiler again).
 
 Releases contain no game code: the executables are only the port's runtime, and the game's code is built on your PC from your own disc image.
+
+The upscaled (4x) texture pack comes in the release, in `Game Files\textures\replacement`, and is on from the first start: characters, weapons, menus and HUD, loading screens and the keyboard key pictures for the on-screen prompts. To play with the original textures, turn **Upscaled Texture Replacement** off in **PC Settings** (Textures), or turn the **Character**, **Weapon** and **Menu And HUD Textures** off one by one.
 
 That's all. Everything else lives in the `Game Files` folder: the game itself, `settings.toml`, your saves (`hdd`), logs, frame captures and upscaled texture packs (`textures\replacement`, each pack in a folder of its own).
 
@@ -37,7 +39,7 @@ Everything is in **PC Settings** on the main menu and the pause menu, and in the
 - **Multiplayer** - Split screen with up to four players; a keyboard and mouse player can play alongside controller players.
 
 ### Upscaled textures
-Texture packs go in `Game Files\textures\replacement`, each in a folder of its own. A folder whose name ends in `Only 4x` replaces textures only where the game says so (for example `AUF Evil Summit Only 4x`, used only in Evil Summit's cutscenes).
+The release brings the upscaled pack in `Game Files\textures\replacement`. Other texture packs go there too, each in a folder of its own. A folder whose name ends in `Only 4x` replaces textures only where the game says so (for example `AUF Evil Summit Only 4x`, used only in Evil Summit's cutscenes).
 
 ### Miscellaneous
 - **Frame Capture** - F3 saves the next frame, every draw and texture, into `Game Files\captures`, for bug reports.

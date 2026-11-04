@@ -1239,6 +1239,11 @@ std::array<HoldFrame, 8> g_hold_frames;
 std::vector<PromptRect> g_prompts_held;
 
 bool Keyboard() { return controls::ActiveDevice() == controls::Device::KeyboardMouse; }
+// the four keys' pictures (kb_enter.png and so on) are in the atlas (FillKeyPictures): without them (no texture pack
+// beside the exe, or a pack without them) the game's own button pictures stay, the bars laid out for them
+std::atomic<bool> g_keys_ready{false};
+// the keyboard's keys take the buttons' places in the prompts
+bool KeyPrompts() { return Keyboard() && g_keys_ready.load(); }
 
 // the title screen's "Press START" line as the game last drew it: its box, its first letter's height, its colour
 struct PressLine {
@@ -1338,7 +1343,8 @@ bool PromptQuad(const gpu::State& s, float x0, float y0, float x1, float y1, flo
         if (fp.list.size() < 64)
             fp.list.push_back({p.prompt, x0, y0, x1, y1, std::clamp(alpha, 0.0f, 1.0f), DrawPaused(), kb, key_box, false});
         g_prompts_seen.store(f + 1);
-        return kb < 0 ? Keyboard() : kb > 0;
+        // (no key picture to draw: the game's button stays)
+        return g_keys_ready.load() && (kb < 0 ? Keyboard() : kb > 0);
     }
     return false;
 }
@@ -1601,7 +1607,7 @@ struct BarEngine {
     // the frame's first item: the frame before's bars laid out again (the front end)
     void Begin() {
         if (Frame() == frame) return;
-        if (!st.slots && frame + 1 == Frame()) Layout(Keyboard());
+        if (!st.slots && frame + 1 == Frame()) Layout(KeyPrompts());
         building.clear();
         covers.clear();
         pic_cy.clear();
@@ -1723,7 +1729,7 @@ struct BarEngine {
     // the move of a picture or a line (letter) drawn at b; o: where the game put it
     const BarMove* Find(bool pic, bool shadow, const Box& b, Box& o) {
         o = b;
-        const bool keys = Keyboard();
+        const bool keys = KeyPrompts();
         const std::vector<BarMove>& mv = st.slots ? Fixed(keys) : moves[keys];
         const float tol = shadow ? 2.5f : 0.3f, w = b.x1 - b.x0, cy = (b.y0 + b.y1) / 2;
         // a pause bar's words: on the line of its pictures drawn this frame (they are drawn first)
@@ -1949,7 +1955,7 @@ void FootPageB(const gpu::State& s, const Box& o, float shows) {
     g_foot_a_frame = Frame();
     // with a controller the B picture: the overlay's (the texture pack's picture), else the game's B texture
     const bool overlay = g_pad_b_ready.load();
-    if (!Keyboard() && !overlay && !FootBTexture(s.textures[0])) return;
+    if (!KeyPrompts() && !overlay && !FootBTexture(s.textures[0])) return;
     Box at;
     bool key;
     FootBBox(at, key);
@@ -1960,7 +1966,7 @@ void FootPageB(const gpu::State& s, const Box& o, float shows) {
 void FootPageBack(gpu::State& s, const uint8_t* v, uint32_t stride, const Layout& l, uint32_t count, const Box& b,
                   app::GameInfo::Emit emit) {
     if (!FootBar(b) || g_foot_a_frame != Frame()) return;
-    const bool keyboard = Keyboard();
+    const bool keyboard = KeyPrompts();
     if (count == 6 && StageKey(s) == kAButton) {
         uint32_t bt = keyboard || g_pad_b_ready.load() ? 0 : FootBTexture(s.textures[0]);
         if (!bt) return;
@@ -4010,6 +4016,10 @@ void FillKeyPictures(ImGuiIO& io) {
         k.px.clear();
         if (&k - g_keys == kPadB) g_pad_b_ready.store(true);
     }
+    bool keys = true;
+    for (int i = 0; i < kPadB; i++) keys = keys && g_keys[i].ready;
+    g_keys_ready.store(keys);
+    LOGI("menus: the keyboard's keys in the prompts %s", keys ? "from the texture pack's pictures" : "missing: the game's buttons stay");
 }
 
 // the up chevron's picture (g_chevron), after the fonts (its outline as the body lettering's): white where its stroke
@@ -4131,7 +4141,7 @@ void DrivingPageGlow(ImDrawList* dl) {
 
 // the keyboard's keys over the prompts the game drew this frame
 void DrawPrompts() {
-    const bool keyboard = Keyboard();
+    const bool keyboard = KeyPrompts();  // (no key pictures: the game's buttons, the pack's B too)
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImTextureID tex = ImGui::GetIO().Fonts->TexID;
     for (const PromptRect& p : ShownPrompts()) {

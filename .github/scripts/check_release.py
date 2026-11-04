@@ -4,12 +4,15 @@
 # - no file holds a run of the game's own x86 code: windows from each xbe's executable sections are looked for in
 #   every file of the release. Windows also found in a reference file (the toolchain's own clang.exe and lld-link.exe,
 #   from the Visual Studio install) are common tables, such as math constants the XDK's libraries share with any C
-#   runtime, and are left out; a release file identical to a reference is that toolchain file.
+#   runtime, and are left out; a release file identical to a reference is that toolchain file;
+# - the texture pack (Game Files\textures\replacement) holds pictures alone: every file there a whole, well formed PNG
+#   (each chunk's CRC right, nothing after IEND). They are looked through for the game's code like every other file.
 #   python check_release.py <release folder> <xbe>... [--reference <file>]...
 import os
 import random
 import struct
 import sys
+import zlib
 
 IMAGES = ["AgentUnderFire", "AgentUnderFireGame", "AgentUnderFireDriving"]
 RUNTIME_DLLS = {"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"}
@@ -47,6 +50,27 @@ def samples(code, rng):
                 out.append(w)
                 got += 1
     return out
+
+
+PACK = os.path.join("Game Files", "textures")
+
+
+def png_ok(path):
+    data = open(path, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        return False
+    at, first = 8, True
+    while at + 12 <= len(data):
+        n, kind = struct.unpack_from(">I4s", data, at)
+        end = at + 12 + n
+        if end > len(data) or (first and kind != b"IHDR"):
+            return False
+        if zlib.crc32(data[at + 4:at + 8 + n]) != struct.unpack_from(">I", data, at + 8 + n)[0]:
+            return False
+        if kind == b"IEND":
+            return end == len(data)
+        at, first = end, False
+    return False
 
 
 def delay_dlls(path):
@@ -105,6 +129,13 @@ def main():
                 bad.append(f"game code DLL {os.path.relpath(p, root)}")
             if ext in (".xbe", ".iso", ".obj", ".o", ".def") or low.startswith("x86_recomp") or low == "built.txt":
                 bad.append(f"game derived file {os.path.relpath(p, root)}")
+    pack = [p for p in files if os.path.relpath(p, root).lower().startswith(PACK.lower() + os.sep)]
+    for p in pack:
+        if not p.lower().endswith(".png") or not png_ok(p):
+            bad.append(f"not a texture picture {os.path.relpath(p, root)}")
+    if pack:
+        print(f"texture pack: {len(pack)} pictures, {sum(os.path.getsize(p) for p in pack)} bytes, all whole PNGs"
+              if not any(b.startswith("not a texture") for b in bad) else "texture pack: has files that are not PNGs")
     total = 0
     for p in sorted(files):
         size = os.path.getsize(p)

@@ -547,7 +547,7 @@ void Defaults() {
     s = d;
     g_skip_intros = false;
     g_fps_counter = false;
-    app::g_menus_4x3 = true;
+    app::g_menus_4x3 = false;
     if (!g_hd_characters || !g_hd_weapons || !g_hd_menus) app::g_pack_folders++;
     g_hd_characters = g_hd_weapons = g_hd_menus = true;
     g_master_volume = 100;

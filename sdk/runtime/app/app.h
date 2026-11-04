@@ -26,8 +26,8 @@ struct Settings {
     uint32_t render_percent = 100;   // of the window's pixels the frame is shown on
     uint32_t fps_cap = 60;           // 0 unlimited, kFpsCapRefresh the monitor's refresh rate
     bool vsync = true;
-    uint32_t aniso = 0;              // 0 as the game asks
-    AntiAliasing anti_aliasing = AntiAliasing::Off;
+    uint32_t aniso = 16;             // 0 as the game asks
+    AntiAliasing anti_aliasing = AntiAliasing::Ssaa4x;
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
@@ -52,7 +52,7 @@ float RenderScale(uint32_t guest_width, uint32_t guest_height, uint32_t window_w
 bool Widescreen();
 // a widescreen output shows frames drawn in 2D alone (front end menus, loading screens, films) at 4:3 between bars:
 // their art is laid out for 640x480 and only the 3D scenes are drawn for 16:9. Set by the game (a setting there)
-inline bool g_menus_4x3 = true;
+inline bool g_menus_4x3 = false;
 // small figures drawn from 128x128 linear A8R8G8B8 textures are upscaled smooth with an outline (gpu::SmoothFigure)
 inline bool g_smooth_figures = false;
 // a folder right under textures\replacement\ (its name as given) the texture pack leaves out while this says so. Set by

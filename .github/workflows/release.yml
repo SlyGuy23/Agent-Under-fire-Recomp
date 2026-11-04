@@ -2,7 +2,9 @@ name: Release
 
 # A public release carries no game code: the runtime executables, the compiler folder that builds the game's code on
 # the player's PC from their own disc image (sdk/runtime/app/game_code.cpp), the Visual C++ runtime, the README and
-# the licences, and an empty ROM folder. The three game code DLLs and the compiler's work folder are never in it.
+# the licences, the HD texture pack (Game Files\textures\replacement, from the private repository's texture-pack
+# branch: pictures alone, each checked to be a whole PNG) and an empty ROM folder. The three game code DLLs and the
+# compiler's work folder are never in it.
 # Before publishing, the zip is unpacked into a clean folder, checked for game code, and its first start build is run
 # there (--prepare-only) from a disc image made on the runner from the game's xbe files, which are never published.
 # The release is created as a draft: nothing is public until it is published by hand. A push to main runs the same
@@ -61,6 +63,13 @@ jobs:
           New-Item -ItemType Directory -Force assets | Out-Null
           foreach ($x in 'default.xbe', 'bond_eng.xbe', 'driving.xbe') { Copy-Item "$env:RUNNER_TEMP/private/xbe/$x" "assets/$x" }
           Remove-Item -Recurse -Force "$env:RUNNER_TEMP/private"
+          # the HD texture pack (the texture-pack branch: replacement/<folder>/<picture>.png), for the release
+          git clone -q --depth 1 --branch texture-pack "https://x-access-token:$($env:TOKEN)@github.com/${{ env.PRIVATE_REPO }}.git" "$env:RUNNER_TEMP/pack"
+          if ($LASTEXITCODE) { Write-Error "the texture-pack branch could not be fetched"; exit 1 }
+          Remove-Item -Recurse -Force "$env:RUNNER_TEMP/pack/.git"
+          $n = (Get-ChildItem -Recurse -File "$env:RUNNER_TEMP/pack/replacement").Count
+          if ($n -lt 1) { Write-Error "the texture pack is empty"; exit 1 }
+          Write-Host "texture pack: $n files"
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/rellog" | Out-Null
 
       - name: Build
@@ -97,6 +106,9 @@ jobs:
           foreach ($f in $runtime) { Copy-Item "$($crt.FullName)\$f.dll" "$files/compiler" }
           $need = @('clang.exe', 'lld-link.exe', 'xbe_recomp.exe', 'LLVM-LICENSE.txt') + ($images | ForEach-Object { "$_.lib" })
           foreach ($f in $need) { if (-not (Test-Path "$files/compiler/$f")) { Write-Error "compiler/$f is missing"; exit 1 } }
+          # the HD texture pack: textures\replacement beside the executables, where the runtime looks for it
+          New-Item -ItemType Directory -Force "$files/textures" | Out-Null
+          Copy-Item -Recurse "$env:RUNNER_TEMP/pack/replacement" "$files/textures/replacement"
           New-Item -ItemType Directory -Force "$pkg/ROM" | Out-Null
           Set-Content "$pkg/ROM/Put your Agent Under Fire ISO here.txt" 'Put your disc image of 007: Agent Under Fire (PAL, .iso) in this folder, then run AgentUnderFire.exe. The first start builds the game from it, which takes a few minutes and needs about 1 GB of free space.'
           Compress-Archive -Path "$pkg/*" -DestinationPath $env:ZIP -CompressionLevel Optimal
@@ -201,7 +213,9 @@ jobs:
 
           **Installation:** unzip ``$env:ZIP`` into a folder of its own, put your own disc image of the game (PAL, ``.iso``) in the ``ROM`` folder and run ``AgentUnderFire.exe``. The first start builds the game's code from your disc image: this happens once, takes a few minutes and needs about 1 GB of free space.
 
-          This release contains no game code or assets: only the port's runtime, the compiler that builds the game's code on your PC, and the licences of the software it includes (``Game Files\THIRD_PARTY.txt``).
+          The HD texture pack is included (``Game Files\textures\replacement``) and on by default; it can be turned off in PC Settings (Upscaled Texture Replacement, or Character, Weapon and Menu And HUD Textures one by one).
+
+          This release contains no game code: only the port's runtime, the compiler that builds the game's code on your PC, the texture pack, and the licences of the software it includes (``Game Files\THIRD_PARTY.txt``).
           "@ | Set-Content "$env:RUNNER_TEMP/notes.md"
           $existing = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName,isDraft | ConvertFrom-Json | Where-Object { $_.tagName -eq $env:TAG }
           if ($existing -and -not $existing.isDraft) { Write-Error "$env:TAG is already published"; exit 1 }
