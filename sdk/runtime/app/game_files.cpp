@@ -131,12 +131,17 @@ bool FindGame(GameFiles& game) {
         fs::path top = ExeDir();
         if (_wcsicmp(top.filename().c_str(), L"Game Files") == 0) top = top.parent_path();
         fs::create_directories(top / "ROM", ec);
+        if (PrepareOnly()) {
+            LOGE("Game: no %s in a disc image or the game files", IMAGE_XBE);
+            return false;
+        }
         MessageBoxW(nullptr, kGame.missing, kGame.short_title, MB_ICONERROR);
         return false;
     }
     std::wstring text = other_name.filename().wstring() +
                         L" is a different release of the game than this build was made from, and will most likely "
                         L"crash.\n\nStart it anyway?";
+    if (PrepareOnly()) return false;
     if (MessageBoxW(nullptr, text.c_str(), kGame.short_title, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES) return false;
     game = std::move(other);
     kernel::MountDisc(std::move(other_disc));

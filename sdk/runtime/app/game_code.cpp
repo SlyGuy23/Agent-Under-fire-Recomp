@@ -731,6 +731,14 @@ bool BuildWithWindow(std::vector<Target>& targets) {
     return ok && g_start;
 }
 
+// --prepare-only: the build without the window; what failed goes to the log
+bool BuildQuietly(std::vector<Target>& targets) {
+    if (std::wstring blocker = Blocker(targets); !blocker.empty()) return RecordFailure(blocker);
+    if (Build(targets)) return true;
+    LOGE("Game code: the last lines of logs\\compile.log:\n%ls", CompileLogTail().c_str());
+    return false;
+}
+
 }  // namespace
 
 bool PrepareGameCode(const GameFiles& game) {
@@ -741,14 +749,16 @@ bool PrepareGameCode(const GameFiles& game) {
     std::vector<Image> images = Images();
     std::vector<Target> stale = StaleTargets(game, images);
     for (const Target& target : stale) LOGR("Game code: building %ls.dll", target.image->exe.c_str());
-    bool built = stale.empty() || BuildWithWindow(stale);
+    bool built = stale.empty() || (PrepareOnly() ? BuildQuietly(stale) : BuildWithWindow(stale));
     ReleaseMutex(lock);
     CloseHandle(lock);
     if (!built) return false;
     for (const Image& image : images)
         if (image.xbe == IMAGE_XBE && dispatch::Load(CodeDll(image))) return true;
-    MessageBoxW(nullptr, L"The game's code could not be loaded, see the log in the logs folder.", kGame.title,
-                MB_ICONERROR);
+    LOGE("Game code: %s's code could not be loaded", IMAGE_XBE);
+    if (!PrepareOnly())
+        MessageBoxW(nullptr, L"The game's code could not be loaded, see the log in the logs folder.", kGame.title,
+                    MB_ICONERROR);
     return false;
 }
 

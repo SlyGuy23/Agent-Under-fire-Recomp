@@ -1,0 +1,202 @@
+name: Release
+
+# A public release carries no game code: the runtime executables, the compiler folder that builds the game's code on
+# the player's PC from their own disc image (sdk/runtime/app/game_code.cpp), the Visual C++ runtime, the README and
+# the licences, and an empty ROM folder. The three game code DLLs and the compiler's work folder are never in it.
+# Before publishing, the zip is unpacked into a clean folder, checked for game code, and its first start build is run
+# there (--prepare-only) from a disc image made on the runner from the game's xbe files, which are never published.
+# The release is created as a draft: nothing is public until it is published by hand.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag, such as v0.1.0
+        required: true
+
+env:
+  PRIVATE_REPO: SlyGuy23/AUF-Recomp-Private
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $tag = if ($env:REF_TYPE -eq 'tag') { $env:REF_NAME } else { $env:INPUT_VERSION }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') { Write-Error "not a release tag: $tag"; exit 1 }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "zip=AgentUnderFire-$($tag.Substring(1)).zip" >> $env:GITHUB_OUTPUT
+
+      # the game's xbe files from the private repository: for the build and the build check on this runner only
+      - name: Game files
+        shell: pwsh
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          if (-not $env:TOKEN) { Write-Error "PRIVATE_REPO_TOKEN is not set"; exit 1 }
+          git clone -q --depth 1 "https://x-access-token:$($env:TOKEN)@github.com/${{ env.PRIVATE_REPO }}.git" "$env:RUNNER_TEMP/private"
+          New-Item -ItemType Directory -Force assets | Out-Null
+          foreach ($x in 'default.xbe', 'bond_eng.xbe', 'driving.xbe') { Copy-Item "$env:RUNNER_TEMP/private/xbe/$x" "assets/$x" }
+          Remove-Item -Recurse -Force "$env:RUNNER_TEMP/private"
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/rellog" | Out-Null
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmd /c build.bat 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/rellog/build.log"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # the release layout: AgentUnderFire.exe and ROM at the top, everything else in Game Files, with the compiler
+      # folder beside the executables (CompilerDir() is ExeDir()/compiler)
+      - name: Package
+        shell: pwsh
+        env:
+          ZIP: ${{ steps.version.outputs.zip }}
+        run: |
+          $out = 'out/build/release'
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\1*\x64\Microsoft.VC*.CRT" -Directory | Select-Object -Last 1
+          $runtime = 'msvcp140', 'vcruntime140', 'vcruntime140_1'
+          $pkg = "$env:RUNNER_TEMP/release"
+          $files = "$pkg/Game Files"
+          New-Item -ItemType Directory -Force $files | Out-Null
+          $images = 'AgentUnderFire', 'AgentUnderFireGame', 'AgentUnderFireDriving'
+          # the executables alone: their code DLLs are built on the player's PC
+          foreach ($i in $images) { Copy-Item "$out/$i.exe" $files }
+          Copy-Item "$out/start/AgentUnderFire.exe" $pkg
+          Copy-Item README.md, LICENSE, sdk/THIRD_PARTY.txt $files
+          foreach ($f in $runtime) { Copy-Item "$($crt.FullName)\$f.dll" $files }
+          # the compiler folder without its work folder (generated code and objects, should a build have left any)
+          Copy-Item -Recurse "$out/compiler" "$files/compiler"
+          Remove-Item -Recurse -Force "$files/compiler/work" -ErrorAction SilentlyContinue
+          Get-ChildItem -Recurse "$files/compiler" -Include *.pdb, *.ilk, *.dll | Remove-Item -Force
+          # xbe_recomp.exe needs the C++ runtime beside it: Windows only looks beside the exe it starts
+          foreach ($f in $runtime) { Copy-Item "$($crt.FullName)\$f.dll" "$files/compiler" }
+          $need = @('clang.exe', 'lld-link.exe', 'xbe_recomp.exe', 'LLVM-LICENSE.txt') + ($images | ForEach-Object { "$_.lib" })
+          foreach ($f in $need) { if (-not (Test-Path "$files/compiler/$f")) { Write-Error "compiler/$f is missing"; exit 1 } }
+          New-Item -ItemType Directory -Force "$pkg/ROM" | Out-Null
+          Set-Content "$pkg/ROM/Put your Agent Under Fire ISO here.txt" 'Put your disc image of 007: Agent Under Fire (PAL, .iso) in this folder, then run AgentUnderFire.exe. The first start builds the game from it, which takes a few minutes and needs about 1 GB of free space.'
+          Compress-Archive -Path "$pkg/*" -DestinationPath $env:ZIP -CompressionLevel Optimal
+          (Get-FileHash $env:ZIP -Algorithm SHA256).Hash | Set-Content "$env:RUNNER_TEMP/zip.sha256"
+          "$env:ZIP $((Get-Item $env:ZIP).Length) bytes, sha256 $(Get-Content "$env:RUNNER_TEMP/zip.sha256")" | Tee-Object -FilePath "$env:RUNNER_TEMP/rellog/zip.txt"
+
+      # unpacked into a clean folder as a player would: no game code DLL, xbe, disc image, work folder or generated
+      # code, the executables delay load their DLLs, and no file holds runs of the game's own code
+      - name: Check for game code
+        shell: pwsh
+        env:
+          ZIP: ${{ steps.version.outputs.zip }}
+        run: |
+          $test = "$env:RUNNER_TEMP/reltest"
+          Expand-Archive $env:ZIP -DestinationPath $test
+          python -I .github/scripts/check_release.py $test assets/default.xbe assets/bond_eng.xbe assets/driving.xbe 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/rellog/contents.txt"
+          if ($LASTEXITCODE) { exit 1 }
+
+      # the first start's build, as a player's PC runs it from the unpacked release: the disc image in ROM (made here
+      # from the game's xbe files), the compiler folder's xbe_recomp, clang and lld-link, the three DLLs linked beside
+      # the executables. --prepare-only runs that build without its window and exits once the code loads. The game and
+      # driving executables then find their DLLs current (no second build) and load them.
+      - name: First start build check
+        shell: pwsh
+        run: |
+          $test = "$env:RUNNER_TEMP/reltest"
+          $files = "$test/Game Files"
+          $log = "$env:RUNNER_TEMP/rellog"
+          python -I .github/scripts/make_test_iso.py "$test/ROM/test.iso" assets/default.xbe assets/bond_eng.xbe assets/driving.xbe
+          if ($LASTEXITCODE) { exit 1 }
+          $failed = $false
+          foreach ($i in 'AgentUnderFire', 'AgentUnderFireGame', 'AgentUnderFireDriving') {
+            $start = Get-Date
+            $p = Start-Process -FilePath "$files/$i.exe" -ArgumentList '--prepare-only' -WorkingDirectory $files -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit(90 * 60 * 1000)) { $p.Kill(); Write-Host "$i.exe timed out"; $failed = $true }
+            $minutes = [math]::Round(((Get-Date) - $start).TotalMinutes, 1)
+            "$i.exe --prepare-only: exit $($p.ExitCode) after $minutes minutes" | Tee-Object -Append -FilePath "$log/check.txt"
+            if ($p.ExitCode -ne 0) { $failed = $true }
+            Copy-Item "$files/logs/aufire.log" "$log/$i.log" -ErrorAction SilentlyContinue
+            Get-Content "$files/logs/aufire.log" -ErrorAction SilentlyContinue | Select-String 'Game|game code' | ForEach-Object { "  $_" } | Tee-Object -Append -FilePath "$log/check.txt"
+            if ($failed) { break }
+          }
+          Copy-Item "$files/logs/compile.log" $log -ErrorAction SilentlyContinue
+          foreach ($i in 'AgentUnderFire', 'AgentUnderFireGame', 'AgentUnderFireDriving') {
+            $dll = Get-Item "$files/$i.dll" -ErrorAction SilentlyContinue
+            $stamp = Get-Content "$files/compiler/work/$i/built.txt" -ErrorAction SilentlyContinue
+            "$i.dll: $(if ($dll) { "$($dll.Length) bytes" } else { 'MISSING' }), stamp: $stamp" | Tee-Object -Append -FilePath "$log/check.txt"
+            if (-not $dll -or -not $stamp) { $failed = $true }
+          }
+          # each executable built once: only the first run builds, the others find the DLLs current
+          $builds = (Get-ChildItem "$log/AgentUnderFire*.log" | Select-String 'Game code: building').Count
+          "build lines in the logs: $builds (3 expected, all from the first run)" | Tee-Object -Append -FilePath "$log/check.txt"
+          if ($builds -ne 3) { $failed = $true }
+          $work = (Get-ChildItem -Recurse "$files/compiler" -File | Measure-Object Length -Sum).Sum
+          $free = (Get-ChildItem -Recurse $test -File | Measure-Object Length -Sum).Sum
+          "compiler folder after the build: $([math]::Round($work / 1MB)) MB; release folder: $([math]::Round($free / 1MB)) MB" | Tee-Object -Append -FilePath "$log/check.txt"
+          if ($failed) { Write-Host 'FIRST START BUILD CHECK FAILED'; exit 1 }
+          'FIRST START BUILD CHECK PASSED' | Tee-Object -Append -FilePath "$log/check.txt"
+
+      # what the check found, on the private repository's release-log branch (text only), readable with plain git
+      - name: Publish check log
+        if: always()
+        shell: pwsh
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          RESULT: ${{ job.status }}
+        run: |
+          $log = "$env:RUNNER_TEMP/rellog"
+          if (-not (Test-Path $log)) { exit 0 }
+          Get-ChildItem $log -File | Where-Object { $_.Extension -notin '.log', '.txt' } | Remove-Item -Force
+          Get-ChildItem $log -File | Where-Object { $_.Length -gt 20MB } | Remove-Item -Force
+          cd $log
+          git init -q -b release-log
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -qm "Release $env:TAG check ($env:RESULT) $($env:GITHUB_SHA.Substring(0,7))"
+          git push -f "https://x-access-token:$($env:TOKEN)@github.com/${{ env.PRIVATE_REPO }}.git" release-log
+
+      # the zip as checked (unchanged since), as a draft release on this repository; a published release is never
+      # replaced
+      - name: Draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ZIP: ${{ steps.version.outputs.zip }}
+        run: |
+          if ((Get-FileHash $env:ZIP -Algorithm SHA256).Hash -ne (Get-Content "$env:RUNNER_TEMP/zip.sha256")) { Write-Error 'the zip changed after the check'; exit 1 }
+          @"
+          An unofficial PC port of the original Xbox version of 007: Agent Under Fire (PAL).
+
+          **Installation:** unzip ``$env:ZIP`` into a folder of its own, put your own disc image of the game (PAL, ``.iso``) in the ``ROM`` folder and run ``AgentUnderFire.exe``. The first start builds the game's code from your disc image: this happens once, takes a few minutes and needs about 1 GB of free space.
+
+          This release contains no game code or assets: only the port's runtime, the compiler that builds the game's code on your PC, and the licences of the software it includes (``Game Files\THIRD_PARTY.txt``).
+          "@ | Set-Content "$env:RUNNER_TEMP/notes.md"
+          $existing = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName,isDraft | ConvertFrom-Json | Where-Object { $_.tagName -eq $env:TAG }
+          if ($existing -and -not $existing.isDraft) { Write-Error "$env:TAG is already published"; exit 1 }
+          if ($existing) {
+            gh release upload $env:TAG $env:ZIP --clobber --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE) { exit 1 }
+            gh release edit $env:TAG --notes-file "$env:RUNNER_TEMP/notes.md" --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $env:TAG $env:ZIP --draft --title "$env:TAG" --notes-file "$env:RUNNER_TEMP/notes.md" --target $env:GITHUB_SHA --repo $env:GITHUB_REPOSITORY
+          }
+          if ($LASTEXITCODE) { exit 1 }

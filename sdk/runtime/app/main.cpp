@@ -167,6 +167,11 @@ std::filesystem::path ExeDir() {
     return std::filesystem::path(p).parent_path();
 }
 
+bool PrepareOnly() {
+    static const bool only = std::wcsstr(GetCommandLineW(), L"--prepare-only") != nullptr;
+    return only;
+}
+
 int Instance() {
     static const int n = [] {
         const wchar_t* p = std::wcsstr(GetCommandLineW(), L"--instance");
@@ -245,6 +250,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     app::GameFiles game;
     if (!app::FindGame(game)) return 1;
     if (!app::PrepareGameCode(game)) return 1;
+    if (app::PrepareOnly()) {
+        LOGR("Game code: ready");
+        logx::Flush();
+        return 0;
+    }
 
     bool splash = app::OpenSplash(), handover = app::StartHandover();
 

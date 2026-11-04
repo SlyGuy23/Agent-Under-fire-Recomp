@@ -9,9 +9,13 @@ This port was created using the [Xbox XBE Recomp](https://github.com/TGP482/Xbox
 
 ## Installation
 
-1. Unzip the release into a folder of its own.
+1. Download `AgentUnderFire-<version>.zip` from [Releases](https://github.com/SlyGuy23/Agent-Under-fire-Recomp/releases) and unzip it into a folder of its own, somewhere you can write to (such as Documents).
 2. Put your disc image of the game (PAL, `.iso`) in the `ROM` folder.
 3. Run `AgentUnderFire.exe`.
+
+The first start prepares the game for your PC: it builds the game's code from the disc image in `ROM`, with the compiler that comes in `Game Files\compiler`. This happens only once, takes a few minutes and needs about 1 GB of free space on the drive the game is on. Closing the window stops it, and the next start carries on where it left off. Once the game is ready you can tick **Delete the compiler files** to free the space (a later release brings the compiler again).
+
+Releases contain no game code: the executables are only the port's runtime, and the game's code is built on your PC from your own disc image.
 
 That's all. Everything else lives in the `Game Files` folder: the game itself, `settings.toml`, your saves (`hdd`), logs, frame captures and upscaled texture packs (`textures\replacement`, each pack in a folder of its own).
 
@@ -74,4 +78,4 @@ The source code in this repository is under the [MIT licence](LICENSE). The SDK 
 
 ## Legal
 
-This is an unofficial fan project, not affiliated with or endorsed by Electronic Arts, MGM, Danjaq or Eon Productions. 007, James Bond and Agent Under Fire are trademarks of their respective owners. No game code, executables or assets are included in this repository: building or playing needs your own copy of the game.
+This is an unofficial fan project, not affiliated with or endorsed by Electronic Arts, MGM, Danjaq or Eon Productions. 007, James Bond and Agent Under Fire are trademarks of their respective owners. No game code, executables or assets are included in this repository or its releases: building or playing needs your own copy of the game.
