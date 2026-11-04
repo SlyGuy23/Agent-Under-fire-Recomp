@@ -43,7 +43,10 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           $tag = if ($env:REF_TYPE -eq 'tag') { $env:REF_NAME } elseif ($env:INPUT_VERSION) { $env:INPUT_VERSION } else { 'v0.0.0-check' }
-          if ($tag -notmatch '^v\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') { Write-Error "not a release tag: $tag"; exit 1 }
+          $tag = $tag.Trim()
+          if ($tag -match '^\d') { $tag = "v$tag" }  # 0.1.0 is taken as v0.1.0
+          if ($tag -notmatch '^v\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') { Write-Error "not a release tag: '$tag' (use the form v0.1.0)"; exit 1 }
+          Write-Host "Release tag: $tag"
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "zip=AgentUnderFire-$($tag.Substring(1)).zip" >> $env:GITHUB_OUTPUT
 
